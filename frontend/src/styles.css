@@ -77,8 +77,13 @@ h3 { font-size: 14px; color: var(--text-dim); text-transform: uppercase; letter-
 
 /* --- Cards --- */
 .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; }
+/* Vertical stacking spacing for cards outside a grid… */
 .card + .card { margin-top: 16px; }
+/* …but inside a grid, `gap` handles spacing — don't add a top margin to the
+   2nd+ item in a row (that pushed side-by-side cards down and made them uneven). */
+.grid > .card + .card { margin-top: 0; }
 .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 12px; }
+/* stretch (default) keeps side-by-side cards equal height */
 .grid { display: grid; gap: 16px; }
 .grid-2 { grid-template-columns: repeat(2, 1fr); }
 .grid-3 { grid-template-columns: repeat(3, 1fr); }
