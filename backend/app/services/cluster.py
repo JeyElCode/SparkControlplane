@@ -202,8 +202,9 @@ ip addr del {shlex.quote(node.qsfp_ip)}/{int(cfg.qsfp_netmask)} dev {shlex.quote
             for node in nodes:
                 try:
                     ssh = await ssh_for_node(session, node)
+                    # sudo: model files written by the (root) download container
                     await ssh.run(
-                        f"rm -rf {shlex.quote(models_host_dir(node, cfg))}/*", check=False
+                        f"rm -rf {shlex.quote(models_host_dir(node, cfg))}/*", sudo=True, check=False
                     )
                 except Exception as exc:  # noqa: BLE001
                     await warn(node, f"failed deleting models: {exc}")

@@ -497,26 +497,37 @@ async def delete_model_files(
         raise RuntimeError("Model not found.")
     cfg = await get_cluster_config(session)
     nodes = [n for n in await _all_nodes(session) if node_ids is None or n.id in node_ids]
+    all_ok = True
     for node in nodes:
         path = model_host_path(node, cfg, model.name)
         await handle.log(f"[{node.name}] rm -rf {path}")
         try:
             ssh = await ssh_for_node(session, node)
-            await ssh.run(f"rm -rf {shlex.quote(path)}", check=True)
+            # sudo: download runs as root in the container, so model files are
+            # often root-owned — rm as the login user would hit "Permission denied".
+            await ssh.run(f"rm -rf {shlex.quote(path)}", sudo=True, check=True)
             st = await _state_for(session, model_id, node.id)
             st.present = False
             st.size_bytes = None
             st.checksum_ok = None
             st.status = MS_ABSENT
         except Exception as exc:  # noqa: BLE001
-            await handle.log(f"[{node.name}] WARNING: delete failed: {exc}", "stderr")
+            all_ok = False
+            await handle.log(f"[{node.name}] delete failed: {exc}", "error")
+
     name = model.name
-    if drop_row:
+    if drop_row and all_ok:
         await session.delete(model)
+    elif not all_ok:
+        model.status = MS_ERROR
     else:
         model.status = MS_ABSENT
     await session.commit()
-    return f"Model '{name}' files removed"
+    if not all_ok:
+        # don't claim success / drop the row when files remain — discovery would
+        # just re-import them and the failure would look silent.
+        raise RuntimeError(f"Delete of '{name}' failed on one or more nodes (see log).")
+    return f"Model '{name}' deleted"
 
 
 # --- helpers -------------------------------------------------------------
