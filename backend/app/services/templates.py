@@ -61,6 +61,7 @@ set -euo pipefail
 docker rm -f {RAY_HEAD_CONTAINER} >/dev/null 2>&1 || true
 exec docker run --rm --name {RAY_HEAD_CONTAINER} \\
   --network host --shm-size {shm} --gpus all \\
+  --ulimit memlock=-1 --ulimit stack=67108864 \\
   -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
   -v {shlex.quote(models_dir)}:/models \\
   -e VLLM_HOST_IP={shlex.quote(head_qsfp)} \\
@@ -84,6 +85,7 @@ set -euo pipefail
 docker rm -f {RAY_WORKER_CONTAINER} >/dev/null 2>&1 || true
 exec docker run --rm --name {RAY_WORKER_CONTAINER} \\
   --network host --shm-size {shm} --gpus all \\
+  --ulimit memlock=-1 --ulimit stack=67108864 \\
   -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
   -v {shlex.quote(models_dir)}:/models \\
   -e VLLM_HOST_IP={shlex.quote(worker_qsfp)} \\
@@ -192,6 +194,7 @@ set -euo pipefail
 docker rm -f {container} >/dev/null 2>&1 || true
 exec docker run --rm --name {container} \\
   --network host --shm-size {shm} --gpus all \\
+  --ulimit memlock=-1 --ulimit stack=67108864 \\
   -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
   -v {shlex.quote(models_dir)}:/models \\
   {shlex.quote(image)} \\

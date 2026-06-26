@@ -34,6 +34,23 @@ from .jobs import JobHandle
 from .parsers import sanitize_name, tool_parser_for
 from .paths import model_host_path, models_host_dir
 
+# Live, in-memory per-(model, node) transfer progress (0..1). Surfaced on the
+# Models page so a download/sync bar is visible without opening the job dialog.
+# Single-process (1 replica), so a module dict is sufficient; lost on restart.
+_node_progress: dict[tuple[int, int], float] = {}
+
+
+def set_node_progress(model_id: int, node_id: int, frac: float) -> None:
+    _node_progress[(model_id, node_id)] = frac
+
+
+def get_node_progress(model_id: int, node_id: int) -> float | None:
+    return _node_progress.get((model_id, node_id))
+
+
+def clear_node_progress(model_id: int, node_id: int) -> None:
+    _node_progress.pop((model_id, node_id), None)
+
 
 async def validate_repo(repo_id: str) -> dict:
     """Best-effort lookup of an HF repo: existence + summed file size."""
@@ -154,14 +171,18 @@ async def download_model(
         f"hf download {qrepo} --local-dir /models/{qname}; "
         f"else huggingface-cli download {qrepo} --local-dir /models/{qname}; fi"
     )
+    # --entrypoint bash skips the NGC image's startup banner (the harmless
+    # "NVIDIA Driver was not detected" / "SHMEM 64MB" warnings) — a download
+    # needs neither GPU nor large shared memory.
     run = (
         f"run --rm --network host {env}"
         f"-v {shlex.quote(models_host_dir(head, cfg))}:/models "
-        f"{shlex.quote(cfg.vllm_image)} "
-        f"bash -lc {shlex.quote(dl)}"
+        f"--entrypoint bash {shlex.quote(cfg.vllm_image)} "
+        f"-lc {shlex.quote(dl)}"
     )
 
-    # Poll the target dir size while downloading so the UI shows real progress.
+    # Poll the target dir size while downloading so the UI shows real progress
+    # (both the job dialog and the per-node bar on the Models page).
     stop = asyncio.Event()
 
     async def _progress_poller() -> None:
@@ -178,6 +199,7 @@ async def download_model(
                 continue
             if cur and total:
                 frac = min(0.99, cur / total)
+                set_node_progress(model_id, head.id, frac)
                 await handle.set_progress(frac)
                 await handle.log(f"  …{_human(cur)} / {_human(total)} ({int(frac * 100)}%)")
             elif cur:
@@ -189,6 +211,7 @@ async def download_model(
     finally:
         stop.set()
         await poller
+        clear_node_progress(model_id, head.id)
 
     if not res.ok:
         head_state.status = MS_ERROR
@@ -245,12 +268,42 @@ async def _sync_one(
     await handle.log(f"[{head.name} -> {node.name}] rsync {src}/ -> {node.name}:{dst}/")
 
     ssh = await ssh_for_node(session, head)
+    src_size = await _dir_size_bytes(ssh, src)
     rsync = (
         f"ssh -o BatchMode=yes {shlex.quote(node.name)} {shlex.quote(f'mkdir -p {dst}')} && "
         f"rsync -aH --info=progress2 -e 'ssh -o BatchMode=yes' "
         f"{shlex.quote(src + '/')} {shlex.quote(f'{node.name}:{dst}/')}"
     )
-    res = await ssh.run(rsync, log_cb=handle.ssh_log_cb(), timeout=14400)
+
+    # Poll the destination size on the target node so sync shows progress too.
+    stop = asyncio.Event()
+
+    async def _sync_poller() -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=8)
+            except asyncio.TimeoutError:
+                pass
+            if stop.is_set():
+                break
+            try:
+                cur = await _dir_size_bytes(ssh, dst, remote_host=node.name)
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                continue
+            if cur and src_size:
+                frac = min(0.99, cur / src_size)
+                set_node_progress(model.id, node.id, frac)
+                await handle.set_progress(frac)
+                await handle.log(f"  …{_human(cur)} / {_human(src_size)} ({int(frac * 100)}%)")
+
+    poller = asyncio.create_task(_sync_poller())
+    try:
+        res = await ssh.run(rsync, log_cb=handle.ssh_log_cb(), timeout=14400)
+    finally:
+        stop.set()
+        await poller
+        clear_node_progress(model.id, node.id)
+
     if not res.ok:
         state.status = MS_ERROR
         await session.commit()

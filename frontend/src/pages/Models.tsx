@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, Model } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { fmtBytes, statusKind } from "../lib/format";
-import { Badge, EmptyState, Modal, Spinner } from "../components/ui";
+import { Badge, EmptyState, Meter, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
@@ -106,12 +106,20 @@ export default function Models() {
                     <td className="mono">{fmtBytes(m.size_bytes)}</td>
                     <td><span className="tag">{m.tool_parser ?? "—"}</span></td>
                     <td>
-                      <div className="flex wrap gap-sm">
+                      <div className="flex-col gap-sm">
                         {m.node_states.map((s) => (
-                          <Badge key={s.node_id} kind={statusKind(s.status)}>
-                            {s.node_name}: {s.present ? "✓" : s.status}
-                            {s.checksum_ok === true ? " ✔" : ""}
-                          </Badge>
+                          <div key={s.node_id} className="flex-col" style={{ gap: 3, minWidth: 160 }}>
+                            <Badge kind={statusKind(s.status)}>
+                              {s.node_name}: {s.present ? "✓" : s.status}
+                              {s.checksum_ok === true ? " ✔" : ""}
+                            </Badge>
+                            {(s.status === "downloading" || s.status === "syncing") && s.progress != null && (
+                              <div className="progress-row" style={{ margin: 0 }}>
+                                <Meter value={s.progress} max={1} />
+                                <span className="pct">{Math.round(s.progress * 100)}%</span>
+                              </div>
+                            )}
+                          </div>
                         ))}
                       </div>
                     </td>

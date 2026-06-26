@@ -82,6 +82,7 @@ export interface ModelNodeState {
   size_bytes?: number | null;
   checksum_ok?: boolean | null;
   status: string;
+  progress?: number | null;
 }
 
 export interface Model {

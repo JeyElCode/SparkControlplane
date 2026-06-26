@@ -243,6 +243,7 @@ class ModelNodeStateOut(BaseModel):
     size_bytes: int | None
     checksum_ok: bool | None
     status: str
+    progress: float | None = None  # 0..1 while downloading/syncing (live, in-memory)
 
     @classmethod
     def of(cls, s: m.ModelNodeState) -> "ModelNodeStateOut":
@@ -270,6 +271,14 @@ class ModelOut(BaseModel):
 
     @classmethod
     def of(cls, model: m.ModelRegistry) -> "ModelOut":
+        # Lazy import avoids a circular import (models_svc imports schemas).
+        from .services.models_svc import get_node_progress
+
+        states = []
+        for s in model.node_states:
+            ns = ModelNodeStateOut.of(s)
+            ns.progress = get_node_progress(model.id, s.node_id)
+            states.append(ns)
         return cls(
             id=model.id,
             repo_id=model.repo_id,
@@ -278,7 +287,7 @@ class ModelOut(BaseModel):
             size_bytes=model.size_bytes,
             status=model.status,
             notes=model.notes,
-            node_states=[ModelNodeStateOut.of(s) for s in model.node_states],
+            node_states=states,
             created_at=model.created_at,
         )
 
