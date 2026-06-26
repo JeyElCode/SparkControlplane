@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.pyc
+.git
+.github
+data/
+*.sqlite
+*.sqlite3
+secret.key
+.DS_Store
+**/.pytest_cache
+**/.ruff_cache
+*.md
+!backend/README.md
