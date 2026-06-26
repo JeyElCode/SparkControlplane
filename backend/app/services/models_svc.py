@@ -34,6 +34,11 @@ from .jobs import JobHandle
 from .parsers import sanitize_name, tool_parser_for
 from .paths import model_host_path, models_host_dir
 
+# Inter-node SSH key created in the setup `ssh` phase (must match phases.py).
+# Used to reach the worker over the QSFP IP directly (the ~/.ssh/config alias
+# only covers the LAN hostname).
+INTER_NODE_KEY = "~/.ssh/id_ed25519_spark"
+
 # Live, in-memory per-(model, node) transfer progress (0..1). Surfaced on the
 # Models page so a download/sync bar is visible without opening the job dialog.
 # Single-process (1 replica), so a module dict is sufficient; lost on restart.
@@ -265,14 +270,23 @@ async def _sync_one(
     state = await _state_for(session, model.id, node.id)
     state.status = MS_SYNCING
     await session.commit()
-    await handle.log(f"[{head.name} -> {node.name}] rsync {src}/ -> {node.name}:{dst}/")
+
+    # Sync over the QSFP high-speed link: connect to the worker's QSFP IP using
+    # the inter-node key directly (the ~/.ssh/config alias only covers the LAN
+    # hostname, so we pass -i and target the IP explicitly).
+    target = f"{node.ssh_user}@{node.qsfp_ip}"
+    sshopt = f"ssh -i {INTER_NODE_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+    remote_prefix = f"{sshopt} {shlex.quote(target)}"
+    await handle.log(
+        f"[{head.name} -> {node.name}] rsync over QSFP ({node.qsfp_ip}): {src}/ -> {dst}/"
+    )
 
     ssh = await ssh_for_node(session, head)
     src_size = await _dir_size_bytes(ssh, src)
     rsync = (
-        f"ssh -o BatchMode=yes {shlex.quote(node.name)} {shlex.quote(f'mkdir -p {dst}')} && "
-        f"rsync -aH --info=progress2 -e 'ssh -o BatchMode=yes' "
-        f"{shlex.quote(src + '/')} {shlex.quote(f'{node.name}:{dst}/')}"
+        f"{remote_prefix} {shlex.quote(f'mkdir -p {dst}')} && "
+        f"rsync -aH --info=progress2 -e {shlex.quote(sshopt)} "
+        f"{shlex.quote(src + '/')} {shlex.quote(f'{target}:{dst}/')}"
     )
 
     # Poll the destination size on the target node so sync shows progress too.
@@ -287,7 +301,7 @@ async def _sync_one(
             if stop.is_set():
                 break
             try:
-                cur = await _dir_size_bytes(ssh, dst, remote_host=node.name)
+                cur = await _dir_size_bytes(ssh, dst, remote_prefix=remote_prefix)
             except Exception:  # noqa: BLE001 - progress is best-effort
                 continue
             if cur and src_size:
@@ -312,9 +326,9 @@ async def _sync_one(
     # Checksum verification (safetensors), best-effort.
     state.status = MS_VERIFYING
     await session.commit()
-    checksum_ok = await _verify_checksums(handle, ssh, model.name, src, dst, node.name)
+    checksum_ok = await _verify_checksums(handle, ssh, model.name, src, dst, target, sshopt)
 
-    size = await _dir_size_bytes(ssh, dst, remote_host=node.name)
+    size = await _dir_size_bytes(ssh, dst, remote_prefix=remote_prefix)
     state.present = True
     state.size_bytes = size
     state.checksum_ok = checksum_ok
@@ -326,7 +340,9 @@ async def _sync_one(
     )
 
 
-async def _verify_checksums(handle, ssh, name, src, dst, worker_name) -> bool | None:
+async def _verify_checksums(handle, ssh, name, src, dst, target, sshopt) -> bool | None:
+    """Verify safetensors checksums on the worker, over the same QSFP path.
+    ``target`` is ``user@qsfp_ip`` and ``sshopt`` the matching ssh command."""
     sumfile = f"/tmp/{name}.sha256"
     qsum = shlex.quote(sumfile)
     gen = await ssh.run(
@@ -339,10 +355,12 @@ async def _verify_checksums(handle, ssh, name, src, dst, worker_name) -> bool | 
         await handle.log("  no .safetensors files to checksum (skipping verification)")
         return None
     await ssh.run(
-        f"scp -o BatchMode=yes {qsum} {shlex.quote(f'{worker_name}:{sumfile}')}", check=False
+        f"scp -i {INTER_NODE_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+        f"{qsum} {shlex.quote(f'{target}:{sumfile}')}",
+        check=False,
     )
     verify = await ssh.run(
-        f"ssh -o BatchMode=yes {shlex.quote(worker_name)} "
+        f"{sshopt} {shlex.quote(target)} "
         f"{shlex.quote(f'cd {dst} && sha256sum -c {sumfile}')}",
         log_cb=handle.ssh_log_cb(),
     )
@@ -408,10 +426,11 @@ async def _all_nodes(session: AsyncSession) -> list[Node]:
     return list((await session.execute(select(Node))).scalars().all())
 
 
-async def _dir_size_bytes(ssh, path: str, remote_host: str | None = None) -> int | None:
+async def _dir_size_bytes(ssh, path: str, remote_prefix: str | None = None) -> int | None:
     cmd = f"du -sb {shlex.quote(path)} 2>/dev/null | cut -f1"
-    if remote_host:
-        cmd = f"ssh -o BatchMode=yes {shlex.quote(remote_host)} {shlex.quote(cmd)}"
+    if remote_prefix:
+        # remote_prefix is a full "ssh -i KEY ... user@host" command
+        cmd = f"{remote_prefix} {shlex.quote(cmd)}"
     res = await ssh.run(cmd)
     try:
         return int(res.stdout.strip().split()[0])
