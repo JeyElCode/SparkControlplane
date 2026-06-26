@@ -11,6 +11,10 @@ Each instance is a systemd unit so it survives reboots when autostart is on.
 
 from __future__ import annotations
 
+import asyncio
+import shlex
+
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -150,17 +154,71 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
         inst.systemd_unit = unit_name
         inst.status = INST_RUNNING
         await session.commit()
+        host = await _endpoint_host(session, inst)
         await handle.log(
-            f"Instance '{inst.name}' launched. Model loading may take a few minutes; "
-            f"watch the status page for /health to turn green. Endpoint: "
-            f"http://{(await _endpoint_host(session, inst))}:{inst.port}/v1"
+            f"Instance '{inst.name}' launched. Endpoint: http://{host}:{inst.port}/v1\n"
+            f"Streaming vLLM startup output below (model loading can take a few minutes)…"
         )
-        return f"Instance '{inst.name}' started"
+        healthy = await _stream_startup_logs(
+            handle, ssh, unit_name, f"http://{host}:{inst.port}/health"
+        )
+        if healthy:
+            await handle.log(f"✅ '{inst.name}' is serving — /health is green.")
+        else:
+            await handle.log(
+                f"'{inst.name}' did not report healthy within the wait window. It may still be "
+                f"loading (large models), or it failed to start — check the vLLM output above and "
+                f"the Status page. The systemd unit will keep retrying.",
+                "error",
+            )
+        return f"Instance '{inst.name}' started" + ("" if healthy else " (health not yet confirmed)")
     except Exception as exc:
         inst.status = INST_ERROR
         inst.last_error = str(exc)
         await session.commit()
         raise
+
+
+async def _health_ok(url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=4) as client:
+            return (await client.get(url)).status_code == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _stream_startup_logs(
+    handle: JobHandle, ssh, unit_name: str, health_url: str, timeout: int = 900
+) -> bool:
+    """Follow the instance's journal into the job log until /health is green or
+    ``timeout`` elapses. Returns True if the endpoint became healthy.
+
+    The remote ``timeout`` wrapper guarantees the follow can't run forever even
+    if the early-cancel path is missed."""
+    jtask = asyncio.create_task(
+        ssh.run(
+            f"timeout {timeout} journalctl -u {shlex.quote(unit_name)} -n 200 -f --no-pager 2>&1 || true",
+            sudo=True,
+            log_cb=handle.ssh_log_cb(),
+        )
+    )
+    healthy = False
+    waited = 0
+    try:
+        while not jtask.done() and waited < timeout:
+            await asyncio.sleep(5)
+            waited += 5
+            if await _health_ok(health_url):
+                healthy = True
+                break
+    finally:
+        if not jtask.done():
+            jtask.cancel()
+            try:
+                await jtask
+            except BaseException:  # noqa: BLE001 - cancellation/cleanup is best-effort
+                pass
+    return healthy
 
 
 async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:

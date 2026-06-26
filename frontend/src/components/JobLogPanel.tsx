@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { wsUrl } from "../lib/api";
+import { api, wsUrl } from "../lib/api";
 import { statusKind } from "../lib/format";
 import { Badge, Meter } from "./ui";
 
@@ -31,6 +31,38 @@ export function JobLogPanel({
     setStatus("running");
     setProgress(null);
     doneRef.current = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let disposed = false;
+
+    const finish = (s: string) => {
+      if (!doneRef.current && TERMINAL.includes(s)) {
+        doneRef.current = true;
+        onDone?.(s);
+      }
+    };
+
+    // Reconcile authoritative state from the server (used when the live socket
+    // drops). A dropped WebSocket is NOT a job failure.
+    const reconcile = async () => {
+      try {
+        const j = await api.getJob(jobId);
+        setStatus(j.status);
+        setProgress(typeof j.progress === "number" ? j.progress : null);
+        if (Array.isArray(j.logs)) {
+          setLines(j.logs.map((l: any) => ({ seq: l.seq, stream: l.stream, text: l.text })));
+        }
+        if (TERMINAL.includes(j.status)) {
+          finish(j.status);
+          if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        }
+      } catch {
+        /* transient — will retry on the next tick */
+      }
+    };
+
     const ws = new WebSocket(wsUrl(`/api/jobs/${jobId}/logs`));
     ws.onmessage = (ev) => {
       const e = JSON.parse(ev.data);
@@ -40,16 +72,24 @@ export function JobLogPanel({
         setProgress(typeof e.progress === "number" ? e.progress : null);
       } else if (e.type === "status") {
         setStatus(e.status);
-        if (TERMINAL.includes(e.status) && !doneRef.current) {
-          doneRef.current = true;
-          onDone?.(e.status);
-        }
+        finish(e.status);
       } else if (e.type === "end") {
         ws.close();
       }
     };
-    ws.onerror = () => setStatus("error");
-    return () => ws.close();
+    ws.onclose = () => {
+      if (disposed || doneRef.current) return;
+      // Socket dropped before the job finished — fall back to polling the real
+      // job status from the API so the badge reflects reality, not the transport.
+      reconcile();
+      if (!pollTimer) pollTimer = setInterval(reconcile, 3000);
+    };
+
+    return () => {
+      disposed = true;
+      if (pollTimer) clearInterval(pollTimer);
+      ws.close();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
 
