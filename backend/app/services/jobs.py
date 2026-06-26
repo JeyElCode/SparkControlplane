@@ -112,7 +112,9 @@ class JobManager:
             raise
         except Exception as exc:  # noqa: BLE001 - jobs must capture all failures
             log.exception("Job %s failed", job_id)
-            await handle.log(f"ERROR: {exc}", "stderr")
+            # stream "error" (not "stderr") so the UI flags only genuine failures
+            # in red; benign tool output on stderr stays neutral.
+            await handle.log(f"ERROR: {exc}", "error")
             await self._finish(job_id, JOB_ERROR, exit_code=1, summary=str(exc))
         finally:
             self._tasks.pop(job_id, None)

@@ -113,12 +113,22 @@ if ! ip -4 addr show dev "$IFACE" | grep -q "$IP/"; then
   ip addr add "$CIDR" dev "$IFACE" || true
 fi
 if command -v nmcli >/dev/null 2>&1; then
+  # nmcli persistence is best-effort: the temporary `ip addr` above already
+  # makes the link work, and ipv6.method 'disabled' is rejected by some
+  # NetworkManager versions, so we fall back to 'ignore' and never fail the
+  # phase on a persistence hiccup.
+  set +e
   if nmcli -t -f NAME con show | grep -qx qsfp-vllm; then
-    nmcli con mod qsfp-vllm ipv4.addresses "$CIDR" ipv4.method manual ipv6.method disabled connection.interface-name "$IFACE"
+    nmcli con mod qsfp-vllm ipv4.addresses "$CIDR" ipv4.method manual ipv6.method disabled connection.interface-name "$IFACE" \
+      || nmcli con mod qsfp-vllm ipv4.addresses "$CIDR" ipv4.method manual ipv6.method ignore connection.interface-name "$IFACE" \
+      || echo "WARNING: nmcli persist (mod) failed; temporary IP is active but the config is not persistent across reboot"
   else
-    nmcli con add type ethernet ifname "$IFACE" con-name qsfp-vllm ipv4.addresses "$CIDR" ipv4.method manual ipv6.method disabled
+    nmcli con add type ethernet ifname "$IFACE" con-name qsfp-vllm ipv4.addresses "$CIDR" ipv4.method manual ipv6.method disabled \
+      || nmcli con add type ethernet ifname "$IFACE" con-name qsfp-vllm ipv4.addresses "$CIDR" ipv4.method manual ipv6.method ignore \
+      || echo "WARNING: nmcli persist (add) failed; temporary IP is active but the config is not persistent across reboot"
   fi
   nmcli con up qsfp-vllm || true
+  set -e
 else
   echo "nmcli not found; applied temporary ip only"
 fi

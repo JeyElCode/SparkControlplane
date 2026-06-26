@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { wsUrl } from "../lib/api";
 import { statusKind } from "../lib/format";
-import { Badge } from "./ui";
+import { Badge, Meter } from "./ui";
 
 interface LogLine {
   seq: number;
@@ -22,18 +22,22 @@ export function JobLogPanel({
 }) {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [status, setStatus] = useState("running");
+  const [progress, setProgress] = useState<number | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const doneRef = useRef(false);
 
   useEffect(() => {
     setLines([]);
     setStatus("running");
+    setProgress(null);
     doneRef.current = false;
     const ws = new WebSocket(wsUrl(`/api/jobs/${jobId}/logs`));
     ws.onmessage = (ev) => {
       const e = JSON.parse(ev.data);
       if (e.type === "log") {
         setLines((xs) => [...xs, { seq: e.seq, stream: e.stream, text: e.text }]);
+      } else if (e.type === "progress") {
+        setProgress(typeof e.progress === "number" ? e.progress : null);
       } else if (e.type === "status") {
         setStatus(e.status);
         if (TERMINAL.includes(e.status) && !doneRef.current) {
@@ -59,6 +63,12 @@ export function JobLogPanel({
         <strong>{title ?? `Job #${jobId}`}</strong>
         <Badge kind={statusKind(status)}>{status}</Badge>
       </div>
+      {progress != null && status === "running" && (
+        <div className="progress-row">
+          <Meter value={progress} max={1} />
+          <span className="pct">{Math.round(progress * 100)}%</span>
+        </div>
+      )}
       <div className="logs" ref={boxRef}>
         {lines.length === 0 ? (
           <span className="logs-empty">Waiting for output…</span>

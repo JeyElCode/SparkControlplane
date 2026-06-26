@@ -7,6 +7,7 @@ node; sync uses ``rsync`` over the inter-node SSH set up during cluster setup.
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 
 import httpx
@@ -133,21 +134,69 @@ async def download_model(
     ssh = await ssh_for_node(session, head)
     await ssh.run(f"mkdir -p {shlex.quote(models_host_dir(head, cfg))}", check=True)
 
+    # Total download size (for the progress bar denominator), best-effort.
+    total = model.size_bytes
+    if not total:
+        info = await validate_repo(model.repo_id)
+        if info.get("ok"):
+            total = info.get("size_bytes")
+
     env = f"-e HF_TOKEN={shlex.quote(token)} " if token else ""
-    await handle.log(f"[{head.name}] downloading {model.repo_id} -> {dst}")
+    await handle.log(
+        f"[{head.name}] downloading {model.repo_id} -> {dst}"
+        + (f" (~{_human(total)})" if total else "")
+    )
+    qrepo = shlex.quote(model.repo_id)
+    qname = shlex.quote(model.name)
+    # Prefer the new unified `hf` CLI; fall back to `huggingface-cli` on older images.
+    dl = (
+        f"if command -v hf >/dev/null 2>&1; then "
+        f"hf download {qrepo} --local-dir /models/{qname}; "
+        f"else huggingface-cli download {qrepo} --local-dir /models/{qname}; fi"
+    )
     run = (
         f"run --rm --network host {env}"
         f"-v {shlex.quote(models_host_dir(head, cfg))}:/models "
         f"{shlex.quote(cfg.vllm_image)} "
-        f"hf download {shlex.quote(model.repo_id)} --local-dir /models/{shlex.quote(model.name)}"
+        f"bash -lc {shlex.quote(dl)}"
     )
-    res = await nodeops.docker(ssh, run, log_cb=handle.ssh_log_cb(), timeout=14400)
+
+    # Poll the target dir size while downloading so the UI shows real progress.
+    stop = asyncio.Event()
+
+    async def _progress_poller() -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=8)
+            except asyncio.TimeoutError:
+                pass
+            if stop.is_set():
+                break
+            try:
+                cur = await _dir_size_bytes(ssh, dst)
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                continue
+            if cur and total:
+                frac = min(0.99, cur / total)
+                await handle.set_progress(frac)
+                await handle.log(f"  …{_human(cur)} / {_human(total)} ({int(frac * 100)}%)")
+            elif cur:
+                await handle.log(f"  …{_human(cur)} downloaded")
+
+    poller = asyncio.create_task(_progress_poller())
+    try:
+        res = await nodeops.docker(ssh, run, log_cb=handle.ssh_log_cb(), timeout=14400)
+    finally:
+        stop.set()
+        await poller
+
     if not res.ok:
         head_state.status = MS_ERROR
         model.status = MS_ERROR
         await session.commit()
         raise RuntimeError(f"Download failed: {res.stderr[-500:] or res.stdout[-500:]}")
 
+    await handle.set_progress(1.0)
     size = await _dir_size_bytes(ssh, dst)
     head_state.present = True
     head_state.size_bytes = size
