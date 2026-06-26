@@ -73,10 +73,17 @@ export default function Models() {
     }
   };
 
-  const removeRegistry = async (m: Model) => {
-    if (!confirm(`Remove ${m.name} from the registry? (does not delete files on the nodes)`)) return;
-    await api.removeModel(m.id);
-    models.reload();
+  const del = (m: Model) => {
+    if (
+      !confirm(
+        `Delete ${m.name}? This removes its files from all nodes (${fmtBytes(m.size_bytes)}) ` +
+          `and the registry entry. A re-download is required to restore it.`,
+      )
+    )
+      return;
+    // drop_row=true so it's gone for good — otherwise startup/scan discovery
+    // would just re-import the leftover directory.
+    startJob(api.deleteModelFiles(m.id, null, true), `Delete ${m.name}`);
   };
 
   return (
@@ -152,8 +159,7 @@ export default function Models() {
                       <div className="btn-row" style={{ justifyContent: "flex-end" }}>
                         <button className="btn btn-sm" onClick={() => startJob(api.downloadModel(m.id, true), `Download ${m.name}`)}>Download</button>
                         <button className="btn btn-sm" onClick={() => startJob(api.syncModel(m.id), `Sync ${m.name}`)}>Sync</button>
-                        <button className="btn btn-sm" onClick={() => startJob(api.deleteModelFiles(m.id, null, false), `Delete files ${m.name}`)}>Delete files</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => removeRegistry(m)}>✕</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => del(m)}>Delete</button>
                       </div>
                     </td>
                   </tr>
