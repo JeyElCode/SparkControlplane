@@ -25,6 +25,15 @@ async def suggestions():
     return SUGGESTIONS
 
 
+@router.post("/scan", response_model=list[ModelOut])
+async def scan(session: AsyncSession = Depends(get_session)):
+    """Scan the nodes' models dirs and import any on-disk model not yet in the
+    registry, then return the refreshed registry."""
+    await models_svc.discover_models(session)
+    models = await models_svc.list_models_full(session)
+    return [ModelOut.of(m) for m in models]
+
+
 @router.post("/validate")
 async def validate(repo_id: str = Body(..., embed=True)):
     return await models_svc.validate_repo(repo_id)

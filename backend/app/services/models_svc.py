@@ -8,6 +8,8 @@ node; sync uses ``rsync`` over the inter-node SSH set up during cluster setup.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import shlex
 
 import httpx
@@ -33,6 +35,8 @@ from . import nodeops
 from .jobs import JobHandle
 from .parsers import sanitize_name, tool_parser_for
 from .paths import model_host_path, models_host_dir
+
+log = logging.getLogger("spark.models")
 
 # Inter-node SSH key created in the setup `ssh` phase (must match phases.py).
 # Used to reach the worker over the QSFP IP directly (the ~/.ssh/config alias
@@ -385,6 +389,100 @@ async def refresh_presence(session: AsyncSession, model_id: int) -> None:
         st.size_bytes = size
         st.status = MS_PRESENT if present else MS_ABSENT
     await session.commit()
+
+
+def _name_or_path_from_config(config_json: str) -> str | None:
+    """Recover the original HF repo id from a model dir's config.json
+    (`_name_or_path`), when it looks like an org/repo id."""
+    try:
+        data = json.loads(config_json)
+    except (ValueError, TypeError):
+        return None
+    nop = data.get("_name_or_path")
+    if isinstance(nop, str) and "/" in nop and not nop.startswith("/"):
+        return nop.strip()
+    return None
+
+
+async def discover_models(session: AsyncSession) -> int:
+    """Scan every node's models dir and import any directory that isn't in the
+    registry, then refresh presence for all models so the registry mirrors disk.
+    Returns the number of newly imported models."""
+    cfg = await get_cluster_config(session)
+    nodes = await _all_nodes(session)
+    if not nodes:
+        return 0
+
+    existing_names = {
+        m.name for m in (await session.execute(select(ModelRegistry))).scalars().all()
+    }
+    # name -> {"repo_id": str|None, "node_ids": set[int]}
+    found: dict[str, dict] = {}
+    for node in nodes:
+        base = models_host_dir(node, cfg)
+        try:
+            ssh = await ssh_for_node(session, node)
+            res = await ssh.run(
+                f"find {shlex.quote(base)} -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null"
+            )
+        except Exception:  # noqa: BLE001 - unreachable node -> skip
+            continue
+        if not res.ok:
+            continue
+        for line in res.stdout.splitlines():
+            name = line.strip()
+            if not name or name.startswith("."):
+                continue
+            entry = found.setdefault(name, {"repo_id": None, "node_ids": set()})
+            entry["node_ids"].add(node.id)
+            if entry["repo_id"] is None:
+                cj = await ssh.run(
+                    f"cat {shlex.quote(base + '/' + name + '/config.json')} 2>/dev/null"
+                )
+                if cj.ok and cj.stdout.strip():
+                    entry["repo_id"] = _name_or_path_from_config(cj.stdout)
+
+    imported = 0
+    for name, info in found.items():
+        if name in existing_names:
+            continue
+        repo_id = info["repo_id"] or name
+        # ensure repo_id uniqueness; fall back to the dir name, then skip
+        clash = (
+            await session.execute(select(ModelRegistry).where(ModelRegistry.repo_id == repo_id))
+        ).scalar_one_or_none()
+        if clash is not None:
+            repo_id = name
+            if (
+                await session.execute(
+                    select(ModelRegistry).where(ModelRegistry.repo_id == repo_id)
+                )
+            ).scalar_one_or_none() is not None:
+                continue
+        try:
+            model = ModelRegistry(
+                repo_id=repo_id,
+                name=name,
+                tool_parser=tool_parser_for(repo_id),
+                status=MS_PRESENT,
+                notes="Imported from disk",
+            )
+            session.add(model)
+            await session.flush()
+            for n in nodes:
+                session.add(ModelNodeState(model_id=model.id, node_id=n.id, status=MS_ABSENT))
+            await session.commit()
+            imported += 1
+        except Exception:  # noqa: BLE001 - skip a problematic dir, keep going
+            await session.rollback()
+            continue
+
+    # keep presence of every registry model accurate too
+    for m in (await session.execute(select(ModelRegistry))).scalars().all():
+        await refresh_presence(session, m.id)
+    if imported:
+        log.info("Model discovery imported %d model(s) from disk", imported)
+    return imported
 
 
 async def delete_model_files(

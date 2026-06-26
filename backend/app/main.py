@@ -5,6 +5,7 @@ Serves the JSON API under ``/api`` and the built React SPA for everything else.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -27,11 +28,27 @@ logging.basicConfig(
 log = logging.getLogger("spark")
 
 
+async def _startup_discover() -> None:
+    """Best-effort: import any on-disk models into the registry shortly after
+    boot, so the registry mirrors what's actually on the nodes."""
+    try:
+        await asyncio.sleep(5)
+        from .db import SessionLocal
+        from .services.models_svc import discover_models
+
+        async with SessionLocal() as session:
+            await discover_models(session)
+    except Exception:  # noqa: BLE001 - nodes may be unset/unreachable at boot
+        log.warning("Startup model discovery skipped", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     log.info("Spark Control Plane %s started", __version__)
+    task = asyncio.create_task(_startup_discover())
     yield
+    task.cancel()
     await pool.close_all()
 
 

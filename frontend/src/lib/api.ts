@@ -295,6 +295,7 @@ export const api = {
 
   // models
   listModels: () => j<Model[]>("/api/models"),
+  scanModels: () => j<Model[]>("/api/models/scan", { method: "POST" }),
   suggestions: () => j<ModelSuggestion[]>("/api/models/suggestions"),
   validateRepo: (repo_id: string) =>
     j<RepoValidation>("/api/models/validate", { method: "POST", body: JSON.stringify({ repo_id }) }),

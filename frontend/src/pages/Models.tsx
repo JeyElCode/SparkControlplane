@@ -14,7 +14,23 @@ export default function Models() {
   const [validating, setValidating] = useState(false);
   const [valInfo, setValInfo] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
+
+  const scan = async () => {
+    setScanning(true);
+    try {
+      const before = (models.data ?? []).length;
+      const after = await api.scanModels();
+      const added = after.length - before;
+      toast(added > 0 ? `Imported ${added} model(s) found on disk` : "No new models on disk", "success");
+      models.reload();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setScanning(false);
+    }
+  };
 
   const validate = async () => {
     if (!repo) return;
@@ -90,7 +106,15 @@ export default function Models() {
       </div>
 
       <div className="card">
-        <div className="card-head"><h2 style={{ margin: 0 }}>Registry</h2><button className="btn btn-sm" onClick={() => models.reload()}>Refresh</button></div>
+        <div className="card-head">
+          <h2 style={{ margin: 0 }}>Registry</h2>
+          <div className="btn-row">
+            <button className="btn btn-sm" onClick={scan} disabled={scanning} title="Import any models already on the nodes' disks into the registry">
+              {scanning ? <Spinner /> : "Scan nodes"}
+            </button>
+            <button className="btn btn-sm" onClick={() => models.reload()}>Refresh</button>
+          </div>
+        </div>
         {(models.data ?? []).length === 0 ? (
           <EmptyState icon="◈" title="No models yet">Add a model above to get started.</EmptyState>
         ) : (
