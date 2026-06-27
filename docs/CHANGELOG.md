@@ -4,6 +4,14 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.0.12
+- **Prevent concurrent file operations on a model.** Pressing Download again
+  while one was running launched a second `hf download` into the same dir, and
+  the two collided on HuggingFace `.lock` files. Download/sync/delete now return
+  `409` if a download/sync/delete is already running for that model (verified
+  against the live job manager, so a stale row from a crashed process doesn't
+  block forever), and the Models-page buttons are disabled while a model is busy.
+
 ## v1.0.11
 - Dashboard shows **real per-node unified memory** from `/proc/meminfo`. The
   GB10 shares LPDDR5X between CPU and GPU and reports its GPU FB memory as `N/A`,

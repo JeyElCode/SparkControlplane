@@ -141,7 +141,13 @@ export default function Models() {
                 </tr>
               </thead>
               <tbody>
-                {(models.data ?? []).map((m) => (
+                {(models.data ?? []).map((m) => {
+                  const busy =
+                    m.status === "downloading" ||
+                    m.node_states.some((s) =>
+                      ["downloading", "syncing", "verifying"].includes(s.status),
+                    );
+                  return (
                   <tr key={m.id}>
                     <td><strong>{m.name}</strong><div className="faint mono" style={{ fontSize: 11 }}>{m.repo_id}</div></td>
                     <td className="mono">{fmtBytes(m.size_bytes)}</td>
@@ -167,13 +173,14 @@ export default function Models() {
                     <td><Badge kind={statusKind(m.status)}>{m.status}</Badge></td>
                     <td>
                       <div className="btn-row" style={{ justifyContent: "flex-end" }}>
-                        <button className="btn btn-sm" onClick={() => startJob(api.downloadModel(m.id, true), `Download ${m.name}`)}>Download</button>
-                        <button className="btn btn-sm" onClick={() => startJob(api.syncModel(m.id), `Sync ${m.name}`)}>Sync</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => del(m)}>Delete</button>
+                        <button className="btn btn-sm" disabled={busy} title={busy ? "An operation is already in progress" : ""} onClick={() => startJob(api.downloadModel(m.id, true), `Download ${m.name}`)}>Download</button>
+                        <button className="btn btn-sm" disabled={busy} title={busy ? "An operation is already in progress" : ""} onClick={() => startJob(api.syncModel(m.id), `Sync ${m.name}`)}>Sync</button>
+                        <button className="btn btn-sm btn-danger" disabled={busy} title={busy ? "An operation is already in progress" : ""} onClick={() => del(m)}>Delete</button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

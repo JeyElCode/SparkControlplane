@@ -5,13 +5,47 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal, get_session
-from ..models import ModelRegistry
+from ..models import JOB_PENDING, JOB_RUNNING, Job, ModelRegistry
 from ..schemas import JobAccepted, ModelIn, ModelOut, ModelSuggestion
 from ..services import models_svc
 from ..services.jobs import jobs
 from ..services.parsers import SUGGESTIONS
 
 router = APIRouter(prefix="/api/models", tags=["models"])
+
+# Only one file operation (download/sync/delete) may run per model at a time —
+# concurrent hf downloads into the same dir collide on HuggingFace .lock files.
+_FILE_OP_TYPES = ("model.download", "model.sync", "model.delete")
+
+
+async def _active_file_job(session: AsyncSession, model_name: str) -> Job | None:
+    """Return a genuinely-running download/sync/delete job for this model, if any.
+    Cross-checks the in-process job manager so a stale 'running' row left by a
+    crashed/restarted process doesn't block forever."""
+    res = await session.execute(
+        select(Job)
+        .where(
+            Job.target == model_name,
+            Job.type.in_(_FILE_OP_TYPES),
+            Job.status.in_((JOB_PENDING, JOB_RUNNING)),
+        )
+        .order_by(Job.id.desc())
+    )
+    for job in res.scalars().all():
+        if jobs.is_running(job.id):
+            return job
+    return None
+
+
+async def _guard_no_active_file_job(session: AsyncSession, model: ModelRegistry) -> None:
+    busy = await _active_file_job(session, model.name)
+    if busy is not None:
+        op = busy.type.split(".")[-1]
+        raise HTTPException(
+            409,
+            f"A {op} is already in progress for '{model.name}' (job #{busy.id}). "
+            "Wait for it to finish before starting another.",
+        )
 
 
 @router.get("", response_model=list[ModelOut])
@@ -63,6 +97,7 @@ async def download(model_id: int, auto_sync: bool = True, session: AsyncSession 
     model = await models_svc.load_model(session, model_id)
     if model is None:
         raise HTTPException(404, "Model not found")
+    await _guard_no_active_file_job(session, model)
     name = model.name
 
     async def coro(h):
@@ -82,6 +117,7 @@ async def sync(
     model = await models_svc.load_model(session, model_id)
     if model is None:
         raise HTTPException(404, "Model not found")
+    await _guard_no_active_file_job(session, model)
     name = model.name
 
     async def coro(h):
@@ -111,6 +147,7 @@ async def delete_files(
     model = await models_svc.load_model(session, model_id)
     if model is None:
         raise HTTPException(404, "Model not found")
+    await _guard_no_active_file_job(session, model)
     name = model.name
 
     async def coro(h):
