@@ -111,8 +111,10 @@ docker run -d --name spark-controlplane \
   -p 8080:8080 \
   -v "$PWD/data:/data" \
   -e SPARK_SECRET_KEY="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
-  ghcr.io/jeyelcode/spark-controlplane:v1.0.11
+  ghcr.io/jeyelcode/spark-controlplane:latest
 ```
+
+(Pin a specific release with `:vX.Y.Z` instead of `:latest` for reproducibility.)
 
 or with compose:
 
@@ -216,7 +218,7 @@ multi-arch image (amd64 + arm64) and publishes it to
 `ghcr.io/jeyelcode/spark-controlplane:<version>` and `:latest`.
 
 ```bash
-git tag v1.0.11 && git push origin v1.0.11
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 Deployment/rollout is managed by the cluster owner (e.g. GitOps/ArgoCD); the repo
