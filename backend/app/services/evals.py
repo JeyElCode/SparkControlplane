@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt
@@ -49,6 +50,24 @@ def _now() -> datetime:
 def _avg(xs: list[float]) -> float | None:
     xs = [x for x in xs if x is not None]
     return sum(xs) / len(xs) if xs else None
+
+
+async def _commit(session: AsyncSession, handle: JobHandle) -> None:
+    """Commit, retrying on a transient SQLite lock so it doesn't crash the run.
+    WAL + busy_timeout make this rare; this is belt-and-suspenders."""
+    for i in range(6):
+        try:
+            await session.commit()
+            return
+        except OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            await asyncio.sleep(0.25 * (i + 1))
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+    await handle.log("warning: a DB write was busy and was skipped; continuing", "error")
 
 
 # --- endpoint resolution -------------------------------------------------
@@ -218,7 +237,7 @@ async def _run_tool_task(session, handle, run, task, target, cfg) -> float:
         )
         er.judge_reason, er.passed = reason, er.score >= 0.5
     session.add(er)
-    await session.commit()
+    await _commit(session, handle)
     await handle.log(f"[tools/{task.id}] {task.name}: score={er.score:.2f} — {er.judge_reason or er.error}")
     return er.score
 
@@ -243,7 +262,7 @@ async def _run_capability_task(session, handle, run, task, target, judge, code_s
     if not res.ok:
         er.error, er.score, er.passed = res.error, 0.0, False
         session.add(er)
-        await session.commit()
+        await _commit(session, handle)
         await handle.log(f"[{task.category}/{task.id}] request error: {res.error}", "error")
         return 0.0
 
@@ -292,7 +311,7 @@ async def _run_capability_task(session, handle, run, task, target, judge, code_s
     if er.passed is None:
         er.passed = er.score >= 0.5
     session.add(er)
-    await session.commit()
+    await _commit(session, handle)
     tps = f"{m.tokens_per_sec:.0f} tok/s" if m.tokens_per_sec else "n/a"
     await handle.log(f"[{task.category}/{task.id}] {task.name}: score={er.score:.2f} ({tps})")
     return er.score
@@ -344,7 +363,7 @@ async def _run_perf(session, handle, run, pt, target, concurrency, reps, cfg) ->
     if not ttfts and not agg:
         pr.error = "all requests failed"
     session.add(pr)
-    await session.commit()
+    await _commit(session, handle)
     await handle.log(
         f"[perf/{pt.category}] C={concurrency}: "
         f"{(_avg(agg) or 0):.0f} tok/s aggregate, {(_avg(tps_list) or 0):.0f} tok/s/stream, "
@@ -363,7 +382,7 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
         run.status = JOB_RUNNING
         run.started_at = _now()
         run.job_id = handle.job_id
-        await session.commit()
+        await _commit(session, handle)
 
         target = await _instance_endpoint(session, cfg["instance_id"])
         await handle.log(f"Target: {target.desc} @ {target.base_url} (model {target.model})")
@@ -421,12 +440,12 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
             await _finalize(session, handle, run)
             run.status = JOB_SUCCESS
             run.finished_at = _now()
-            await session.commit()
+            await _commit(session, handle)
             return f"Eval '{run.name}' complete (overall {(run.overall_score or 0) * 100:.0f}%)"
         except Exception as exc:
             run.status = JOB_ERROR
             run.finished_at = _now()
-            await session.commit()
+            await _commit(session, handle)
             raise
 
 
@@ -457,5 +476,5 @@ async def _finalize(session: AsyncSession, handle: JobHandle, run: EvalRun) -> N
         ],
     }
     run.summary_json = json.dumps(summary)
-    await session.commit()
+    await _commit(session, handle)
     await handle.log(f"Done. Overall capability {(run.overall_score or 0) * 100:.0f}%, peak {peak or 0:.0f} tok/s")

@@ -376,6 +376,10 @@ async def refresh_presence(session: AsyncSession, model_id: int) -> None:
     if model is None:
         return
     cfg = await get_cluster_config(session)
+    # Do all the slow SSH probing FIRST, then write once — never hold a write
+    # transaction open across SSH (that pins the SQLite write lock and starves
+    # other writers → "database is locked").
+    findings: list[tuple[int, bool, int | None]] = []
     for node in await _all_nodes(session):
         path = model_host_path(node, cfg, model.name)
         try:
@@ -384,7 +388,9 @@ async def refresh_presence(session: AsyncSession, model_id: int) -> None:
             size = await _dir_size_bytes(ssh, path) if present else None
         except Exception:  # noqa: BLE001 - unreachable node -> leave state
             continue
-        st = await _state_for(session, model_id, node.id)
+        findings.append((node.id, present, size))
+    for node_id, present, size in findings:
+        st = await _state_for(session, model_id, node_id)
         st.present = present
         st.size_bytes = size
         st.status = MS_PRESENT if present else MS_ABSENT

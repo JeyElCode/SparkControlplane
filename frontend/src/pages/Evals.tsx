@@ -167,7 +167,7 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
 }
 
 // ---------- Run detail ----------
-function RunDetail({ id }: { id: number }) {
+function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
   const [d, setD] = useState<EvalRunDetail | null>(null);
   const [err, setErr] = useState<string>();
   const [openTask, setOpenTask] = useState<string | null>(null);
@@ -202,7 +202,10 @@ function RunDetail({ id }: { id: number }) {
           <h2 style={{ margin: 0 }}>{d.name}</h2>
           <div className="faint" style={{ fontSize: 12 }}>{d.model_name} · {d.instance_label} · {timeAgo(d.created_at)}{d.judge_desc ? ` · judge: ${d.judge_desc}` : ""}</div>
         </div>
-        <Badge kind={statusKind(d.status)}>{d.status}</Badge>
+        <div className="flex gap-sm">
+          {onRerun && <button className="btn btn-sm" onClick={onRerun}>Re-run</button>}
+          <Badge kind={statusKind(d.status)}>{d.status}</Badge>
+        </div>
       </div>
 
       <div className="scorecard mb">
@@ -446,6 +449,37 @@ export default function Evals() {
     evals.reload();
   };
 
+  // Re-run an eval with the same instance + config.
+  const rerun = async (runId: number) => {
+    try {
+      const d = await api.getEval(runId);
+      const cfg = d.config ?? {};
+      const instance_id = (cfg.instance_id as number) ?? d.instance_id ?? 0;
+      if (!instance_id) {
+        toast("The original instance no longer exists — create a new eval", "error");
+        return;
+      }
+      const r = await api.createEval({
+        instance_id,
+        name: d.name,
+        categories: d.categories,
+        capability: d.capability,
+        performance: d.performance,
+        perf_reps: cfg.perf_reps ?? 3,
+        concurrency: cfg.concurrency ?? [1, 2, 4],
+        temperature: cfg.temperature ?? 0.2,
+        judge: cfg.judge ?? null,
+        sandbox_image: cfg.sandbox_image ?? "python:3.12-slim",
+        benchmark_n: cfg.benchmark_n ?? 20,
+      });
+      toast("Re-run started", "success");
+      setJob({ id: r.job_id, label: d.name });
+      evals.reload();
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
   // trend over time: overall % per model
   const byModel: Record<string, [number, number][]> = {};
   for (const r of runs) {
@@ -507,7 +541,10 @@ export default function Evals() {
                         {r.status === "running" && r.job_id ? (
                           <button className="btn btn-sm btn-primary" onClick={() => setJob({ id: r.job_id!, label: r.name })}>View log</button>
                         ) : (
-                          <button className="btn btn-sm" onClick={() => setDetailId(r.id)}>View</button>
+                          <>
+                            <button className="btn btn-sm" onClick={() => setDetailId(r.id)}>View</button>
+                            <button className="btn btn-sm" onClick={() => rerun(r.id)} title="Run again with the same instance + config">Re-run</button>
+                          </>
                         )}
                         <button className="btn btn-sm btn-danger" onClick={() => del(r)}>✕</button>
                       </div>
@@ -520,7 +557,7 @@ export default function Evals() {
         )}
       </div>
 
-      {detailId != null && <div className="mt"><RunDetail id={detailId} /></div>}
+      {detailId != null && <div className="mt"><RunDetail id={detailId} onRerun={() => rerun(detailId)} /></div>}
 
       {creating && <NewEval onClose={() => setCreating(false)} onStarted={(id, label) => { setJob({ id, label }); evals.reload(); }} />}
       {managing && <CustomTasksModal onClose={() => setManaging(false)} />}

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from ..db import SessionLocal
 from ..models import (
@@ -127,29 +128,50 @@ class JobManager:
         return True
 
     # --- persistence helpers --------------------------------------------
+    async def _db_write(self, op) -> bool:
+        """Run ``op(session)`` then commit, retrying on a transient SQLite lock.
+        Persisting a log line or status update must NEVER crash the running job,
+        so a final failure is swallowed (the write is dropped, not raised)."""
+        for attempt in range(8):
+            try:
+                async with SessionLocal() as s:
+                    await op(s)
+                    await s.commit()
+                return True
+            except OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    log.warning("job db error (dropped): %s", exc)
+                    return False
+                await asyncio.sleep(0.15 * (attempt + 1))
+            except Exception as exc:  # noqa: BLE001 - never let bookkeeping crash a job
+                log.warning("job db write dropped: %s", exc)
+                return False
+        log.warning("job db write dropped after retries (database busy)")
+        return False
+
     async def _set_status(self, job_id: int, status: str, started: bool = False) -> None:
-        async with SessionLocal() as s:
+        async def op(s):
             job = await s.get(Job, job_id)
-            if job is None:
-                return
-            job.status = status
-            if started:
-                job.started_at = _now()
-            await s.commit()
+            if job is not None:
+                job.status = status
+                if started:
+                    job.started_at = _now()
+
+        await self._db_write(op)
 
     async def _set_progress(self, job_id: int, progress: float | None) -> None:
-        async with SessionLocal() as s:
+        async def op(s):
             job = await s.get(Job, job_id)
-            if job is None:
-                return
-            job.progress = progress
-            await s.commit()
+            if job is not None:
+                job.progress = progress
+
+        await self._db_write(op)
         await self._publish(job_id, {"type": "progress", "progress": progress})
 
     async def _finish(
         self, job_id: int, status: str, exit_code: int | None, summary: str | None
     ) -> None:
-        async with SessionLocal() as s:
+        async def op(s):
             job = await s.get(Job, job_id)
             if job is None:
                 return
@@ -159,7 +181,8 @@ class JobManager:
             job.finished_at = _now()
             if job.status == JOB_SUCCESS and job.progress is None:
                 job.progress = 1.0
-            await s.commit()
+
+        await self._db_write(op)
         await self._publish(
             job_id,
             {"type": "status", "status": status, "exit_code": exit_code, "summary": summary},
@@ -168,9 +191,11 @@ class JobManager:
 
     async def _append_log(self, job_id: int, stream: str, text: str, seq: int) -> None:
         ts = _now()
-        async with SessionLocal() as s:
+
+        async def op(s):
             s.add(JobLog(job_id=job_id, seq=seq, ts=ts, stream=stream, text=text))
-            await s.commit()
+
+        await self._db_write(op)
         await self._publish(
             job_id,
             {"type": "log", "seq": seq, "stream": stream, "text": text, "ts": ts.isoformat()},

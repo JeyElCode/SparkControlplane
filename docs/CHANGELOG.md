@@ -4,6 +4,18 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.2.3
+- **Evals no longer fail on a transient DB lock.** WAL alone wasn't enough — a
+  write transaction held open across slow SSH could starve writers past the
+  busy timeout, and a single failed log/result write crashed the whole run. Now:
+  job-manager log/status writes retry and, worst case, drop the line instead of
+  raising (bookkeeping never crashes a job); eval result/perf commits retry on a
+  lock and continue; and `refresh_presence` does all its SSH probing *before*
+  writing, so it never holds the write lock across SSH. Verified: 20 concurrent
+  log writes succeed while a 2s lock is held.
+- **Re-run button** on the Evals list and run detail — re-runs with the same
+  instance + config.
+
 ## v1.2.2
 - **Fix "database is locked" under concurrent writes.** SQLite now runs in WAL
   mode with a 30s busy timeout (+ `synchronous=NORMAL`, `foreign_keys=ON`), so
