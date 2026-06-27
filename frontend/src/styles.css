@@ -188,6 +188,17 @@ textarea { resize: vertical; min-height: 70px; font-family: var(--mono); }
 .progress-row .meter { flex: 1; }
 .progress-row .pct { font-family: var(--mono); font-size: 12px; width: 42px; text-align: right; color: var(--text-dim); }
 
+/* --- Charts (bar lists) --- */
+.bar-row { display: flex; align-items: center; gap: 10px; }
+.bar-label { width: 130px; flex-shrink: 0; font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-track { flex: 1; height: 16px; background: var(--bg-elev-2); border-radius: 4px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 4px; transition: width 0.4s; }
+.bar-value { width: 84px; flex-shrink: 0; text-align: right; font-size: 12px; color: var(--text-dim); }
+.scorecard { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+.scorecard .sc { background: var(--bg-elev-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
+.scorecard .sc .v { font-size: 22px; font-weight: 600; }
+.scorecard .sc .k { font-size: 12px; color: var(--text-dim); text-transform: capitalize; }
+
 /* --- Modal --- */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6); display: grid; place-items: center;

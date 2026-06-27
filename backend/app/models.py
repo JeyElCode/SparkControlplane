@@ -114,6 +114,10 @@ class Setting(Base):
     hf_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_poll_seconds: Mapped[int] = mapped_column(Integer, default=10)
     setup_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    # External LLM-judge endpoint (optional) for evaluations
+    judge_base_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    judge_api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
@@ -221,3 +225,90 @@ class JobLog(Base):
     text: Mapped[str] = mapped_column(Text)
 
     job: Mapped[Job] = relationship(back_populates="logs")
+
+
+# --- Evaluation / benchmarking -------------------------------------------
+EVAL_CATEGORIES = ("coding", "security", "reasoning", "judging")
+PERF_CATEGORIES = ("coding", "reasoning", "textgen", "judging")
+SCORERS = ("exact", "contains", "numeric", "mcq", "judge", "code_exec")
+
+
+class EvalRun(Base):
+    """One evaluation/benchmark run against a model instance (a snapshot of the
+    model + config so results stay comparable over time)."""
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    instance_id: Mapped[int | None] = mapped_column(ForeignKey("instances.id"), nullable=True)
+    model_name: Mapped[str] = mapped_column(String(255))     # snapshot
+    instance_label: Mapped[str] = mapped_column(String(255))  # snapshot, e.g. "cluster TP=2 :8000"
+    categories: Mapped[str] = mapped_column(String(255))      # comma-separated
+    capability: Mapped[bool] = mapped_column(Boolean, default=True)
+    performance: Mapped[bool] = mapped_column(Boolean, default=True)
+    config_json: Mapped[str] = mapped_column(Text)           # full request config
+    judge_desc: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default=JOB_PENDING)
+    overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0..1 capability mean
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)      # aggregates
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    results: Mapped[list["EvalResult"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    perf: Mapped[list["PerfResult"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class EvalResult(Base):
+    """Per-task capability result."""
+
+    __tablename__ = "eval_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("eval_runs.id", ondelete="CASCADE"))
+    category: Mapped[str] = mapped_column(String(32))
+    task_id: Mapped[str] = mapped_column(String(64))
+    task_name: Mapped[str] = mapped_column(String(255))
+    scorer: Mapped[str] = mapped_column(String(16))
+    score: Mapped[float] = mapped_column(Float, default=0.0)   # 0..1
+    passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ttft_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_per_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    run: Mapped[EvalRun] = relationship(back_populates="results")
+
+
+class PerfResult(Base):
+    """Per-(category, concurrency) performance measurement."""
+
+    __tablename__ = "perf_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("eval_runs.id", ondelete="CASCADE"))
+    category: Mapped[str] = mapped_column(String(32))
+    concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    reps: Mapped[int] = mapped_column(Integer, default=1)
+    ttft_ms_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decode_tps_avg: Mapped[float | None] = mapped_column(Float, nullable=True)   # per-stream tok/s
+    total_latency_ms_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    throughput_tps: Mapped[float | None] = mapped_column(Float, nullable=True)   # aggregate tok/s
+    prompt_tokens_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    completion_tokens_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    run: Mapped[EvalRun] = relationship(back_populates="perf")

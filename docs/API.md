@@ -290,6 +290,45 @@ are reported as `{ "ok": false, "error": ... }` with HTTP `200`.
 
 ---
 
+## Evals
+
+`app/routers/evals.py` — prefix `/api/evals`. Capability + performance
+evaluation of a model instance. See [EVALS.md](EVALS.md) for the concepts.
+
+| Method | Path | Description | Request | Response |
+|---|---|---|---|---|
+| GET | `/suites` | Available categories + task counts. | — | `SuiteInfo[]` |
+| POST | `` | Start an eval run (background job). | `EvalRunRequest` | `EvalStarted` |
+| GET | `` | List runs (newest first). | — | `EvalRunOut[]` |
+| GET | `/{id}` | Full run detail (results + perf + summary + config). | — | `EvalRunDetail` |
+| DELETE | `/{id}` | Delete a run and its results. | — | `204` |
+
+**`EvalRunRequest`** — `instance_id` (required), `name?`, `categories[]`
+(`coding`/`security`/`reasoning`/`judging`), `capability` (default `true`),
+`performance` (default `true`), `perf_reps` (default `3`), `concurrency` (int[],
+default `[1,2,4]`), `temperature` (default `0.2`), `judge`
+(`{type: "none"|"instance"|"external", instance_id?}`), `sandbox_image`
+(default `python:3.12-slim`).
+
+**`EvalStarted`** — `{ run_id, job_id, message }`. Follow `job_id` via the Jobs
+API / WebSocket for live progress.
+
+**`EvalRunOut`** — `id`, `name`, `instance_id`, `model_name`, `instance_label`,
+`categories[]`, `capability`, `performance`, `status`, `overall_score` (0–1),
+`peak_throughput_tps`, `judge_desc`, `job_id`, timestamps.
+
+**`EvalRunDetail`** — `EvalRunOut` plus `summary` (category_scores, overall,
+peak_throughput_tps, perf[]), `config`, `results[]` (`EvalResultOut`: category,
+task_id, scorer, score, passed, response, judge_reason, latency_ms, ttft_ms,
+prompt/completion tokens, tokens_per_sec, error), and `perf[]` (`PerfResultOut`:
+category, concurrency, ttft_ms_avg, decode_tps_avg, total_latency_ms_avg,
+throughput_tps, …).
+
+External-judge config lives on the settings endpoints (`judge_base_url`,
+`judge_model`, `judge_api_key` — the key is write-only).
+
+---
+
 ## curl examples
 
 Add a node:

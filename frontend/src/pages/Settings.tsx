@@ -12,6 +12,22 @@ export default function SettingsPage() {
   const [hfToken, setHfToken] = useState("");
   const [poll, setPoll] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
+  const [judgeUrl, setJudgeUrl] = useState<string | null>(null);
+  const [judgeModel, setJudgeModel] = useState<string | null>(null);
+  const [judgeKey, setJudgeKey] = useState("");
+
+  const saveJudge = async () => {
+    await api.updateSettings({
+      ...(judgeUrl != null ? { judge_base_url: judgeUrl } : {}),
+      ...(judgeModel != null ? { judge_model: judgeModel } : {}),
+      ...(judgeKey ? { judge_api_key: judgeKey } : {}),
+    });
+    setJudgeUrl(null);
+    setJudgeModel(null);
+    setJudgeKey("");
+    settings.reload();
+    toast("External judge saved", "success");
+  };
 
   const cfg = { ...config.data, ...draft } as ClusterConfig;
   const set = (k: keyof ClusterConfig, v: any) => setDraft((p) => ({ ...p, [k]: v }));
@@ -88,6 +104,33 @@ export default function SettingsPage() {
               <div className="flex gap-sm">
                 <input type="password" placeholder={settings.data?.has_hf_token ? "•••••• (stored)" : "hf_..."} value={hfToken} onChange={(e) => setHfToken(e.target.value)} />
                 <button className="btn" onClick={saveToken} disabled={!hfToken}>Save</button>
+              </div>
+            </Field>
+          </div>
+
+          <div className="card">
+            <h2>External judge (evals)</h2>
+            <p className="faint" style={{ fontSize: 12, marginTop: -6 }}>
+              Optional OpenAI-compatible endpoint used to grade eval answers when you pick the "external" judge.
+            </p>
+            <Field label="Base URL">
+              <input
+                placeholder={settings.data?.judge_base_url ?? "https://api.example.com/v1"}
+                value={judgeUrl ?? settings.data?.judge_base_url ?? ""}
+                onChange={(e) => setJudgeUrl(e.target.value)}
+              />
+            </Field>
+            <Field label="Model">
+              <input
+                placeholder={settings.data?.judge_model ?? "model-id"}
+                value={judgeModel ?? settings.data?.judge_model ?? ""}
+                onChange={(e) => setJudgeModel(e.target.value)}
+              />
+            </Field>
+            <Field label="API key" hint={settings.data?.has_judge_api_key ? "A key is stored. Enter a new one to replace it." : "Stored encrypted."}>
+              <div className="flex gap-sm">
+                <input type="password" placeholder={settings.data?.has_judge_api_key ? "•••••• (stored)" : "sk-..."} value={judgeKey} onChange={(e) => setJudgeKey(e.target.value)} />
+                <button className="btn" onClick={saveJudge} disabled={judgeUrl == null && judgeModel == null && !judgeKey}>Save</button>
               </div>
             </Field>
           </div>

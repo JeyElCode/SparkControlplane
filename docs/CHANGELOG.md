@@ -4,6 +4,23 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.1.0
+- **LLM evaluation & benchmarking framework** (new **Evals** page + `/api/evals`).
+  - **Capability** scoring per task: deterministic (`exact`/`contains`/`numeric`/
+    `mcq`), **LLM-judge** (0–10 vs rubric), and **sandboxed code execution**
+    (model writes code → unit tests run in a `--network none` container on a node
+    → pass@1), across coding / security / reasoning / judging.
+  - **Performance**: per-category TTFT, decode tokens/sec, latency, plus a
+    **concurrency sweep** for peak aggregate throughput — all via streaming.
+  - **Judge** = a running instance you pick, or an external OpenAI-compatible
+    endpoint (configured in Settings, key encrypted).
+  - Runs persisted in SQLite (snapshotting model + config); **Evals** page with
+    scorecards, per-task tables, SVG charts (capability bars, throughput-by-
+    category, throughput-vs-concurrency, overall-over-time trend), and multi-run
+    comparison.
+  - New tables `eval_runs` / `eval_results` / `perf_results`; see
+    [EVALS.md](EVALS.md).
+
 ## v1.0.13
 - While a model download/sync/delete is running, the Models page now shows a
   **"View log"** button (opening that job's live log) instead of disabling the

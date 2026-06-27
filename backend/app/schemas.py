@@ -7,6 +7,7 @@ Secrets are accepted on input but never serialized back out — instead the
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 from datetime import datetime
 from typing import Any, Literal
@@ -202,12 +203,18 @@ class ClusterConfigOut(BaseModel):
 class SettingsIn(BaseModel):
     hf_token: str | None = None
     status_poll_seconds: int | None = None
+    judge_base_url: str | None = None
+    judge_model: str | None = None
+    judge_api_key: str | None = None  # write-only
 
 
 class SettingsOut(BaseModel):
     has_hf_token: bool
     status_poll_seconds: int
     setup_complete: bool
+    judge_base_url: str | None = None
+    judge_model: str | None = None
+    has_judge_api_key: bool = False
 
 
 # --- Models --------------------------------------------------------------
@@ -551,3 +558,138 @@ class PlaygroundResponse(BaseModel):
 class JobAccepted(BaseModel):
     job_id: int
     message: str
+
+
+# --- Evaluations ---------------------------------------------------------
+class SuiteInfo(BaseModel):
+    category: str
+    capability_tasks: int
+    perf_tasks: int
+    scorers: list[str]
+
+
+class JudgeConfig(BaseModel):
+    type: Literal["none", "instance", "external"] = "none"
+    instance_id: int | None = None
+
+
+class EvalRunRequest(BaseModel):
+    instance_id: int
+    name: str | None = None
+    categories: list[str] = Field(default_factory=lambda: ["coding", "security", "reasoning", "judging"])
+    capability: bool = True
+    performance: bool = True
+    perf_reps: int = 3
+    concurrency: list[int] = Field(default_factory=lambda: [1, 2, 4])
+    temperature: float = 0.2
+    judge: JudgeConfig | None = None
+    sandbox_image: str = "python:3.12-slim"
+
+
+class EvalStarted(BaseModel):
+    run_id: int
+    job_id: int
+    message: str
+
+
+class EvalResultOut(BaseModel):
+    category: str
+    task_id: str
+    task_name: str
+    scorer: str
+    score: float
+    passed: bool | None
+    response: str | None
+    judge_reason: str | None
+    latency_ms: float | None
+    ttft_ms: float | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    tokens_per_sec: float | None
+    error: str | None
+
+    @classmethod
+    def of(cls, r: m.EvalResult) -> "EvalResultOut":
+        return cls(
+            category=r.category, task_id=r.task_id, task_name=r.task_name, scorer=r.scorer,
+            score=r.score, passed=r.passed, response=r.response, judge_reason=r.judge_reason,
+            latency_ms=r.latency_ms, ttft_ms=r.ttft_ms, prompt_tokens=r.prompt_tokens,
+            completion_tokens=r.completion_tokens, tokens_per_sec=r.tokens_per_sec, error=r.error,
+        )
+
+
+class PerfResultOut(BaseModel):
+    category: str
+    concurrency: int
+    reps: int
+    ttft_ms_avg: float | None
+    decode_tps_avg: float | None
+    total_latency_ms_avg: float | None
+    throughput_tps: float | None
+    prompt_tokens_avg: float | None
+    completion_tokens_avg: float | None
+    error: str | None
+
+    @classmethod
+    def of(cls, p: m.PerfResult) -> "PerfResultOut":
+        return cls(
+            category=p.category, concurrency=p.concurrency, reps=p.reps,
+            ttft_ms_avg=p.ttft_ms_avg, decode_tps_avg=p.decode_tps_avg,
+            total_latency_ms_avg=p.total_latency_ms_avg, throughput_tps=p.throughput_tps,
+            prompt_tokens_avg=p.prompt_tokens_avg, completion_tokens_avg=p.completion_tokens_avg,
+            error=p.error,
+        )
+
+
+class EvalRunOut(BaseModel):
+    id: int
+    name: str
+    instance_id: int | None
+    model_name: str
+    instance_label: str
+    categories: list[str]
+    capability: bool
+    performance: bool
+    status: str
+    overall_score: float | None
+    peak_throughput_tps: float | None
+    judge_desc: str | None
+    job_id: int | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @classmethod
+    def of(cls, run: m.EvalRun) -> "EvalRunOut":
+        peak = None
+        if run.summary_json:
+            try:
+                peak = json.loads(run.summary_json).get("peak_throughput_tps")
+            except ValueError:
+                peak = None
+        return cls(
+            id=run.id, name=run.name, instance_id=run.instance_id, model_name=run.model_name,
+            instance_label=run.instance_label, categories=run.categories.split(",") if run.categories else [],
+            capability=run.capability, performance=run.performance, status=run.status,
+            overall_score=run.overall_score, peak_throughput_tps=peak, judge_desc=run.judge_desc,
+            job_id=run.job_id, created_at=run.created_at, started_at=run.started_at,
+            finished_at=run.finished_at,
+        )
+
+
+class EvalRunDetail(EvalRunOut):
+    summary: dict[str, Any] | None = None
+    config: dict[str, Any] | None = None
+    results: list[EvalResultOut] = Field(default_factory=list)
+    perf: list[PerfResultOut] = Field(default_factory=list)
+
+    @classmethod
+    def of_detail(cls, run: m.EvalRun) -> "EvalRunDetail":
+        base = EvalRunOut.of(run).model_dump()
+        summary = json.loads(run.summary_json) if run.summary_json else None
+        config = json.loads(run.config_json) if run.config_json else None
+        return cls(
+            **base, summary=summary, config=config,
+            results=[EvalResultOut.of(r) for r in run.results],
+            perf=[PerfResultOut.of(p) for p in run.perf],
+        )

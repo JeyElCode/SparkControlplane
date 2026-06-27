@@ -64,6 +64,96 @@ export interface Settings {
   has_hf_token: boolean;
   status_poll_seconds: number;
   setup_complete: boolean;
+  judge_base_url?: string | null;
+  judge_model?: string | null;
+  has_judge_api_key?: boolean;
+}
+
+export interface SuiteInfo {
+  category: string;
+  capability_tasks: number;
+  perf_tasks: number;
+  scorers: string[];
+}
+
+export interface JudgeConfig {
+  type: "none" | "instance" | "external";
+  instance_id?: number | null;
+}
+
+export interface EvalRunRequest {
+  instance_id: number;
+  name?: string;
+  categories: string[];
+  capability: boolean;
+  performance: boolean;
+  perf_reps: number;
+  concurrency: number[];
+  temperature: number;
+  judge?: JudgeConfig | null;
+  sandbox_image: string;
+}
+
+export interface EvalRunSummary {
+  id: number;
+  name: string;
+  instance_id?: number | null;
+  model_name: string;
+  instance_label: string;
+  categories: string[];
+  capability: boolean;
+  performance: boolean;
+  status: string;
+  overall_score?: number | null;
+  peak_throughput_tps?: number | null;
+  judge_desc?: string | null;
+  job_id?: number | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface EvalResultRow {
+  category: string;
+  task_id: string;
+  task_name: string;
+  scorer: string;
+  score: number;
+  passed?: boolean | null;
+  response?: string | null;
+  judge_reason?: string | null;
+  latency_ms?: number | null;
+  ttft_ms?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  tokens_per_sec?: number | null;
+  error?: string | null;
+}
+
+export interface PerfRow {
+  category: string;
+  concurrency: number;
+  reps: number;
+  ttft_ms_avg?: number | null;
+  decode_tps_avg?: number | null;
+  total_latency_ms_avg?: number | null;
+  throughput_tps?: number | null;
+  prompt_tokens_avg?: number | null;
+  completion_tokens_avg?: number | null;
+  error?: string | null;
+}
+
+export interface EvalRunDetail extends EvalRunSummary {
+  summary?: Record<string, any> | null;
+  config?: Record<string, any> | null;
+  results: EvalResultRow[];
+  perf: PerfRow[];
+}
+
+export interface EvalStarted {
+  run_id: number;
+  job_id: number;
+  message: string;
 }
 
 export interface ModelSuggestion {
@@ -288,8 +378,13 @@ export const api = {
   updateConfig: (c: Partial<ClusterConfig>) =>
     j<ClusterConfig>("/api/cluster/config", { method: "PATCH", body: JSON.stringify(c) }),
   getSettings: () => j<Settings>("/api/cluster/settings"),
-  updateSettings: (s: { hf_token?: string; status_poll_seconds?: number }) =>
-    j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
+  updateSettings: (s: {
+    hf_token?: string;
+    status_poll_seconds?: number;
+    judge_base_url?: string;
+    judge_model?: string;
+    judge_api_key?: string;
+  }) => j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
   listPhases: () => j<PhaseInfo[]>("/api/cluster/phases"),
   runSetup: (phases?: string[]) =>
     j<JobAccepted>("/api/cluster/setup", { method: "POST", body: JSON.stringify({ phases: phases ?? null }) }),
@@ -330,6 +425,14 @@ export const api = {
   listJobs: (limit = 50) => j<Job[]>(`/api/jobs?limit=${limit}`),
   getJob: (id: number) => j<Job & { logs: any[] }>(`/api/jobs/${id}`),
   cancelJob: (id: number) => j<{ cancelled: boolean }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+
+  // evals
+  evalSuites: () => j<SuiteInfo[]>("/api/evals/suites"),
+  listEvals: () => j<EvalRunSummary[]>("/api/evals"),
+  getEval: (id: number) => j<EvalRunDetail>(`/api/evals/${id}`),
+  createEval: (req: EvalRunRequest) =>
+    j<EvalStarted>("/api/evals", { method: "POST", body: JSON.stringify(req) }),
+  deleteEval: (id: number) => j<void>(`/api/evals/${id}`, { method: "DELETE" }),
 
   // playground
   playground: (body: { instance_id: number; prompt: string; system?: string; max_tokens?: number; temperature?: number }) =>

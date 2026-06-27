@@ -37,14 +37,20 @@ async def update_config(payload: ClusterConfigIn, session: AsyncSession = Depend
     return ClusterConfigOut.model_validate(cfg)
 
 
-@router.get("/settings", response_model=SettingsOut)
-async def get_settings_ep(session: AsyncSession = Depends(get_session)):
-    s = await get_setting(session)
+def _settings_out(s) -> SettingsOut:
     return SettingsOut(
         has_hf_token=bool(s.hf_token_enc),
         status_poll_seconds=s.status_poll_seconds,
         setup_complete=s.setup_complete,
+        judge_base_url=s.judge_base_url,
+        judge_model=s.judge_model,
+        has_judge_api_key=bool(s.judge_api_key_enc),
     )
+
+
+@router.get("/settings", response_model=SettingsOut)
+async def get_settings_ep(session: AsyncSession = Depends(get_session)):
+    return _settings_out(await get_setting(session))
 
 
 @router.patch("/settings", response_model=SettingsOut)
@@ -54,12 +60,14 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.hf_token_enc = encrypt(payload.hf_token)
     if payload.status_poll_seconds is not None:
         s.status_poll_seconds = payload.status_poll_seconds
+    if payload.judge_base_url is not None:
+        s.judge_base_url = payload.judge_base_url or None
+    if payload.judge_model is not None:
+        s.judge_model = payload.judge_model or None
+    if payload.judge_api_key is not None:
+        s.judge_api_key_enc = encrypt(payload.judge_api_key)
     await session.commit()
-    return SettingsOut(
-        has_hf_token=bool(s.hf_token_enc),
-        status_poll_seconds=s.status_poll_seconds,
-        setup_complete=s.setup_complete,
-    )
+    return _settings_out(s)
 
 
 @router.get("/phases")
