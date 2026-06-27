@@ -83,6 +83,11 @@ async def _node_status(session: AsyncSession, node: Node) -> NodeStatus:
         st.gpus = []
 
     try:
+        st.sys_mem_used_mib, st.sys_mem_total_mib = await _sys_mem(ssh)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
         dps = await nodeops.docker(ssh, "ps --format '{{.Names}}'")
         st.docker_ok = dps.ok
         names = dps.stdout.split()
@@ -119,6 +124,26 @@ async def _gpus(ssh) -> list[GpuStatus]:
             )
         )
     return gpus
+
+
+async def _sys_mem(ssh) -> tuple[int | None, int | None]:
+    """(used_mib, total_mib) of unified system memory from /proc/meminfo."""
+    res = await ssh.run("cat /proc/meminfo")
+    if not res.ok:
+        return (None, None)
+    info: dict[str, int] = {}
+    for line in res.stdout.splitlines():
+        key, _, rest = line.partition(":")
+        parts = rest.split()
+        if parts and parts[0].isdigit():
+            info[key.strip()] = int(parts[0])  # value is in kB
+    total_kb = info.get("MemTotal")
+    avail_kb = info.get("MemAvailable")
+    if total_kb is None:
+        return (None, None)
+    total_mib = total_kb // 1024
+    used_mib = (total_kb - avail_kb) // 1024 if avail_kb is not None else None
+    return (used_mib, total_mib)
 
 
 async def _qsfp_ok(session: AsyncSession, head: Node | None, worker: Node | None) -> bool | None:

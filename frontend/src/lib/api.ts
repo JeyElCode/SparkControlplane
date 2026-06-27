@@ -184,6 +184,8 @@ export interface NodeStatus {
   docker_ok?: boolean | null;
   ray_container_up?: boolean | null;
   gpus: GpuStatus[];
+  sys_mem_used_mib?: number | null;
+  sys_mem_total_mib?: number | null;
   mem_budget_used_gib?: number | null;
   mem_budget_total_gib?: number | null;
   detail?: string | null;

@@ -487,6 +487,10 @@ class NodeStatus(BaseModel):
     docker_ok: bool | None = None
     ray_container_up: bool | None = None
     gpus: list[GpuStatus] = Field(default_factory=list)
+    # Unified system memory (DGX Spark shares LPDDR5X between CPU and GPU; the
+    # GPU's FB memory is N/A in nvidia-smi, so this is the meaningful figure).
+    sys_mem_used_mib: int | None = None
+    sys_mem_total_mib: int | None = None
     mem_budget_used_gib: float | None = None
     mem_budget_total_gib: float | None = None
     detail: str | None = None

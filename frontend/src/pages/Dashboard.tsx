@@ -5,25 +5,28 @@ import { boolKind, fmtGib, statusKind } from "../lib/format";
 import { Badge, EmptyState, Meter, Spinner } from "../components/ui";
 
 function GpuRow({ g }: { g: GpuStatus }) {
-  const memPct = g.mem_total_mib ? (g.mem_used_mib ?? 0) / g.mem_total_mib : 0;
   return (
     <div style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
       <div className="spread" style={{ marginBottom: 4 }}>
         <span className="mono faint">GPU{g.index} {g.name ?? ""}</span>
         <span className="faint">{g.temp_c != null ? `${g.temp_c}°C` : ""} {g.power_w != null ? `· ${g.power_w.toFixed(0)}W` : ""}</span>
       </div>
-      <div className="spread gap-sm" style={{ marginBottom: 3 }}>
+      <div className="spread gap-sm" style={{ marginBottom: g.mem_total_mib != null ? 3 : 0 }}>
         <span className="faint" style={{ fontSize: 11, width: 40 }}>util</span>
         <Meter value={g.util_pct ?? 0} max={100} />
         <span className="mono" style={{ fontSize: 11, width: 38, textAlign: "right" }}>{g.util_pct ?? 0}%</span>
       </div>
-      <div className="spread gap-sm">
-        <span className="faint" style={{ fontSize: 11, width: 40 }}>mem</span>
-        <Meter value={g.mem_used_mib ?? 0} max={g.mem_total_mib ?? 1} />
-        <span className="mono" style={{ fontSize: 11, width: 80, textAlign: "right" }}>
-          {Math.round((g.mem_used_mib ?? 0) / 1024)}/{Math.round((g.mem_total_mib ?? 0) / 1024)}G
-        </span>
-      </div>
+      {g.mem_total_mib != null ? (
+        <div className="spread gap-sm">
+          <span className="faint" style={{ fontSize: 11, width: 40 }}>mem</span>
+          <Meter value={g.mem_used_mib ?? 0} max={g.mem_total_mib} />
+          <span className="mono" style={{ fontSize: 11, width: 80, textAlign: "right" }}>
+            {Math.round((g.mem_used_mib ?? 0) / 1024)}/{Math.round(g.mem_total_mib / 1024)}G
+          </span>
+        </div>
+      ) : (
+        <div className="faint" style={{ fontSize: 11 }}>mem: unified — shared with system (see node memory below)</div>
+      )}
     </div>
   );
 }
@@ -50,6 +53,17 @@ function NodeCard({ n }: { n: NodeStatus }) {
             <div className="faint">No GPU telemetry (nvidia-smi unavailable).</div>
           ) : (
             n.gpus.map((g) => <GpuRow key={g.index} g={g} />)
+          )}
+          {n.sys_mem_total_mib != null && (
+            <div style={{ marginTop: 12 }}>
+              <div className="spread" style={{ fontSize: 12, marginBottom: 4 }}>
+                <span className="faint">memory (unified)</span>
+                <span className="mono">
+                  {Math.round((n.sys_mem_used_mib ?? 0) / 1024)} / {Math.round(n.sys_mem_total_mib / 1024)} GiB
+                </span>
+              </div>
+              <Meter value={n.sys_mem_used_mib ?? 0} max={n.sys_mem_total_mib} />
+            </div>
           )}
           {n.mem_budget_total_gib != null && (
             <div style={{ marginTop: 12 }}>
