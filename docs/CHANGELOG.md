@@ -1,0 +1,80 @@
+# Changelog
+
+All notable changes to Spark Control Plane. Each version is published as
+`ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
+git tag.
+
+## v1.0.11
+- Dashboard shows **real per-node unified memory** from `/proc/meminfo`. The
+  GB10 shares LPDDR5X between CPU and GPU and reports its GPU FB memory as `N/A`,
+  so the old per-GPU memory bar showed a misleading `0/0G`. Per-GPU now shows
+  util/temp/power (and a VRAM bar only when one is actually reported).
+
+## v1.0.10
+- Models page shows a **single `✓`** per node when a model is present. A distinct
+  `⚠ checksum` (amber) appears only if a sync ever fails verification.
+
+## v1.0.9
+- Added inline **`?` help tooltips** on key fields: the Models "Parser" column,
+  and the New-instance fields (max model length, gpu memory utilization, max num
+  seqs, dtype, tool parser override), and Settings → container shm size.
+
+## v1.0.8
+- Fixed **uneven dashboard cards**. The global `.card + .card` top-margin (for
+  vertically stacked cards) was also applying to cards side-by-side in a grid,
+  offsetting the 2nd+ card; neutralized for grid children.
+
+## v1.0.7
+- **Start streams the live vLLM startup output** (via the instance's
+  `journalctl`) until `/health` is green or a 15-minute cap — for debugging model
+  loading / crashes.
+- **Fixed false "error" job badges.** The log panel no longer treats a dropped
+  WebSocket as a failed job; it reconciles status/logs/progress from
+  `GET /api/jobs/{id}` and polls until the job actually finishes.
+
+## v1.0.6
+- **Delete model files with `sudo`.** The download runs as root inside the
+  container, so model files are root-owned; deleting them as the login user hit
+  "Permission denied". Delete only drops the registry row when removal succeeds
+  on every node (otherwise it surfaces the failure).
+
+## v1.0.5
+- Collapsed the Models delete controls into a **single Delete** button (files on
+  all nodes + registry row). The registry-only removal was futile once on-disk
+  discovery re-imports leftover directories.
+
+## v1.0.4
+- **On-disk discovery.** `discover_models` scans each node's models dir and
+  imports any directory not already in the registry (recovering the repo id from
+  `config.json` `_name_or_path` when possible). Exposed via `POST /api/models/scan`
+  + a "Scan nodes" button, and runs automatically ~5s after startup.
+
+## v1.0.3
+- **Model sync now uses the QSFP link** (worker QSFP IP + inter-node key) instead
+  of the management LAN, so multi-GB copies use the high-speed interface.
+
+## v1.0.2
+- **Per-node download/sync progress bars on the Models page** (visible without
+  opening the job dialog), driven by an in-memory progress registry surfaced via
+  `/api/models`.
+- Sync (rsync head→worker) reports progress too.
+- Download container runs with `--entrypoint bash` to skip the NGC image's
+  harmless "GPU not detected / 64MB SHMEM" startup banner.
+- Serving containers (Ray + vLLM) pass NVIDIA's recommended
+  `--ulimit memlock=-1 --ulimit stack=67108864`.
+
+## v1.0.1
+- Command **stderr is no longer rendered as errors** — only genuine job failures
+  use a red error line; the job status badge is the source of truth.
+- Initial **model download progress** + percent.
+- Network phase: `nmcli` persistence is best-effort with an `ipv6.method ignore`
+  fallback so a benign `nmcli` non-zero no longer fails the phase when the QSFP
+  link is already up.
+- Download command prefers the new `hf` CLI and falls back to `huggingface-cli`.
+
+## v1.0.0
+- Initial release: full setup automation over SSH (hosts, QSFP network,
+  inter-node SSH, packages, Docker, image pull, Ray cluster, verify), model
+  download + sync with checksums, flexible cluster/single vLLM serving as systemd
+  units, live status dashboard, test playground, granular teardown, encrypted
+  secrets, and multi-arch GHCR publishing via GitHub Actions.
