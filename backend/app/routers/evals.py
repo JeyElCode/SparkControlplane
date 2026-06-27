@@ -8,15 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..db import get_session
-from ..models import EvalRun
+from ..models import CustomTask, EvalRun
 from ..schemas import (
+    CatalogOut,
+    CustomTaskIn,
+    CustomTaskOut,
     EvalRunDetail,
     EvalRunOut,
     EvalRunRequest,
     EvalStarted,
     SuiteInfo,
 )
-from ..services import eval_suites, evals
+from ..services import custom_tasks, eval_suites, evals, public_benchmarks
 from ..services.instances import load_instance
 from ..services.jobs import jobs
 
@@ -26,6 +29,64 @@ router = APIRouter(prefix="/api/evals", tags=["evals"])
 @router.get("/suites", response_model=list[SuiteInfo])
 async def list_suites():
     return eval_suites.suite_summary()
+
+
+@router.get("/catalog", response_model=CatalogOut)
+async def catalog(session: AsyncSession = Depends(get_session)):
+    return CatalogOut(
+        capability=eval_suites.suite_summary(),
+        benchmarks=public_benchmarks.BENCHMARKS,
+        custom_categories=await custom_tasks.custom_categories(session),
+    )
+
+
+def _apply_task(ct: CustomTask, p: CustomTaskIn) -> None:
+    ct.category, ct.name, ct.prompt, ct.scorer, ct.system = p.category, p.name, p.prompt, p.scorer, p.system
+    ct.answer = p.answer
+    ct.contains_json = json.dumps(p.contains) if p.contains else None
+    ct.numeric_answer, ct.numeric_tol = p.numeric_answer, p.numeric_tol
+    ct.choices_json = json.dumps(p.choices) if p.choices else None
+    ct.correct, ct.rubric = p.correct, p.rubric
+    ct.entry_point, ct.test_code, ct.code_prefix = p.entry_point, p.test_code, p.code_prefix
+    ct.tools_json = json.dumps(p.tools) if p.tools else None
+    ct.expected_tool = p.expected_tool
+    ct.expected_args_json = json.dumps(p.expected_args) if p.expected_args else None
+    ct.forbid_tool_call, ct.max_tokens, ct.enabled = p.forbid_tool_call, p.max_tokens, p.enabled
+
+
+@router.get("/tasks", response_model=list[CustomTaskOut])
+async def list_tasks(session: AsyncSession = Depends(get_session)):
+    rows = (await session.execute(select(CustomTask).order_by(CustomTask.id.desc()))).scalars().all()
+    return [CustomTaskOut.of(c) for c in rows]
+
+
+@router.post("/tasks", response_model=CustomTaskOut, status_code=201)
+async def create_task(payload: CustomTaskIn, session: AsyncSession = Depends(get_session)):
+    ct = CustomTask()
+    _apply_task(ct, payload)
+    session.add(ct)
+    await session.commit()
+    await session.refresh(ct)
+    return CustomTaskOut.of(ct)
+
+
+@router.patch("/tasks/{task_id}", response_model=CustomTaskOut)
+async def update_task(task_id: int, payload: CustomTaskIn, session: AsyncSession = Depends(get_session)):
+    ct = await session.get(CustomTask, task_id)
+    if ct is None:
+        raise HTTPException(404, "Task not found")
+    _apply_task(ct, payload)
+    await session.commit()
+    return CustomTaskOut.of(ct)
+
+
+@router.delete("/tasks/{task_id}", status_code=204)
+async def delete_task(task_id: int, session: AsyncSession = Depends(get_session)):
+    ct = await session.get(CustomTask, task_id)
+    if ct is None:
+        raise HTTPException(404, "Task not found")
+    await session.delete(ct)
+    await session.commit()
 
 
 @router.post("", response_model=EvalStarted)

@@ -28,10 +28,10 @@ from ..models import (
     PerfResult,
 )
 from ..ssh import ssh_for_node
-from . import eval_suites
+from . import custom_tasks, eval_suites, public_benchmarks
 from .instances import load_instance
 from .jobs import JobHandle
-from .llm_client import chat_stream
+from .llm_client import ToolCall, chat_once, chat_stream
 
 
 @dataclass
@@ -175,8 +175,58 @@ async def _judge_score(judge: Endpoint, task_prompt: str, response: str, rubric:
         return None, f"bad judge json: {res.content[:160]}"
 
 
+# --- tool-use scoring ----------------------------------------------------
+def _score_tool_call(calls: list[ToolCall], expected_tool, expected_args, forbid):
+    if forbid:
+        if not calls:
+            return 1.0, "no tool call — refused (correct)"
+        return 0.0, f"called {calls[0].name} (should have refused)"
+    if not calls:
+        return 0.0, "no tool call emitted"
+    call = calls[0]
+    if expected_tool and call.name != expected_tool:
+        return 0.0, f"called {call.name}, expected {expected_tool}"
+    try:
+        args = json.loads(call.arguments) if call.arguments else {}
+    except (ValueError, TypeError):
+        args = {}
+    for k, exp in (expected_args or {}).items():
+        if str(exp).lower() not in str(args.get(k, "")).lower():
+            return 0.0, f"arg {k}={args.get(k)!r} missing '{exp}'"
+    return 1.0, f"called {call.name}({call.arguments})"
+
+
+async def _run_tool_task(session, handle, run, task, target, cfg) -> float:
+    er = EvalResult(
+        run_id=run.id, category=task.category, task_id=task.id, task_name=task.name,
+        scorer="tool_call", prompt=task.prompt,
+    )
+    res = await chat_once(
+        target.base_url, target.model, [{"role": "user", "content": task.prompt}],
+        tools=task.tools, tool_choice="auto", max_tokens=task.max_tokens,
+        temperature=float(cfg.get("temperature", 0.2)), api_key=target.api_key,
+    )
+    er.latency_ms = res.latency_ms
+    er.prompt_tokens, er.completion_tokens = res.prompt_tokens, res.completion_tokens
+    calls_txt = "; ".join(f"{c.name}({c.arguments})" for c in res.tool_calls) or "(none)"
+    er.response = ((res.content or "") + f"\n[tool_calls] {calls_txt}")[:8000]
+    if not res.ok:
+        er.error, er.score, er.passed = res.error, 0.0, False
+    else:
+        er.score, reason = _score_tool_call(
+            res.tool_calls, task.expected_tool, task.expected_args, task.forbid_tool_call
+        )
+        er.judge_reason, er.passed = reason, er.score >= 0.5
+    session.add(er)
+    await session.commit()
+    await handle.log(f"[tools/{task.id}] {task.name}: score={er.score:.2f} — {er.judge_reason or er.error}")
+    return er.score
+
+
 # --- capability ----------------------------------------------------------
 async def _run_capability_task(session, handle, run, task, target, judge, code_ssh, cfg) -> float:
+    if task.scorer == "tool_call":
+        return await _run_tool_task(session, handle, run, task, target, cfg)
     er = EvalResult(
         run_id=run.id, category=task.category, task_id=task.id, task_name=task.name,
         scorer=task.scorer, prompt=task.prompt,
@@ -226,8 +276,11 @@ async def _run_capability_task(session, handle, run, task, target, judge, code_s
         elif task.scorer == "code_exec":
             from .sandbox import extract_code, run_code_tests
 
+            code = extract_code(res.content)
+            if task.code_prefix:  # e.g. HumanEval signature the completion attaches to
+                code = task.code_prefix.rstrip() + "\n" + code
             passed, detail = await run_code_tests(
-                code_ssh, code=extract_code(res.content), test_code=task.test_code or "",
+                code_ssh, code=code, test_code=task.test_code or "",
                 entry_point=task.entry_point or "", image=cfg.get("sandbox_image", "python:3.12-slim"),
             )
             er.score, er.passed, er.judge_reason = (1.0 if passed else 0.0), passed, detail[:1500]
@@ -329,7 +382,20 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
 
         try:
             if run.capability:
-                tasks = eval_suites.capability_tasks(categories)
+                bench = set(public_benchmarks.BENCHMARKS)
+                n = int(cfg.get("benchmark_n", 20))
+                tasks = []
+                for cat in categories:
+                    if cat in bench:
+                        try:
+                            fetched = await public_benchmarks.fetch(cat, n)
+                            tasks += fetched
+                            await handle.log(f"Fetched {len(fetched)} {cat} items")
+                        except Exception as exc:  # noqa: BLE001
+                            await handle.log(f"benchmark {cat} fetch failed: {exc}", "error")
+                    else:
+                        tasks += eval_suites.CAPABILITY_SUITES.get(cat, [])
+                tasks += await custom_tasks.load_custom(session, [c for c in categories if c not in bench])
                 await handle.log(f"Running {len(tasks)} capability tasks…")
                 for i, task in enumerate(tasks):
                     if task.scorer == "code_exec" and code_ssh is None:

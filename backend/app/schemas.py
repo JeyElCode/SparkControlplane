@@ -568,6 +568,67 @@ class SuiteInfo(BaseModel):
     scorers: list[str]
 
 
+class CatalogOut(BaseModel):
+    capability: list[SuiteInfo]
+    benchmarks: list[str]
+    custom_categories: list[str]
+
+
+_SCORER = Literal["exact", "contains", "numeric", "mcq", "judge", "code_exec", "tool_call"]
+
+
+class CustomTaskIn(BaseModel):
+    category: str
+    name: str
+    prompt: str
+    scorer: _SCORER
+    system: str | None = None
+    answer: str | None = None
+    contains: list[str] = Field(default_factory=list)
+    numeric_answer: float | None = None
+    numeric_tol: float = 0.01
+    choices: list[str] = Field(default_factory=list)
+    correct: str | None = None
+    rubric: str | None = None
+    entry_point: str | None = None
+    test_code: str | None = None
+    code_prefix: str | None = None
+    tools: list[dict] = Field(default_factory=list)
+    expected_tool: str | None = None
+    expected_args: dict[str, Any] = Field(default_factory=dict)
+    forbid_tool_call: bool = False
+    max_tokens: int = 1024
+    enabled: bool = True
+
+
+class CustomTaskOut(CustomTaskIn):
+    id: int
+
+    @classmethod
+    def of(cls, ct: m.CustomTask) -> "CustomTaskOut":
+        def jl(s):
+            try:
+                return json.loads(s) if s else []
+            except ValueError:
+                return []
+
+        def jd(s):
+            try:
+                return json.loads(s) if s else {}
+            except ValueError:
+                return {}
+
+        return cls(
+            id=ct.id, category=ct.category, name=ct.name, prompt=ct.prompt, scorer=ct.scorer,
+            system=ct.system, answer=ct.answer, contains=jl(ct.contains_json),
+            numeric_answer=ct.numeric_answer, numeric_tol=ct.numeric_tol, choices=jl(ct.choices_json),
+            correct=ct.correct, rubric=ct.rubric, entry_point=ct.entry_point, test_code=ct.test_code,
+            code_prefix=ct.code_prefix, tools=jl(ct.tools_json), expected_tool=ct.expected_tool,
+            expected_args=jd(ct.expected_args_json), forbid_tool_call=ct.forbid_tool_call,
+            max_tokens=ct.max_tokens, enabled=ct.enabled,
+        )
+
+
 class JudgeConfig(BaseModel):
     type: Literal["none", "instance", "external"] = "none"
     instance_id: int | None = None
@@ -584,6 +645,7 @@ class EvalRunRequest(BaseModel):
     temperature: float = 0.2
     judge: JudgeConfig | None = None
     sandbox_image: str = "python:3.12-slim"
+    benchmark_n: int = 20  # sample size per public-benchmark category
 
 
 class EvalStarted(BaseModel):

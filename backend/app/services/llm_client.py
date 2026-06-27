@@ -27,6 +27,71 @@ class ChatResult:
     error: str | None = None
 
 
+@dataclass
+class ToolCall:
+    name: str
+    arguments: str  # raw JSON string as returned by the model
+
+
+@dataclass
+class ChatOnce:
+    ok: bool
+    content: str
+    tool_calls: list[ToolCall]
+    latency_ms: float = 0.0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error: str | None = None
+
+
+async def chat_once(
+    base_url: str,
+    model: str,
+    messages: list[dict],
+    *,
+    tools: list[dict] | None = None,
+    tool_choice: str = "auto",
+    max_tokens: int = 512,
+    temperature: float = 0.0,
+    api_key: str | None = None,
+    timeout: float = 180.0,
+) -> ChatOnce:
+    """Non-streaming completion that surfaces tool calls (for tool-use evals)."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload: dict = {"model": model, "messages": messages, "max_tokens": max_tokens,
+                     "temperature": temperature, "stream": False}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(
+                f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers
+            )
+    except httpx.HTTPError as exc:
+        return ChatOnce(False, "", [], 0.0, error=f"request failed: {exc}")
+    latency = (time.perf_counter() - t0) * 1000
+    if r.status_code != 200:
+        return ChatOnce(False, "", [], latency, error=f"HTTP {r.status_code}: {r.text[:300]}")
+    body = r.json()
+    msg = (body.get("choices") or [{}])[0].get("message") or {}
+    calls = [
+        ToolCall(
+            (tc.get("function") or {}).get("name", ""),
+            (tc.get("function") or {}).get("arguments", "") or "",
+        )
+        for tc in (msg.get("tool_calls") or [])
+    ]
+    usage = body.get("usage") or {}
+    return ChatOnce(
+        True, msg.get("content") or "", calls, latency,
+        usage.get("prompt_tokens"), usage.get("completion_tokens"),
+    )
+
+
 async def chat_stream(
     base_url: str,
     model: str,

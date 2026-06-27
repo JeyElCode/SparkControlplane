@@ -1,25 +1,42 @@
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, EvalRunDetail, EvalRunRequest, EvalRunSummary } from "../lib/api";
+import { api, CustomTask, CustomTaskInput, EvalRunDetail, EvalRunRequest, EvalRunSummary } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { statusKind, timeAgo } from "../lib/format";
 import { Badge, EmptyState, Field, HelpTip, Modal, Spinner } from "../components/ui";
-import { BarList, GroupedBarList, LineChart, PALETTE } from "../components/charts";
+import { BarList, LineChart, PALETTE } from "../components/charts";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
-const ALL_CATEGORIES = ["coding", "security", "reasoning", "judging"];
+const DEFAULT_CATEGORIES = ["coding", "security", "reasoning", "judging", "tools"];
 const pct = (s?: number | null) => (s == null ? "—" : `${Math.round(s * 100)}%`);
-const tps = (n?: number | null) => (n == null ? "—" : `${Math.round(n)} tok/s`);
+
+function CatGroup({ title, cats, sel, onToggle }: { title: string; cats: string[]; sel: string[]; onToggle: (c: string) => void }) {
+  if (cats.length === 0) return null;
+  return (
+    <div>
+      <div className="faint" style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>{title}</div>
+      <div className="flex wrap gap-sm">
+        {cats.map((c) => (
+          <label key={c} className="flex gap-sm" style={{ alignItems: "center", cursor: "pointer" }}>
+            <input type="checkbox" style={{ width: "auto" }} checked={sel.includes(c)} onChange={() => onToggle(c)} />
+            <span style={{ textTransform: "capitalize" }}>{c}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ---------- New eval modal ----------
 function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobId: number, label: string) => void }) {
   const instances = usePoll(() => api.listInstances(), 0);
+  const catalog = usePoll(() => api.evalCatalog(), 0);
   const { toast } = useToast();
   const [f, setF] = useState<EvalRunRequest>({
     instance_id: 0,
     name: "",
-    categories: [...ALL_CATEGORIES],
+    categories: [...DEFAULT_CATEGORIES],
     capability: true,
     performance: true,
     perf_reps: 3,
@@ -27,11 +44,16 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
     temperature: 0.2,
     judge: { type: "instance", instance_id: undefined },
     sandbox_image: "python:3.12-slim",
+    benchmark_n: 20,
   });
   const [concStr, setConcStr] = useState("1, 2, 4");
   const [busy, setBusy] = useState(false);
   const set = (k: keyof EvalRunRequest, v: any) => setF((p) => ({ ...p, [k]: v }));
   const insts = instances.data ?? [];
+  const builtinCats = (catalog.data?.capability ?? []).map((s) => s.category);
+  const benchCats = catalog.data?.benchmarks ?? [];
+  const customCats = catalog.data?.custom_categories ?? [];
+  const anyBench = f.categories.some((c) => benchCats.includes(c));
 
   useEffect(() => {
     if (!f.instance_id && insts.length) {
@@ -82,15 +104,17 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
       </div>
 
       <Field label="Categories">
-        <div className="flex wrap gap-sm">
-          {ALL_CATEGORIES.map((c) => (
-            <label key={c} className="flex gap-sm" style={{ alignItems: "center", cursor: "pointer" }}>
-              <input type="checkbox" style={{ width: "auto" }} checked={f.categories.includes(c)} onChange={() => toggleCat(c)} />
-              <span style={{ textTransform: "capitalize" }}>{c}</span>
-            </label>
-          ))}
+        <div className="flex-col" style={{ gap: 10 }}>
+          <CatGroup title="Built-in" cats={builtinCats} sel={f.categories} onToggle={toggleCat} />
+          <CatGroup title="Public benchmarks" cats={benchCats} sel={f.categories} onToggle={toggleCat} />
+          <CatGroup title="Custom" cats={customCats} sel={f.categories} onToggle={toggleCat} />
         </div>
       </Field>
+      {anyBench && (
+        <Field label="Benchmark sample size" help="How many items to pull per public-benchmark category (HumanEval/GSM8K/MMLU) from the HuggingFace datasets-server. A subset, not the full set.">
+          <input type="number" value={f.benchmark_n ?? 20} onChange={(e) => set("benchmark_n", Number(e.target.value))} />
+        </Field>
+      )}
 
       <div className="row-2">
         <label className="checkbox"><input type="checkbox" checked={f.capability} onChange={(e) => set("capability", e.target.checked)} /><span><span className="cb-label">Capability scoring</span><div className="cb-sub">Correctness via deterministic checks, judge, and sandboxed code.</div></span></label>
@@ -237,11 +261,176 @@ function RunDetail({ id }: { id: number }) {
   );
 }
 
+// ---------- Custom tasks ----------
+const SCORERS = ["judge", "contains", "numeric", "mcq", "exact", "tool_call", "code_exec"];
+const EMPTY_TASK: CustomTaskInput = {
+  category: "custom", name: "", prompt: "", scorer: "judge", system: null, answer: null,
+  contains: [], numeric_answer: null, numeric_tol: 0.01, choices: [], correct: null, rubric: null,
+  entry_point: null, test_code: null, code_prefix: null, tools: [], expected_tool: null,
+  expected_args: {}, forbid_tool_call: false, max_tokens: 1024, enabled: true,
+};
+
+function TaskForm({ initial, onSave, onCancel }: { initial: CustomTaskInput; onSave: (t: CustomTaskInput) => void; onCancel: () => void }) {
+  const [t, setT] = useState<CustomTaskInput>(initial);
+  const [containsStr, setContainsStr] = useState(initial.contains.join(", "));
+  const [choicesStr, setChoicesStr] = useState(initial.choices.join(", "));
+  const [toolsStr, setToolsStr] = useState(initial.tools.length ? JSON.stringify(initial.tools, null, 2) : "");
+  const [argsStr, setArgsStr] = useState(Object.keys(initial.expected_args).length ? JSON.stringify(initial.expected_args, null, 2) : "");
+  const [err, setErr] = useState<string>();
+  const set = (k: keyof CustomTaskInput, v: any) => setT((p) => ({ ...p, [k]: v }));
+
+  const save = () => {
+    try {
+      onSave({
+        ...t,
+        contains: containsStr.split(",").map((s) => s.trim()).filter(Boolean),
+        choices: choicesStr.split(",").map((s) => s.trim()).filter(Boolean),
+        tools: toolsStr.trim() ? JSON.parse(toolsStr) : [],
+        expected_args: argsStr.trim() ? JSON.parse(argsStr) : {},
+      });
+    } catch (e: any) {
+      setErr("Invalid JSON in tools / expected args: " + e.message);
+    }
+  };
+
+  return (
+    <div>
+      <div className="row-2">
+        <Field label="Category" help="A built-in category (coding/security/reasoning/judging/tools) to extend it, or your own name (e.g. 'myrepo').">
+          <input value={t.category} onChange={(e) => set("category", e.target.value)} />
+        </Field>
+        <Field label="Name"><input value={t.name} onChange={(e) => set("name", e.target.value)} /></Field>
+      </div>
+      <Field label="Prompt"><textarea value={t.prompt} onChange={(e) => set("prompt", e.target.value)} style={{ minHeight: 80 }} /></Field>
+      <Field label="System prompt (optional)"><input value={t.system ?? ""} onChange={(e) => set("system", e.target.value || null)} /></Field>
+      <div className="row-2">
+        <Field label="Scorer">
+          <select value={t.scorer} onChange={(e) => set("scorer", e.target.value)}>
+            {SCORERS.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </Field>
+        <Field label="Max tokens"><input type="number" value={t.max_tokens} onChange={(e) => set("max_tokens", Number(e.target.value))} /></Field>
+      </div>
+
+      {t.scorer === "exact" && <Field label="Expected answer (substring match)"><input value={t.answer ?? ""} onChange={(e) => set("answer", e.target.value || null)} /></Field>}
+      {t.scorer === "contains" && <Field label="Must contain (comma-separated)"><input value={containsStr} onChange={(e) => setContainsStr(e.target.value)} /></Field>}
+      {t.scorer === "numeric" && (
+        <div className="row-2">
+          <Field label="Expected number"><input type="number" value={t.numeric_answer ?? ""} onChange={(e) => set("numeric_answer", e.target.value === "" ? null : Number(e.target.value))} /></Field>
+          <Field label="Tolerance"><input type="number" step="0.001" value={t.numeric_tol} onChange={(e) => set("numeric_tol", Number(e.target.value))} /></Field>
+        </div>
+      )}
+      {t.scorer === "mcq" && (
+        <div className="row-2">
+          <Field label="Choices (comma-separated)"><input value={choicesStr} onChange={(e) => setChoicesStr(e.target.value)} placeholder="A, B, C, D" /></Field>
+          <Field label="Correct"><input value={t.correct ?? ""} onChange={(e) => set("correct", e.target.value || null)} /></Field>
+        </div>
+      )}
+      {t.scorer === "judge" && <Field label="Rubric" help="What full marks require; the judge grades 0–10 against this."><textarea value={t.rubric ?? ""} onChange={(e) => set("rubric", e.target.value || null)} /></Field>}
+      {t.scorer === "code_exec" && (
+        <>
+          <Field label="Entry point (function name)"><input value={t.entry_point ?? ""} onChange={(e) => set("entry_point", e.target.value || null)} /></Field>
+          <Field label="Test code" help="Python defining check(candidate) that asserts; runs in a sandbox. pass@1.">
+            <textarea value={t.test_code ?? ""} onChange={(e) => set("test_code", e.target.value || null)} style={{ minHeight: 90 }} placeholder={"def check(candidate):\n    assert candidate(2) == 4"} />
+          </Field>
+          <Field label="Code prefix (optional)" help="Prepended to the model's code before running (e.g. a function signature)."><textarea value={t.code_prefix ?? ""} onChange={(e) => set("code_prefix", e.target.value || null)} /></Field>
+        </>
+      )}
+      {t.scorer === "tool_call" && (
+        <>
+          <Field label="Tools (JSON array of OpenAI tool defs)"><textarea value={toolsStr} onChange={(e) => setToolsStr(e.target.value)} style={{ minHeight: 90 }} placeholder='[{"type":"function","function":{"name":"get_weather","parameters":{...}}}]' /></Field>
+          <div className="row-2">
+            <Field label="Expected tool (function name)"><input value={t.expected_tool ?? ""} onChange={(e) => set("expected_tool", e.target.value || null)} /></Field>
+            <label className="checkbox" style={{ marginTop: 22 }}><input type="checkbox" checked={t.forbid_tool_call} onChange={(e) => set("forbid_tool_call", e.target.checked)} /><span><span className="cb-label">Forbid (must refuse)</span><div className="cb-sub">Pass only if the model declines to call any tool.</div></span></label>
+          </div>
+          <Field label="Expected args (JSON: arg → required substring)"><textarea value={argsStr} onChange={(e) => setArgsStr(e.target.value)} placeholder='{"location": "oslo"}' /></Field>
+        </>
+      )}
+
+      <label className="checkbox"><input type="checkbox" checked={t.enabled} onChange={(e) => set("enabled", e.target.checked)} /><span className="cb-label">Enabled</span></label>
+      {err && <div className="banner banner-warn">⚠ {err}</div>}
+      <div className="modal-foot" style={{ paddingRight: 0 }}>
+        <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+        <button className="btn btn-primary" onClick={save} disabled={!t.name || !t.prompt}>Save task</button>
+      </div>
+    </div>
+  );
+}
+
+function CustomTasksModal({ onClose }: { onClose: () => void }) {
+  const tasks = usePoll(() => api.listEvalTasks(), 0);
+  const { toast } = useToast();
+  const [editing, setEditing] = useState<CustomTaskInput | null>(null);
+  const [editId, setEditId] = useState<number | null>(null);
+
+  const save = async (payload: CustomTaskInput) => {
+    try {
+      if (editId != null) await api.updateEvalTask(editId, payload);
+      else await api.createEvalTask(payload);
+      toast("Task saved", "success");
+      setEditing(null);
+      setEditId(null);
+      tasks.reload();
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+  const del = async (t: CustomTask) => {
+    if (!confirm(`Delete task "${t.name}"?`)) return;
+    await api.deleteEvalTask(t.id);
+    tasks.reload();
+  };
+  const edit = (t: CustomTask) => {
+    const { id, ...rest } = t;
+    setEditing(rest as CustomTaskInput);
+    setEditId(id);
+  };
+
+  return (
+    <Modal title="Custom eval tasks" wide onClose={onClose}>
+      {editing ? (
+        <TaskForm initial={editing} onSave={save} onCancel={() => { setEditing(null); setEditId(null); }} />
+      ) : (
+        <>
+          <div className="spread mb">
+            <span className="faint">Your own tasks, run per category alongside the built-ins.</span>
+            <button className="btn btn-sm btn-primary" onClick={() => { setEditing({ ...EMPTY_TASK }); setEditId(null); }}>+ Add task</button>
+          </div>
+          {(tasks.data ?? []).length === 0 ? (
+            <EmptyState icon="✎" title="No custom tasks yet">Add tasks from your own repos/prompts.</EmptyState>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Category</th><th>Scorer</th><th>Enabled</th><th></th></tr></thead>
+                <tbody>
+                  {(tasks.data ?? []).map((t) => (
+                    <tr key={t.id}>
+                      <td><strong>{t.name}</strong></td>
+                      <td><span className="tag">{t.category}</span></td>
+                      <td><span className="tag">{t.scorer}</span></td>
+                      <td><Badge kind={t.enabled ? "green" : "gray"}>{t.enabled ? "on" : "off"}</Badge></td>
+                      <td><div className="btn-row" style={{ justifyContent: "flex-end" }}>
+                        <button className="btn btn-sm" onClick={() => edit(t)}>Edit</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => del(t)}>✕</button>
+                      </div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Modal>
+  );
+}
+
 // ---------- Page ----------
 export default function Evals() {
   const evals = usePoll(() => api.listEvals(), 5000);
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
+  const [managing, setManaging] = useState(false);
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [compare, setCompare] = useState<Set<number>>(new Set());
@@ -272,7 +461,10 @@ export default function Evals() {
           <h1>Evals</h1>
           <p>Benchmark model capability (coding / security / reasoning / judging) and throughput, and compare runs over time.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setCreating(true)}>+ New eval</button>
+        <div className="btn-row">
+          <button className="btn" onClick={() => setManaging(true)}>Manage tasks</button>
+          <button className="btn btn-primary" onClick={() => setCreating(true)}>+ New eval</button>
+        </div>
       </div>
 
       {trend.length > 0 && (
@@ -331,6 +523,7 @@ export default function Evals() {
       {detailId != null && <div className="mt"><RunDetail id={detailId} /></div>}
 
       {creating && <NewEval onClose={() => setCreating(false)} onStarted={(id, label) => { setJob({ id, label }); evals.reload(); }} />}
+      {managing && <CustomTasksModal onClose={() => setManaging(false)} />}
       {job && (
         <Modal title={`Eval: ${job.label}`} wide onClose={() => { setJob(null); evals.reload(); }}>
           <JobLogPanel jobId={job.id} title={job.label} onDone={() => evals.reload()} />

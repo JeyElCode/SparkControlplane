@@ -9,7 +9,7 @@ playground.
 It ships as a single container published to
 `ghcr.io/jeyelcode/spark-controlplane`.
 
-![version](https://img.shields.io/badge/version-1.1.0-blue)
+![version](https://img.shields.io/badge/version-1.2.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ---

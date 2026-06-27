@@ -76,6 +76,39 @@ export interface SuiteInfo {
   scorers: string[];
 }
 
+export interface Catalog {
+  capability: SuiteInfo[];
+  benchmarks: string[];
+  custom_categories: string[];
+}
+
+export interface CustomTask {
+  id: number;
+  category: string;
+  name: string;
+  prompt: string;
+  scorer: string;
+  system?: string | null;
+  answer?: string | null;
+  contains: string[];
+  numeric_answer?: number | null;
+  numeric_tol: number;
+  choices: string[];
+  correct?: string | null;
+  rubric?: string | null;
+  entry_point?: string | null;
+  test_code?: string | null;
+  code_prefix?: string | null;
+  tools: any[];
+  expected_tool?: string | null;
+  expected_args: Record<string, any>;
+  forbid_tool_call: boolean;
+  max_tokens: number;
+  enabled: boolean;
+}
+
+export type CustomTaskInput = Omit<CustomTask, "id">;
+
 export interface JudgeConfig {
   type: "none" | "instance" | "external";
   instance_id?: number | null;
@@ -92,6 +125,7 @@ export interface EvalRunRequest {
   temperature: number;
   judge?: JudgeConfig | null;
   sandbox_image: string;
+  benchmark_n?: number;
 }
 
 export interface EvalRunSummary {
@@ -428,6 +462,13 @@ export const api = {
 
   // evals
   evalSuites: () => j<SuiteInfo[]>("/api/evals/suites"),
+  evalCatalog: () => j<Catalog>("/api/evals/catalog"),
+  listEvalTasks: () => j<CustomTask[]>("/api/evals/tasks"),
+  createEvalTask: (t: CustomTaskInput) =>
+    j<CustomTask>("/api/evals/tasks", { method: "POST", body: JSON.stringify(t) }),
+  updateEvalTask: (id: number, t: CustomTaskInput) =>
+    j<CustomTask>(`/api/evals/tasks/${id}`, { method: "PATCH", body: JSON.stringify(t) }),
+  deleteEvalTask: (id: number) => j<void>(`/api/evals/tasks/${id}`, { method: "DELETE" }),
   listEvals: () => j<EvalRunSummary[]>("/api/evals"),
   getEval: (id: number) => j<EvalRunDetail>(`/api/evals/${id}`),
   createEval: (req: EvalRunRequest) =>

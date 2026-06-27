@@ -38,9 +38,43 @@ scores (0–1), and the run's overall score is the mean across all tasks.
 | `mcq` | the model picks the correct option (A/B/C/… or 1/2/…) |
 | `judge` | an LLM judge scores the answer 0–10 against the task's rubric |
 | `code_exec` | the model writes code; unit tests run in a sandbox → pass@1 |
+| `tool_call` | the model must emit a valid tool call (right function + args), or *refuse* a destructive one |
 
-Categories ship with a starter suite (deterministic + judge + code tasks). The
-suite is data-driven in `backend/app/services/eval_suites.py` and easy to extend.
+Built-in categories: **coding** (sandboxed code), **security** (judge + mcq),
+**reasoning** (numeric/mcq/contains), **judging** (does it pick the correct
+answer), and **tools** (tool-use). Suites are data-driven in
+`backend/app/services/eval_suites.py`.
+
+### Tool-use / agent (`tool_call`)
+
+The "ops brain" calls tools, so the `tools` category measures exactly that. A
+task ships OpenAI-style function definitions; the model is asked to act, and the
+portal checks the returned `tool_calls`:
+
+- **right function** — did it call the expected tool (e.g. `list_files`, not
+  `delete_path`)?
+- **right arguments** — do the args contain the expected values?
+- **refusal** — for a `forbid_tool_call` task (e.g. "run `rm -rf /`"), it passes
+  only if the model *declines* to call the destructive tool.
+
+This is where local vLLM models often differ from hosted APIs (tool-call format,
+parser, stop tokens), so it's a high-signal check for agentic use.
+
+### Custom tasks
+
+**Evals → Manage tasks** lets you author your own tasks (your repos, prompts,
+rubrics, expected answers/tests/tools) in the UI; they're stored in the DB and
+run per category alongside the built-ins. Your own suite is usually more
+predictive of real usefulness than any public leaderboard. Every scorer above is
+available.
+
+### Public benchmark subsets
+
+Selecting **HumanEval**, **GSM8K**, or **MMLU** as a category pulls a configurable
+**sample** of real items from the HuggingFace datasets-server at run time and maps
+them onto our scorers (HumanEval → `code_exec` pass@1, GSM8K → `numeric`, MMLU →
+`mcq`). These are a cheap objective baseline filter — a subset, not a full
+leaderboard run, and they need network access from the portal.
 
 ### Sandboxed code execution (`code_exec`)
 

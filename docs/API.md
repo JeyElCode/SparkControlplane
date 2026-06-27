@@ -297,18 +297,35 @@ evaluation of a model instance. See [EVALS.md](EVALS.md) for the concepts.
 
 | Method | Path | Description | Request | Response |
 |---|---|---|---|---|
-| GET | `/suites` | Available categories + task counts. | — | `SuiteInfo[]` |
+| GET | `/suites` | Built-in categories + task counts. | — | `SuiteInfo[]` |
+| GET | `/catalog` | Selectable categories: built-in + benchmarks + custom. | — | `CatalogOut` |
 | POST | `` | Start an eval run (background job). | `EvalRunRequest` | `EvalStarted` |
 | GET | `` | List runs (newest first). | — | `EvalRunOut[]` |
 | GET | `/{id}` | Full run detail (results + perf + summary + config). | — | `EvalRunDetail` |
 | DELETE | `/{id}` | Delete a run and its results. | — | `204` |
+| GET | `/tasks` | List custom (user-authored) tasks. | — | `CustomTaskOut[]` |
+| POST | `/tasks` | Create a custom task. | `CustomTaskIn` | `201` `CustomTaskOut` |
+| PATCH | `/tasks/{id}` | Update a custom task. | `CustomTaskIn` | `CustomTaskOut` |
+| DELETE | `/tasks/{id}` | Delete a custom task. | — | `204` |
 
 **`EvalRunRequest`** — `instance_id` (required), `name?`, `categories[]`
-(`coding`/`security`/`reasoning`/`judging`), `capability` (default `true`),
-`performance` (default `true`), `perf_reps` (default `3`), `concurrency` (int[],
-default `[1,2,4]`), `temperature` (default `0.2`), `judge`
+(built-in `coding`/`security`/`reasoning`/`judging`/`tools`, benchmarks
+`humaneval`/`gsm8k`/`mmlu`, or your custom categories), `capability` (default
+`true`), `performance` (default `true`), `perf_reps` (default `3`), `concurrency`
+(int[], default `[1,2,4]`), `temperature` (default `0.2`), `judge`
 (`{type: "none"|"instance"|"external", instance_id?}`), `sandbox_image`
-(default `python:3.12-slim`).
+(default `python:3.12-slim`), `benchmark_n` (sample size per benchmark, default
+`20`).
+
+**`CatalogOut`** — `capability` (`SuiteInfo[]`), `benchmarks` (`string[]`),
+`custom_categories` (`string[]`).
+
+**`CustomTaskIn` / `CustomTaskOut`** — `category`, `name`, `prompt`, `scorer`
+(`exact`/`contains`/`numeric`/`mcq`/`judge`/`code_exec`/`tool_call`) plus the
+fields that scorer needs (`answer`, `contains[]`, `numeric_answer`/`numeric_tol`,
+`choices[]`/`correct`, `rubric`, `entry_point`/`test_code`/`code_prefix`,
+`tools[]`/`expected_tool`/`expected_args`/`forbid_tool_call`), `system?`,
+`max_tokens`, `enabled`. `CustomTaskOut` adds `id`.
 
 **`EvalStarted`** — `{ run_id, job_id, message }`. Follow `job_id` via the Jobs
 API / WebSocket for live progress.

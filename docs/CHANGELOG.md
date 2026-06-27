@@ -4,6 +4,20 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.2.0
+- **Tool-use / agent eval** — new `tools` category + `tool_call` scorer: ships
+  OpenAI tool definitions, checks the model calls the right function with the
+  right args, and tests that it *refuses* a destructive tool. (Non-streaming
+  `chat_once` captures tool calls.)
+- **Custom task authoring** — author your own tasks (your repos/prompts/rubrics/
+  tests/tools) in the UI (**Evals → Manage tasks**), stored in `custom_tasks` and
+  run per category alongside the built-ins. `GET/POST/PATCH/DELETE /api/evals/tasks`.
+- **Public benchmark subsets** — select HumanEval / GSM8K / MMLU to pull a
+  configurable sample of real items from the HuggingFace datasets-server at run
+  time, mapped onto our scorers (code_exec / numeric / mcq). `benchmark_n`
+  controls the sample size.
+- New `GET /api/evals/catalog` (built-in + benchmark + custom categories).
+
 ## v1.1.0
 - **LLM evaluation & benchmarking framework** (new **Evals** page + `/api/evals`).
   - **Capability** scoring per task: deterministic (`exact`/`contains`/`numeric`/

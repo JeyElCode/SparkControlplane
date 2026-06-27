@@ -228,9 +228,9 @@ class JobLog(Base):
 
 
 # --- Evaluation / benchmarking -------------------------------------------
-EVAL_CATEGORIES = ("coding", "security", "reasoning", "judging")
+EVAL_CATEGORIES = ("coding", "security", "reasoning", "judging", "tools")
 PERF_CATEGORIES = ("coding", "reasoning", "textgen", "judging")
-SCORERS = ("exact", "contains", "numeric", "mcq", "judge", "code_exec")
+SCORERS = ("exact", "contains", "numeric", "mcq", "judge", "code_exec", "tool_call")
 
 
 class EvalRun(Base):
@@ -312,3 +312,34 @@ class PerfResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     run: Mapped[EvalRun] = relationship(back_populates="perf")
+
+
+class CustomTask(Base):
+    """A user-authored capability task. List/dict fields are stored as JSON text."""
+
+    __tablename__ = "custom_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255))
+    prompt: Mapped[str] = mapped_column(Text)
+    system: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scorer: Mapped[str] = mapped_column(String(16))
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contains_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    numeric_answer: Mapped[float | None] = mapped_column(Float, nullable=True)
+    numeric_tol: Mapped[float] = mapped_column(Float, default=0.01)
+    choices_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correct: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rubric: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entry_point: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    test_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_prefix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tools_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_tool: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expected_args_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    forbid_tool_call: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_tokens: Mapped[int] = mapped_column(Integer, default=1024)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
