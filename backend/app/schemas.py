@@ -268,6 +268,7 @@ class ModelOut(BaseModel):
     notes: str | None
     node_states: list[ModelNodeStateOut]
     created_at: datetime
+    active_job_id: int | None = None  # a running download/sync/delete job, if any
 
     @classmethod
     def of(cls, model: m.ModelRegistry) -> "ModelOut":

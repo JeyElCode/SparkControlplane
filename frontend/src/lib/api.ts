@@ -95,6 +95,7 @@ export interface Model {
   notes?: string | null;
   node_states: ModelNodeState[];
   created_at: string;
+  active_job_id?: number | null;
 }
 
 export interface Instance {

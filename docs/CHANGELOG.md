@@ -4,6 +4,13 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.0.13
+- While a model download/sync/delete is running, the Models page now shows a
+  **"View log"** button (opening that job's live log) instead of disabling the
+  action buttons — so you can watch the actual download messages. The `409`
+  concurrency guard from v1.0.12 still prevents starting a second operation. The
+  models API now returns `active_job_id` for any model with a running job.
+
 ## v1.0.12
 - **Prevent concurrent file operations on a model.** Pressing Download again
   while one was running launched a second `hf download` into the same dir, and
