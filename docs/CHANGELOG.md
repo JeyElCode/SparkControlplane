@@ -4,6 +4,16 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.2.2
+- **Fix "database is locked" under concurrent writes.** SQLite now runs in WAL
+  mode with a 30s busy timeout (+ `synchronous=NORMAL`, `foreign_keys=ON`), so
+  the many concurrent writes during an eval (streamed job logs, per-task commits,
+  the perf sweep, status polling) queue instead of failing instantly. An eval
+  could previously error mid-run (e.g. a benchmark log line reporting "database
+  is locked").
+- Narrowed the benchmark-fetch try/except so a transient log-write failure can no
+  longer be mis-reported as a "fetch failed".
+
 ## v1.2.1
 - **Fix startup crash on an upgraded DB.** `init_db` now auto-adds missing
   columns to existing tables (`ALTER TABLE … ADD COLUMN`), not just missing

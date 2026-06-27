@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import event, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import get_settings
@@ -15,8 +15,25 @@ log = logging.getLogger("spark.db")
 
 _settings = get_settings()
 
-engine = create_async_engine(_settings.db_url, echo=False, future=True)
+# timeout (seconds) = SQLite busy timeout: writers wait for the lock instead of
+# failing instantly with "database is locked" under the app's concurrent writes
+# (streamed job logs, per-task eval commits, status polling, the perf sweep).
+engine = create_async_engine(
+    _settings.db_url, echo=False, future=True, connect_args={"timeout": 30}
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _record) -> None:
+    """WAL allows concurrent readers alongside a writer; busy_timeout makes
+    contending writers wait. Applied on every new connection."""
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=30000")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute("PRAGMA foreign_keys=ON")
+    cur.close()
 
 
 def _add_missing_columns(conn) -> None:

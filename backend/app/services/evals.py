@@ -389,10 +389,11 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
                     if cat in bench:
                         try:
                             fetched = await public_benchmarks.fetch(cat, n)
-                            tasks += fetched
-                            await handle.log(f"Fetched {len(fetched)} {cat} items")
-                        except Exception as exc:  # noqa: BLE001
+                        except Exception as exc:  # noqa: BLE001 - network/dataset issue
                             await handle.log(f"benchmark {cat} fetch failed: {exc}", "error")
+                            continue
+                        tasks += fetched
+                        await handle.log(f"Fetched {len(fetched)} {cat} items")
                     else:
                         tasks += eval_suites.CAPABILITY_SUITES.get(cat, [])
                 tasks += await custom_tasks.load_custom(session, [c for c in categories if c not in bench])
