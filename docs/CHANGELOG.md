@@ -4,6 +4,14 @@ All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.
 
+## v1.2.1
+- **Fix startup crash on an upgraded DB.** `init_db` now auto-adds missing
+  columns to existing tables (`ALTER TABLE … ADD COLUMN`), not just missing
+  tables. A persisted `/data` DB created before v1.1.0 lacked the
+  `settings.judge_*` columns, so the app crash-looped with
+  `no such column: settings.judge_base_url`. Migration is non-destructive
+  (existing data preserved) and covers any future column additions.
+
 ## v1.2.0
 - **Tool-use / agent eval** — new `tools` category + `tool_call` scorer: ships
   OpenAI tool definitions, checks the model calls the right function with the

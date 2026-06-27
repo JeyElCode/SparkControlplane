@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import get_settings
 from .models import Base, ClusterConfig, Setting
+
+log = logging.getLogger("spark.db")
 
 _settings = get_settings()
 
@@ -16,10 +19,39 @@ engine = create_async_engine(_settings.db_url, echo=False, future=True)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+def _add_missing_columns(conn) -> None:
+    """Lightweight auto-migration: `create_all` adds new *tables* but never new
+    *columns* on existing tables. For each mapped table that already exists, add
+    any column present in the model but missing on disk (nullable / with its
+    scalar default) via `ALTER TABLE ... ADD COLUMN`. Non-destructive."""
+    insp = inspect(conn)
+    existing_tables = set(insp.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # freshly created by create_all
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            coltype = col.type.compile(dialect=conn.dialect)
+            ddl = f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {coltype}'
+            default = col.default
+            if default is not None and getattr(default, "is_scalar", False):
+                val = default.arg
+                if isinstance(val, bool):
+                    val = 1 if val else 0
+                elif isinstance(val, str):
+                    val = "'" + val.replace("'", "''") + "'"
+                ddl += f" DEFAULT {val}"
+            conn.execute(text(ddl))
+            log.warning("DB migration: added column %s.%s", table.name, col.name)
+
+
 async def init_db() -> None:
-    """Create tables and seed singleton rows."""
+    """Create tables, add any missing columns, and seed singleton rows."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)
 
     async with SessionLocal() as session:
         cfg = await session.get(ClusterConfig, 1)
