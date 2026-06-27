@@ -150,9 +150,9 @@ export default function Models() {
                       <div className="flex-col gap-sm">
                         {m.node_states.map((s) => (
                           <div key={s.node_id} className="flex-col" style={{ gap: 3, minWidth: 160 }}>
-                            <Badge kind={statusKind(s.status)}>
+                            <Badge kind={s.present && s.checksum_ok === false ? "amber" : statusKind(s.status)}>
                               {s.node_name}: {s.present ? "✓" : s.status}
-                              {s.checksum_ok === true ? " ✔" : ""}
+                              {s.present && s.checksum_ok === false ? " ⚠ checksum" : ""}
                             </Badge>
                             {(s.status === "downloading" || s.status === "syncing") && s.progress != null && (
                               <div className="progress-row" style={{ margin: 0 }}>
