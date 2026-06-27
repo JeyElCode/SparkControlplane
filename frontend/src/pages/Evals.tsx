@@ -8,7 +8,7 @@ import { BarList, LineChart, PALETTE } from "../components/charts";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
-const DEFAULT_CATEGORIES = ["coding", "security", "reasoning", "judging", "tools"];
+const DEFAULT_CATEGORIES = ["coding", "reasoning", "textgen", "judging"];
 const pct = (s?: number | null) => (s == null ? "—" : `${Math.round(s * 100)}%`);
 
 function CatGroup({ title, cats, sel, onToggle }: { title: string; cats: string[]; sel: string[]; onToggle: (c: string) => void }) {
@@ -44,16 +44,13 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
     temperature: 0.2,
     judge: { type: "instance", instance_id: undefined },
     sandbox_image: "python:3.12-slim",
-    benchmark_n: 20,
   });
   const [concStr, setConcStr] = useState("1, 2, 4");
   const [busy, setBusy] = useState(false);
   const set = (k: keyof EvalRunRequest, v: any) => setF((p) => ({ ...p, [k]: v }));
   const insts = instances.data ?? [];
-  const builtinCats = (catalog.data?.capability ?? []).map((s) => s.category);
-  const benchCats = catalog.data?.benchmarks ?? [];
+  const perfCats = catalog.data?.perf_categories ?? [];
   const customCats = catalog.data?.custom_categories ?? [];
-  const anyBench = f.categories.some((c) => benchCats.includes(c));
 
   useEffect(() => {
     if (!f.instance_id && insts.length) {
@@ -103,18 +100,12 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
         <Field label="Run name (optional)"><input value={f.name} placeholder="auto" onChange={(e) => set("name", e.target.value)} /></Field>
       </div>
 
-      <Field label="Categories">
+      <Field label="Categories" help="Performance categories run the built-in tokens/sec prompts. Custom categories run your authored tasks (Manage tasks).">
         <div className="flex-col" style={{ gap: 10 }}>
-          <CatGroup title="Built-in" cats={builtinCats} sel={f.categories} onToggle={toggleCat} />
-          <CatGroup title="Public benchmarks" cats={benchCats} sel={f.categories} onToggle={toggleCat} />
-          <CatGroup title="Custom" cats={customCats} sel={f.categories} onToggle={toggleCat} />
+          <CatGroup title="Performance (tokens/sec)" cats={perfCats} sel={f.categories} onToggle={toggleCat} />
+          <CatGroup title="Custom tasks" cats={customCats} sel={f.categories} onToggle={toggleCat} />
         </div>
       </Field>
-      {anyBench && (
-        <Field label="Benchmark sample size" help="How many items to pull per public-benchmark category (HumanEval/GSM8K/MMLU) from the HuggingFace datasets-server. A subset, not the full set.">
-          <input type="number" value={f.benchmark_n ?? 20} onChange={(e) => set("benchmark_n", Number(e.target.value))} />
-        </Field>
-      )}
 
       <div className="row-2">
         <label className="checkbox"><input type="checkbox" checked={f.capability} onChange={(e) => set("capability", e.target.checked)} /><span><span className="cb-label">Capability scoring</span><div className="cb-sub">Correctness via deterministic checks, judge, and sandboxed code.</div></span></label>
@@ -470,7 +461,6 @@ export default function Evals() {
         temperature: cfg.temperature ?? 0.2,
         judge: cfg.judge ?? null,
         sandbox_image: cfg.sandbox_image ?? "python:3.12-slim",
-        benchmark_n: cfg.benchmark_n ?? 20,
       });
       toast("Re-run started", "success");
       setJob({ id: r.job_id, label: d.name });

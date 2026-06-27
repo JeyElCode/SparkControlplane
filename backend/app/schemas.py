@@ -561,17 +561,9 @@ class JobAccepted(BaseModel):
 
 
 # --- Evaluations ---------------------------------------------------------
-class SuiteInfo(BaseModel):
-    category: str
-    capability_tasks: int
-    perf_tasks: int
-    scorers: list[str]
-
-
 class CatalogOut(BaseModel):
-    capability: list[SuiteInfo]
-    benchmarks: list[str]
-    custom_categories: list[str]
+    perf_categories: list[str]   # built-in throughput-test categories
+    custom_categories: list[str]  # distinct categories of user-authored tasks
 
 
 _SCORER = Literal["exact", "contains", "numeric", "mcq", "judge", "code_exec", "tool_call"]
@@ -637,7 +629,7 @@ class JudgeConfig(BaseModel):
 class EvalRunRequest(BaseModel):
     instance_id: int
     name: str | None = None
-    categories: list[str] = Field(default_factory=lambda: ["coding", "security", "reasoning", "judging"])
+    categories: list[str] = Field(default_factory=lambda: ["coding", "reasoning", "textgen", "judging"])
     capability: bool = True
     performance: bool = True
     perf_reps: int = 3
@@ -645,7 +637,6 @@ class EvalRunRequest(BaseModel):
     temperature: float = 0.2
     judge: JudgeConfig | None = None
     sandbox_image: str = "python:3.12-slim"
-    benchmark_n: int = 20  # sample size per public-benchmark category
 
 
 class EvalStarted(BaseModel):

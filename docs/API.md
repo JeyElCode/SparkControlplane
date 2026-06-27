@@ -297,8 +297,7 @@ evaluation of a model instance. See [EVALS.md](EVALS.md) for the concepts.
 
 | Method | Path | Description | Request | Response |
 |---|---|---|---|---|
-| GET | `/suites` | Built-in categories + task counts. | — | `SuiteInfo[]` |
-| GET | `/catalog` | Selectable categories: built-in + benchmarks + custom. | — | `CatalogOut` |
+| GET | `/catalog` | Selectable categories: performance + custom. | — | `CatalogOut` |
 | POST | `` | Start an eval run (background job). | `EvalRunRequest` | `EvalStarted` |
 | GET | `` | List runs (newest first). | — | `EvalRunOut[]` |
 | GET | `/{id}` | Full run detail (results + perf + summary + config). | — | `EvalRunDetail` |
@@ -309,16 +308,15 @@ evaluation of a model instance. See [EVALS.md](EVALS.md) for the concepts.
 | DELETE | `/tasks/{id}` | Delete a custom task. | — | `204` |
 
 **`EvalRunRequest`** — `instance_id` (required), `name?`, `categories[]`
-(built-in `coding`/`security`/`reasoning`/`judging`/`tools`, benchmarks
-`humaneval`/`gsm8k`/`mmlu`, or your custom categories), `capability` (default
-`true`), `performance` (default `true`), `perf_reps` (default `3`), `concurrency`
+(performance categories `coding`/`reasoning`/`textgen`/`judging`, and/or your
+custom categories), `capability` (default `true`, runs custom tasks),
+`performance` (default `true`), `perf_reps` (default `3`), `concurrency`
 (int[], default `[1,2,4]`), `temperature` (default `0.2`), `judge`
 (`{type: "none"|"instance"|"external", instance_id?}`), `sandbox_image`
-(default `python:3.12-slim`), `benchmark_n` (sample size per benchmark, default
-`20`).
+(default `python:3.12-slim`).
 
-**`CatalogOut`** — `capability` (`SuiteInfo[]`), `benchmarks` (`string[]`),
-`custom_categories` (`string[]`).
+**`CatalogOut`** — `perf_categories` (`string[]`), `custom_categories`
+(`string[]`).
 
 **`CustomTaskIn` / `CustomTaskOut`** — `category`, `name`, `prompt`, `scorer`
 (`exact`/`contains`/`numeric`/`mcq`/`judge`/`code_exec`/`tool_call`) plus the

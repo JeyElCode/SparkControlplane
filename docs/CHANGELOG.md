@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.0
+- **Simplified evals to what's actually useful here: custom tasks + throughput.**
+  Removed the public-benchmark integration (HumanEval/GSM8K/MMLU fetch) and the
+  built-in canned capability suites — read standardized benchmarks from
+  HuggingFace directly if you want them. Capability evaluation is now entirely
+  **your own custom tasks** (all scorers kept: exact/contains/numeric/mcq/judge/
+  sandboxed code/tool-call), and the **tokens/sec performance** tests (TTFT,
+  decode tok/s, concurrency sweep) stay. `GET /api/evals/catalog` now returns
+  `{perf_categories, custom_categories}`; removed `GET /api/evals/suites` and the
+  `benchmark_n` request field. Judge (instance or external) and the code sandbox
+  are unchanged.
+
 All notable changes to Spark Control Plane. Each version is published as
 `ghcr.io/jeyelcode/spark-controlplane:vX.Y.Z` (multi-arch) by CI on the matching
 git tag.

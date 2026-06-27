@@ -17,25 +17,18 @@ from ..schemas import (
     EvalRunOut,
     EvalRunRequest,
     EvalStarted,
-    SuiteInfo,
 )
-from ..services import custom_tasks, eval_suites, evals, public_benchmarks
+from ..services import custom_tasks, eval_suites, evals
 from ..services.instances import load_instance
 from ..services.jobs import jobs
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
 
 
-@router.get("/suites", response_model=list[SuiteInfo])
-async def list_suites():
-    return eval_suites.suite_summary()
-
-
 @router.get("/catalog", response_model=CatalogOut)
 async def catalog(session: AsyncSession = Depends(get_session)):
     return CatalogOut(
-        capability=eval_suites.suite_summary(),
-        benchmarks=public_benchmarks.BENCHMARKS,
+        perf_categories=eval_suites.perf_categories(),
         custom_categories=await custom_tasks.custom_categories(session),
     )
 

@@ -29,7 +29,7 @@ from ..models import (
     PerfResult,
 )
 from ..ssh import ssh_for_node
-from . import custom_tasks, eval_suites, public_benchmarks
+from . import custom_tasks, eval_suites
 from .instances import load_instance
 from .jobs import JobHandle
 from .llm_client import ToolCall, chat_once, chat_stream
@@ -401,22 +401,8 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
 
         try:
             if run.capability:
-                bench = set(public_benchmarks.BENCHMARKS)
-                n = int(cfg.get("benchmark_n", 20))
-                tasks = []
-                for cat in categories:
-                    if cat in bench:
-                        try:
-                            fetched = await public_benchmarks.fetch(cat, n)
-                        except Exception as exc:  # noqa: BLE001 - network/dataset issue
-                            await handle.log(f"benchmark {cat} fetch failed: {exc}", "error")
-                            continue
-                        tasks += fetched
-                        await handle.log(f"Fetched {len(fetched)} {cat} items")
-                    else:
-                        tasks += eval_suites.CAPABILITY_SUITES.get(cat, [])
-                tasks += await custom_tasks.load_custom(session, [c for c in categories if c not in bench])
-                await handle.log(f"Running {len(tasks)} capability tasks…")
+                tasks = await custom_tasks.load_custom(session, categories)
+                await handle.log(f"Running {len(tasks)} custom capability tasks…")
                 for i, task in enumerate(tasks):
                     if task.scorer == "code_exec" and code_ssh is None:
                         await handle.log(f"[{task.id}] skipped: no node for code execution", "error")

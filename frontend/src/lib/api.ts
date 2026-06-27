@@ -69,16 +69,8 @@ export interface Settings {
   has_judge_api_key?: boolean;
 }
 
-export interface SuiteInfo {
-  category: string;
-  capability_tasks: number;
-  perf_tasks: number;
-  scorers: string[];
-}
-
 export interface Catalog {
-  capability: SuiteInfo[];
-  benchmarks: string[];
+  perf_categories: string[];
   custom_categories: string[];
 }
 
@@ -125,7 +117,6 @@ export interface EvalRunRequest {
   temperature: number;
   judge?: JudgeConfig | null;
   sandbox_image: string;
-  benchmark_n?: number;
 }
 
 export interface EvalRunSummary {
@@ -461,7 +452,6 @@ export const api = {
   cancelJob: (id: number) => j<{ cancelled: boolean }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
 
   // evals
-  evalSuites: () => j<SuiteInfo[]>("/api/evals/suites"),
   evalCatalog: () => j<Catalog>("/api/evals/catalog"),
   listEvalTasks: () => j<CustomTask[]>("/api/evals/tasks"),
   createEvalTask: (t: CustomTaskInput) =>

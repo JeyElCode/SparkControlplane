@@ -9,7 +9,7 @@ playground.
 It ships as a single container published to
 `ghcr.io/jeyelcode/spark-controlplane`.
 
-![version](https://img.shields.io/badge/version-1.2.3-blue)
+![version](https://img.shields.io/badge/version-1.3.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ---
@@ -51,11 +51,11 @@ It ships as a single container published to
   `/proc/meminfo`, since the GB10 shares LPDDR5X between CPU and GPU and reports
   no separate VRAM), instance `/health` + served model, and a per-node memory
   budget with overcommit warnings.
-- **Evaluation & benchmarking** — score models on coding / security / reasoning /
-  judging (deterministic checks, LLM-judge, and **sandboxed code execution** →
-  pass@1) and benchmark throughput (TTFT, tokens/sec, concurrency sweep for peak
-  tok/s). Runs are saved, charted, and comparable over time. See
-  [docs/EVALS.md](docs/EVALS.md).
+- **Evaluation & benchmarking** — benchmark **throughput** (TTFT, tokens/sec,
+  concurrency sweep for peak tok/s) and score models on **your own custom tasks**
+  (any scorer: deterministic, LLM-judge, **sandboxed code execution** → pass@1,
+  or **tool-call** correctness). Runs are saved, charted, and comparable over
+  time. See [docs/EVALS.md](docs/EVALS.md).
 - **Built-in playground** — smoke-test any running model from the UI.
 - **Granular teardown/reset** — stop instances, stop Ray, remove network / SSH /
   hosts, and (off by default) delete downloaded models.
