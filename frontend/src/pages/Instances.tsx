@@ -94,18 +94,44 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
         <Field label="Port"><input type="number" value={f.port} onChange={(e) => set("port", Number(e.target.value))} /></Field>
       )}
       <div className="row-2">
-        <Field label="Max model length"><input type="number" value={f.max_model_len ?? ""} onChange={(e) => set("max_model_len", e.target.value ? Number(e.target.value) : null)} /></Field>
-        <Field label="GPU memory utilization"><input type="number" step="0.05" min="0.1" max="0.99" value={f.gpu_memory_utilization} onChange={(e) => set("gpu_memory_utilization", Number(e.target.value))} /></Field>
+        <Field
+          label="Max model length"
+          help="Maximum context length in tokens vLLM will serve (--max-model-len). Lower it to shrink KV-cache memory use; leave blank to use the model's default. Cannot exceed the model's trained context window."
+        >
+          <input type="number" value={f.max_model_len ?? ""} onChange={(e) => set("max_model_len", e.target.value ? Number(e.target.value) : null)} />
+        </Field>
+        <Field
+          label="GPU memory utilization"
+          help="Fraction of GPU memory vLLM may use for weights + KV cache (--gpu-memory-utilization, 0–1). Higher allows longer context and more concurrency but leaves less headroom; ~0.85 is typical. Lower it if you co-locate models or hit out-of-memory."
+        >
+          <input type="number" step="0.05" min="0.1" max="0.99" value={f.gpu_memory_utilization} onChange={(e) => set("gpu_memory_utilization", Number(e.target.value))} />
+        </Field>
       </div>
       <div className="row-2">
-        <Field label="Max num seqs (optional)"><input type="number" value={f.max_num_seqs ?? ""} onChange={(e) => set("max_num_seqs", e.target.value ? Number(e.target.value) : null)} /></Field>
-        <Field label="dtype (optional)"><input value={f.dtype ?? ""} placeholder="auto" onChange={(e) => set("dtype", e.target.value || null)} /></Field>
+        <Field
+          label="Max num seqs (optional)"
+          help="Maximum number of requests vLLM batches at once (--max-num-seqs). Lower it to reduce KV-cache memory pressure; leave blank for vLLM's default."
+        >
+          <input type="number" value={f.max_num_seqs ?? ""} onChange={(e) => set("max_num_seqs", e.target.value ? Number(e.target.value) : null)} />
+        </Field>
+        <Field
+          label="dtype (optional)"
+          help="Weight/compute precision (--dtype): auto, bfloat16, float16, or float32. 'auto' uses the model's native precision (FP8 models are handled via their own config). Usually leave as auto."
+        >
+          <input value={f.dtype ?? ""} placeholder="auto" onChange={(e) => set("dtype", e.target.value || null)} />
+        </Field>
       </div>
       <label className="checkbox">
         <input type="checkbox" checked={f.enable_tool_choice} onChange={(e) => set("enable_tool_choice", e.target.checked)} />
         <span><span className="cb-label">Enable tool calling</span><div className="cb-sub">Adds --enable-auto-tool-choice with the right parser{selModel?.tool_parser ? ` (auto: ${selModel.tool_parser})` : ""}.</div></span>
       </label>
-      <Field label="Tool parser override (optional)" hint="Leave blank to auto-map from the model name."><input value={f.tool_parser ?? ""} placeholder={selModel?.tool_parser ?? "auto"} onChange={(e) => set("tool_parser", e.target.value || null)} /></Field>
+      <Field
+        label="Tool parser override (optional)"
+        hint="Leave blank to auto-map from the model name."
+        help="Overrides the auto-selected --tool-call-parser used for OpenAI tool/function calling (e.g. hermes for Qwen, qwen3_xml for Qwen3-Coder, llama3_json, mistral). Only set this if tool calling misbehaves with the auto-detected parser."
+      >
+        <input value={f.tool_parser ?? ""} placeholder={selModel?.tool_parser ?? "auto"} onChange={(e) => set("tool_parser", e.target.value || null)} />
+      </Field>
       <Field label="Extra vllm args (optional)"><input value={f.extra_args ?? ""} placeholder="--enforce-eager" onChange={(e) => set("extra_args", e.target.value || null)} /></Field>
       <div className="row-2">
         <Field label="API key (optional)" hint="Secures the endpoint with --api-key."><input type="password" value={f.api_key ?? ""} onChange={(e) => set("api_key", e.target.value || null)} /></Field>

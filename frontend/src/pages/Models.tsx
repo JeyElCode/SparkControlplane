@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, Model } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { fmtBytes, statusKind } from "../lib/format";
-import { Badge, EmptyState, Meter, Modal, Spinner } from "../components/ui";
+import { Badge, EmptyState, HelpTip, Meter, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
@@ -128,7 +128,17 @@ export default function Models() {
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>Model</th><th>Size</th><th>Parser</th><th>Per-node</th><th>Status</th><th></th></tr>
+                <tr>
+                  <th>Model</th>
+                  <th>Size</th>
+                  <th>
+                    Parser
+                    <HelpTip text="The vLLM tool-call parser (--tool-call-parser) for OpenAI tool/function calling — e.g. hermes (Qwen), qwen3_xml (Qwen3-Coder), llama3_json, mistral. Auto-detected from the model name; required for tool_choice:auto to work. Override it per instance when creating one." />
+                  </th>
+                  <th>Per-node</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
               </thead>
               <tbody>
                 {(models.data ?? []).map((m) => (

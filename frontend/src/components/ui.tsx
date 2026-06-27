@@ -41,10 +41,31 @@ export function Modal({
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+export function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="help" tabIndex={0} aria-label={text}>
+      ?<span className="help-tip">{text}</span>
+    </span>
+  );
+}
+
+export function Field({
+  label,
+  hint,
+  help,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  help?: string;
+  children: ReactNode;
+}) {
   return (
     <div className="field">
-      <label>{label}</label>
+      <label>
+        {label}
+        {help && <HelpTip text={help} />}
+      </label>
       {children}
       {hint && <div className="hint">{hint}</div>}
     </div>

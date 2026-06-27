@@ -62,7 +62,12 @@ export default function SettingsPage() {
           <Field label="vLLM image"><input value={cfg.vllm_image} onChange={(e) => set("vllm_image", e.target.value)} /></Field>
           <div className="row-2">
             <Field label="QSFP netmask"><input type="number" value={cfg.qsfp_netmask} onChange={(e) => set("qsfp_netmask", Number(e.target.value))} /></Field>
-            <Field label="Container shm size"><input value={cfg.shm_size} onChange={(e) => set("shm_size", e.target.value)} /></Field>
+            <Field
+              label="Container shm size"
+              help="Shared memory (/dev/shm) for the Ray & vLLM containers — Docker's --shm-size. Docker's 64MB default is too small for vLLM's tensor-parallel IPC and causes crashes. Default 10.24gb; accepts values like 16g or 2048m. It's a cap on a tmpfs, not a reservation, so keep it below a node's RAM."
+            >
+              <input value={cfg.shm_size} onChange={(e) => set("shm_size", e.target.value)} />
+            </Field>
           </div>
           <div className="row-2">
             <Field label="Models subdir" hint="relative to the SSH user's home"><input value={cfg.models_subdir} onChange={(e) => set("models_subdir", e.target.value)} /></Field>
