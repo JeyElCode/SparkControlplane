@@ -9,7 +9,7 @@ playground.
 It ships as a single container published to
 `ghcr.io/jeyelcode/spark-controlplane`.
 
-![version](https://img.shields.io/badge/version-1.3.0-blue)
+![version](https://img.shields.io/badge/version-1.3.1-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 ---
@@ -29,6 +29,12 @@ It ships as a single container published to
     sha256 verification**.
   - **Live per-node progress bars** for both download and sync, visible right on
     the Models page.
+  - **Stuck-download recovery** — downloads use a named, single-per-model
+    container and reap any orphan + stale HuggingFace `.lock` files before
+    starting (so a download interrupted by a restart can't deadlock the next
+    one). A **Stop** button cancels an in-progress or orphaned transfer and
+    clears the locks; a stalled download (no progress for 15 min) aborts itself
+    with a clear message. Partial files are kept, so re-downloading resumes.
   - **Disk discovery** — models already present on the nodes are imported into
     the registry automatically (at startup and via a **Scan nodes** button), so
     the registry always mirrors what's on disk.

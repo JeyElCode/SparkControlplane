@@ -429,6 +429,7 @@ export const api = {
   syncModel: (id: number, target_node_id?: number) =>
     j<JobAccepted>(`/api/models/${id}/sync`, { method: "POST", body: JSON.stringify({ target_node_id: target_node_id ?? null }) }),
   refreshModel: (id: number) => j<Model>(`/api/models/${id}/refresh`, { method: "POST" }),
+  cancelModel: (id: number) => j<JobAccepted>(`/api/models/${id}/cancel`, { method: "POST" }),
   deleteModelFiles: (id: number, node_ids: number[] | null, drop_row: boolean) =>
     j<JobAccepted>(`/api/models/${id}/delete`, { method: "POST", body: JSON.stringify({ node_ids, drop_row }) }),
   removeModel: (id: number) => j<void>(`/api/models/${id}`, { method: "DELETE" }),

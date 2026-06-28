@@ -144,6 +144,7 @@ jobs.
 | GET | `/{id}` | Get one model. | — | `ModelOut` |
 | POST | `/{id}/download` | Download the model (query `auto_sync`, default `true`, syncs to the other node when done). | — | `JobAccepted` |
 | POST | `/{id}/sync` | Sync model files to another node over the QSFP link. | `{ "target_node_id"?: <int> }` | `JobAccepted` |
+| POST | `/{id}/cancel` | Stop an in-progress (or orphaned) download/sync: kill the node-side download container, clear stale HF locks, reset state to `absent` (partial files kept). Safe even with no in-memory job. | — | `JobAccepted` |
 | POST | `/{id}/refresh` | Re-check on-disk presence/size; **synchronous**. | — | `ModelOut` |
 | POST | `/{id}/delete` | Delete files on selected nodes; optionally drop the registry row. | `{ "node_ids"?: int[], "drop_row"?: bool }` | `JobAccepted` |
 | DELETE | `/{id}` | Remove the registry row only (leaves files on disk). | — | `204` |

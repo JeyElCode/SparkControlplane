@@ -48,6 +48,20 @@ async def _guard_no_active_file_job(session: AsyncSession, model: ModelRegistry)
         )
 
 
+async def _running_job_of_type(session: AsyncSession, target: str, type_: str) -> Job | None:
+    """First genuinely-running job of a given type for a model (cross-checked
+    against the in-process manager so a stale row doesn't count)."""
+    res = await session.execute(
+        select(Job)
+        .where(Job.target == target, Job.type == type_, Job.status.in_((JOB_PENDING, JOB_RUNNING)))
+        .order_by(Job.id.desc())
+    )
+    for job in res.scalars().all():
+        if jobs.is_running(job.id):
+            return job
+    return None
+
+
 async def _active_jobs_map(session: AsyncSession) -> dict[str, int]:
     """Map model name -> id of a genuinely-running file-op job for it."""
     res = await session.execute(
@@ -153,6 +167,33 @@ async def sync(
 
     job_id = await jobs.start("model.sync", f"Sync {name}", coro, target=name)
     return JobAccepted(job_id=job_id, message="Sync started")
+
+
+@router.post("/{model_id}/cancel", response_model=JobAccepted)
+async def cancel(model_id: int, session: AsyncSession = Depends(get_session)):
+    """Stop an in-progress (or stuck) download/sync for this model and clean up
+    the node-side container + stale locks. Safe to call even if this control
+    plane no longer owns the job (e.g. after a restart left an orphan)."""
+    model = await models_svc.load_model(session, model_id)
+    if model is None:
+        raise HTTPException(404, "Model not found")
+    name = model.name
+    # Don't pile up cleanup jobs if Stop is clicked repeatedly.
+    existing = await _running_job_of_type(session, name, "model.cancel")
+    if existing is not None:
+        return JobAccepted(job_id=existing.id, message="Stop already in progress")
+    # Cancel the in-process job if we still own it; the node-side container can
+    # outlive it, so the cleanup job below reaps it regardless.
+    busy = await _active_file_job(session, name)
+    if busy is not None:
+        await jobs.cancel(busy.id)
+
+    async def coro(h):
+        async with SessionLocal() as s:
+            return await models_svc.cancel_download(s, h, model_id)
+
+    job_id = await jobs.start("model.cancel", f"Stop {name}", coro, target=name)
+    return JobAccepted(job_id=job_id, message="Stopping transfer")
 
 
 @router.post("/{model_id}/refresh", response_model=ModelOut)

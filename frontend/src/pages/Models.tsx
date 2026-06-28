@@ -73,6 +73,26 @@ export default function Models() {
     }
   };
 
+  const stop = async (m: Model) => {
+    if (
+      !confirm(
+        `Stop the transfer for ${m.name}? This kills the download/sync on the node ` +
+          `and clears any stale locks. Partial files are kept, so Download resumes from where it left off.`,
+      )
+    )
+      return;
+    try {
+      const r = await api.cancelModel(m.id);
+      toast("Stopping transfer…", "success");
+      // Open the cleanup job's log so it's visible even for an orphaned transfer
+      // (which has no active_job_id to surface a "View log" button).
+      setJob({ id: r.job_id, label: `Stop ${m.name}` });
+      models.reload();
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
   const del = (m: Model) => {
     if (
       !confirm(
@@ -143,6 +163,12 @@ export default function Models() {
               <tbody>
                 {(models.data ?? []).map((m) => {
                   const activeJob = m.active_job_id ?? null;
+                  // "busy" covers an orphaned transfer too: after a control-plane
+                  // restart there's no in-memory job, but a node may still read
+                  // downloading/syncing — Stop reaps it and resets the state.
+                  const busy =
+                    activeJob != null ||
+                    m.node_states.some((s) => ["downloading", "syncing", "verifying"].includes(s.status));
                   return (
                   <tr key={m.id}>
                     <td><strong>{m.name}</strong><div className="faint mono" style={{ fontSize: 11 }}>{m.repo_id}</div></td>
@@ -169,10 +195,13 @@ export default function Models() {
                     <td><Badge kind={statusKind(m.status)}>{m.status}</Badge></td>
                     <td>
                       <div className="btn-row" style={{ justifyContent: "flex-end" }}>
-                        {activeJob != null ? (
+                        {activeJob != null && (
                           <button className="btn btn-sm btn-primary" onClick={() => setJob({ id: activeJob, label: `${m.name} (in progress)` })}>
                             View log
                           </button>
+                        )}
+                        {busy ? (
+                          <button className="btn btn-sm btn-danger" onClick={() => stop(m)} title="Stop the transfer and clear stale locks (partial files are kept)">Stop</button>
                         ) : (
                           <>
                             <button className="btn btn-sm" onClick={() => startJob(api.downloadModel(m.id, true), `Download ${m.name}`)}>Download</button>

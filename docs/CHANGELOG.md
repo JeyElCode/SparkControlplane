@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.3.1
+- **Fix model downloads that get stuck forever ("Still waiting to acquire
+  lock…").** A download interrupted by a control-plane restart left an orphaned
+  `hf download` container running on the head node; the in-memory "already
+  downloading" guard was lost on restart, so a retry started a *second*
+  `hf download` into the same directory. The two collided on HuggingFace's
+  per-file `.lock` files and deadlocked at whatever % they'd reached. Now:
+  - the download container has a **deterministic name** (`spark-dl-<model>`), and
+    every download **reaps any orphaned container + clears stale `.lock` files**
+    for that model before starting — so a plain **Download** self-heals a
+    previously stuck one (partial files are kept, so it resumes).
+  - a **Stop** button (POST `/api/models/{id}/cancel`) kills the node-side
+    download/sync and clears locks even when the control-plane no longer has an
+    in-memory job for it (e.g. after a restart) — and resets the model's state so
+    the row becomes actionable again.
+  - a **stall watchdog**: if a download makes no progress for 15 min while still
+    mid-transfer, it's aborted with a clear message instead of hanging silently.
+  The reap is scoped to *this model's* download container only (matched by the
+  exact `hf download <repo> --local-dir …` command) — it never touches the Ray
+  head or a running vLLM serving container.
+
 ## v1.3.0
 - **Simplified evals to what's actually useful here: custom tasks + throughput.**
   Removed the public-benchmark integration (HumanEval/GSM8K/MMLU fetch) and the

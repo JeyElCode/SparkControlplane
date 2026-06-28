@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shlex
+import time
 
 import httpx
 from sqlalchemy import select
@@ -43,6 +45,13 @@ log = logging.getLogger("spark.models")
 # only covers the LAN hostname).
 INTER_NODE_KEY = "~/.ssh/id_ed25519_spark"
 
+# If a download's on-disk size doesn't grow for this long while still clearly
+# mid-transfer, treat it as stuck (almost always a stale HuggingFace .lock from
+# an interrupted/duplicate download) and abort so it can be retried. Generous on
+# purpose: a healthy download advances every few seconds, so zero growth for this
+# many seconds is a genuine deadlock, not a slow link.
+DOWNLOAD_STALL_SECONDS = 900
+
 # Live, in-memory per-(model, node) transfer progress (0..1). Surfaced on the
 # Models page so a download/sync bar is visible without opening the job dialog.
 # Single-process (1 replica), so a module dict is sufficient; lost on restart.
@@ -59,6 +68,75 @@ def get_node_progress(model_id: int, node_id: int) -> float | None:
 
 def clear_node_progress(model_id: int, node_id: int) -> None:
     _node_progress.pop((model_id, node_id), None)
+
+
+def _download_container(name: str) -> str:
+    """Deterministic name for a model's download container, so an orphan left
+    running (e.g. after a control-plane restart) can be found and killed before
+    starting a new download into the same directory."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", name)
+    return f"spark-dl-{safe}"
+
+
+async def _reap_download(
+    ssh, head: Node, cfg, model: ModelRegistry, handle: JobHandle | None = None
+) -> int:
+    """Kill any download container for this model and remove stale HuggingFace
+    download locks. Idempotent and best-effort; returns the number of legacy
+    containers removed.
+
+    Two things make a model un-downloadable after an interrupted/duplicated
+    download:
+
+    * an **orphaned** ``hf download`` container — it survives a control-plane
+      restart (the in-memory job guard is lost, but the detached ``docker run``
+      keeps going) and holds the per-file ``.lock`` files forever, and
+    * the **stale ``.lock`` files** themselves, left behind when a download is
+      hard-killed.
+
+    A second ``hf download`` into the same ``--local-dir`` then deadlocks
+    ("Still waiting to acquire lock ..."). So we reap before (re)starting a
+    download and when the user explicitly stops one.
+    """
+    cname = _download_container(model.name)
+    # Match ONLY our own download command (repo id + exact local dir) so we never
+    # touch a serving container or a different model's transfer.
+    marker = f"download {model.repo_id} --local-dir /models/{model.name}"
+    lock_dir = model_host_path(head, cfg, model.name) + "/.cache/huggingface/download"
+    script = (
+        "set +e\n"
+        f"docker rm -f {shlex.quote(cname)} >/dev/null 2>&1\n"
+        "killed=0\n"
+        "for c in $(docker ps -q 2>/dev/null); do\n"
+        f"  if docker inspect \"$c\" 2>/dev/null | grep -F -q -- {shlex.quote(marker)}; then\n"
+        "    docker rm -f \"$c\" >/dev/null 2>&1 && killed=$((killed+1))\n"
+        "  fi\n"
+        "done\n"
+        f"rm -f {shlex.quote(lock_dir)}/*.lock 2>/dev/null\n"
+        'echo "reaped=$killed"\n'
+    )
+    try:
+        # sudo: the download runs as root in the container, so the .lock files are
+        # root-owned; root can also always drive docker.
+        res = await ssh.run(script, sudo=True, timeout=120)
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        if handle:
+            await handle.log(f"  (stale-download cleanup failed: {exc})", "stderr")
+        return 0
+    n = 0
+    for line in res.stdout.splitlines():
+        if line.startswith("reaped="):
+            try:
+                n = int(line.split("=", 1)[1])
+            except ValueError:
+                n = 0
+    if handle:
+        await handle.log(
+            f"  reaped {n} orphaned download container(s) and cleared stale HF locks"
+            if n
+            else "  cleared any stale HF download locks"
+        )
+    return n
 
 
 async def validate_repo(repo_id: str) -> dict:
@@ -160,6 +238,12 @@ async def download_model(
     ssh = await ssh_for_node(session, head)
     await ssh.run(f"mkdir -p {shlex.quote(models_host_dir(head, cfg))}", check=True)
 
+    # Reap any orphaned download container + stale HF locks for this model first,
+    # so a download interrupted by a control-plane restart (or a duplicate start)
+    # can't deadlock the new one on the per-file .lock files. Self-healing: a
+    # plain "Download" recovers a previously stuck download.
+    await _reap_download(ssh, head, cfg, model, handle)
+
     # Total download size (for the progress bar denominator), best-effort.
     total = model.size_bytes
     if not total:
@@ -182,17 +266,23 @@ async def download_model(
     )
     # --entrypoint bash skips the NGC image's startup banner (the harmless
     # "NVIDIA Driver was not detected" / "SHMEM 64MB" warnings) — a download
-    # needs neither GPU nor large shared memory.
+    # needs neither GPU nor large shared memory. --name makes the container
+    # findable so an orphan can be reaped (see _reap_download).
     run = (
-        f"run --rm --network host {env}"
+        f"run --rm --name {shlex.quote(_download_container(model.name))} "
+        f"--network host {env}"
         f"-v {shlex.quote(models_host_dir(head, cfg))}:/models "
         f"--entrypoint bash {shlex.quote(cfg.vllm_image)} "
         f"-lc {shlex.quote(dl)}"
     )
 
     # Poll the target dir size while downloading so the UI shows real progress
-    # (both the job dialog and the per-node bar on the Models page).
+    # (both the job dialog and the per-node bar on the Models page). The poller
+    # also watches for a stall: if the size stops growing for too long while
+    # clearly mid-download, the download is stuck (stale HF lock) — kill the
+    # container so `hf` exits and the job fails fast with a clear message.
     stop = asyncio.Event()
+    watch = {"size": -1, "changed_at": time.monotonic(), "stalled": False}
 
     async def _progress_poller() -> None:
         while not stop.is_set():
@@ -206,8 +296,26 @@ async def download_model(
                 cur = await _dir_size_bytes(ssh, dst)
             except Exception:  # noqa: BLE001 - progress is best-effort
                 continue
+            if cur is not None and cur != watch["size"]:
+                watch["size"] = cur
+                watch["changed_at"] = time.monotonic()
+            frac = min(0.99, cur / total) if (cur and total) else 0.0
+            # Stuck: no byte growth for the stall window while not near-complete.
+            if (
+                cur
+                and frac < 0.99
+                and (time.monotonic() - watch["changed_at"]) >= DOWNLOAD_STALL_SECONDS
+            ):
+                watch["stalled"] = True
+                await handle.log(
+                    f"  no progress for {DOWNLOAD_STALL_SECONDS // 60} min — download is "
+                    "stuck (stale HuggingFace lock); aborting so it can be retried.",
+                    "error",
+                )
+                await _reap_download(ssh, head, cfg, model, handle)
+                stop.set()
+                break
             if cur and total:
-                frac = min(0.99, cur / total)
                 set_node_progress(model_id, head.id, frac)
                 await handle.set_progress(frac)
                 await handle.log(f"  …{_human(cur)} / {_human(total)} ({int(frac * 100)}%)")
@@ -222,6 +330,15 @@ async def download_model(
         await poller
         clear_node_progress(model_id, head.id)
 
+    if watch["stalled"]:
+        head_state.status = MS_ERROR
+        model.status = MS_ERROR
+        await session.commit()
+        raise RuntimeError(
+            f"Download stalled (no progress for {DOWNLOAD_STALL_SECONDS // 60} min) and was "
+            "aborted — usually a stale HuggingFace lock from an interrupted or duplicated "
+            "download. The partial files were kept; click Download again to resume."
+        )
     if not res.ok:
         head_state.status = MS_ERROR
         model.status = MS_ERROR
@@ -240,8 +357,15 @@ async def download_model(
 
     if auto_sync:
         others = [n for n in await _all_nodes(session) if n.id != head.id]
-        for node in others:
-            await _sync_one(session, handle, model, head, node, cfg)
+        try:
+            for node in others:
+                await _sync_one(session, handle, model, head, node, cfg)
+        except Exception:  # noqa: BLE001 - CancelledError is BaseException, not caught here
+            # The head copy is present, but a worker sync failed — don't leave the
+            # registry claiming the model is fully present.
+            model.status = MS_ERROR
+            await session.commit()
+            raise
     return f"Model '{model.name}' downloaded" + (" and synced" if auto_sync else "")
 
 
@@ -264,6 +388,47 @@ async def sync_model(
     for node in targets:
         await _sync_one(session, handle, model, head, node, cfg)
     return f"Model '{model.name}' synced to {', '.join(n.name for n in targets)}"
+
+
+async def cancel_download(session: AsyncSession, handle: JobHandle, model_id: int) -> str:
+    """Stop an in-progress (or stuck) download/sync: kill the node-side download
+    container, clear stale HF locks, and reset the model's in-flight state.
+
+    Works even when the control-plane has no in-memory job for it (e.g. after a
+    restart) — the recovery path for an orphaned download that no longer has a
+    job to cancel. Partial files are kept so a subsequent Download resumes."""
+    model = await load_model(session, model_id)
+    if model is None:
+        raise RuntimeError("Model not found.")
+    cfg = await get_cluster_config(session)
+    head = await get_node_by_role(session, "head")
+    if head is None:
+        raise RuntimeError("Head node is not configured.")
+
+    await handle.log(f"Stopping transfers for '{model.name}' and cleaning up…")
+    n = 0
+    try:
+        ssh = await ssh_for_node(session, head)
+        n = await _reap_download(ssh, head, cfg, model, handle)
+    except Exception as exc:  # noqa: BLE001 - still reset state even if the node is unreachable
+        await handle.log(f"  (could not reach head to kill the download: {exc})", "stderr")
+
+    for st in model.node_states:
+        if st.status in (MS_DOWNLOADING, MS_SYNCING, MS_VERIFYING):
+            st.status = MS_ABSENT
+            st.present = False
+            st.size_bytes = None
+            st.checksum_ok = None
+        clear_node_progress(model_id, st.node_id)
+    if model.status in (MS_DOWNLOADING, MS_SYNCING, MS_VERIFYING, MS_ERROR):
+        model.status = MS_ABSENT
+    await session.commit()
+
+    await handle.log(
+        (f"Killed {n} download container(s). " if n else "")
+        + "Stopped. Partial files were kept — click Download to resume."
+    )
+    return f"Stopped transfers for '{model.name}'"
 
 
 async def _sync_one(
@@ -330,7 +495,13 @@ async def _sync_one(
     # Checksum verification (safetensors), best-effort.
     state.status = MS_VERIFYING
     await session.commit()
-    checksum_ok = await _verify_checksums(handle, ssh, model.name, src, dst, target, sshopt)
+    try:
+        checksum_ok = await _verify_checksums(handle, ssh, model.name, src, dst, target, sshopt)
+    except Exception as exc:  # noqa: BLE001 - a verify error must not strand the node in 'verifying'
+        await handle.log(f"[{node.name}] checksum verification error: {exc}", "error")
+        state.status = MS_ERROR
+        await session.commit()
+        raise RuntimeError(f"checksum verification on {node.name} failed: {exc}")
 
     size = await _dir_size_bytes(ssh, dst, remote_prefix=remote_prefix)
     state.present = True
