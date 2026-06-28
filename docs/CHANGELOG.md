@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.3
+- **Fix deleting an instance that has eval-run history.** Deletion failed with
+  `FOREIGN KEY constraint failed` because eval runs reference the instance and FK
+  enforcement is on (since v1.2.2's `PRAGMA foreign_keys=ON`). Deleting an
+  instance now detaches its eval runs (`instance_id → NULL`) first; the runs keep
+  their snapshotted model/instance labels, so the history stays readable. Also
+  quieted the misleading "Unit not loaded / does not exist" warnings when
+  removing an instance whose systemd unit was never installed (e.g. one created
+  but never started). Includes the v1.3.2 served-model-name change.
+
 ## v1.3.2
 - **Clean served model name.** Instances now pass `--served-model-name` so the
   OpenAI API reports a tidy id (the registry name, e.g. `Ornith-1.0-35B-FP8`)

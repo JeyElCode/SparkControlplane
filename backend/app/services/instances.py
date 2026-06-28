@@ -15,7 +15,7 @@ import asyncio
 import shlex
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +27,7 @@ from ..models import (
     INST_STOPPED,
     MS_PRESENT,
     TOPO_CLUSTER,
+    EvalRun,
     Instance,
     ModelNodeState,
     Node,
@@ -249,6 +250,12 @@ async def delete_instance(session: AsyncSession, handle: JobHandle, instance_id:
         await nodeops.remove_systemd_unit(ssh, unit_name, log_cb=handle.ssh_log_cb())
     except Exception as exc:  # noqa: BLE001 - best-effort cleanup
         await handle.log(f"WARNING: unit cleanup failed: {exc}", "stderr")
+    # Detach eval-run history from this instance before deleting it. EvalRun keeps
+    # snapshots of model_name/instance_label, so the runs stay readable; without
+    # this, the FK (enforced since PRAGMA foreign_keys=ON) blocks the delete.
+    await session.execute(
+        update(EvalRun).where(EvalRun.instance_id == instance_id).values(instance_id=None)
+    )
     await session.delete(inst)
     await session.commit()
     return f"Instance '{name}' deleted"

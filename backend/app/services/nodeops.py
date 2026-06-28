@@ -78,6 +78,15 @@ async def install_systemd_unit(
 async def remove_systemd_unit(
     ssh: SSHClient, unit_name: str, *, log_cb: LogCb | None = None
 ) -> None:
+    # If the unit was never installed (e.g. an instance that was created but never
+    # started), skip the stop/disable — they'd just emit confusing "Unit not
+    # loaded" / "does not exist" warnings.
+    if not await unit_exists(ssh, unit_name):
+        if log_cb is not None:
+            res = log_cb("stdout", f"{unit_name} not installed — nothing to remove")
+            if hasattr(res, "__await__"):
+                await res  # type: ignore[func-returns-value]
+        return
     await systemctl(ssh, "stop", unit_name, log_cb=log_cb)
     await systemctl(ssh, "disable", unit_name, log_cb=log_cb)
     await ssh.run(f"rm -f /etc/systemd/system/{shlex.quote(unit_name)}", sudo=True, log_cb=log_cb)
