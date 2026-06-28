@@ -31,8 +31,9 @@ async def chat(payload: PlaygroundRequest, session: AsyncSession = Depends(get_s
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    # Resolve the served model id (vLLM serves under the model path string).
-    model_id = f"/models/{inst.model.name}" if inst.model else None
+    # Resolve the served model id from the endpoint; fall back to the registry
+    # name (the --served-model-name we serve under) if /v1/models is unreachable.
+    model_id = inst.model.name if inst.model else None
     messages = []
     if payload.system:
         messages.append({"role": "system", "content": payload.system})

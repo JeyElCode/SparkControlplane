@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.2
+- **Clean served model name.** Instances now pass `--served-model-name` so the
+  OpenAI API reports a tidy id (the registry name, e.g. `Ornith-1.0-35B-FP8`)
+  instead of the raw container path (`/models/Ornith-1.0-35B-FP8`). Use that
+  short name as `"model"` in your API calls. If you set your own
+  `--served-model-name` in an instance's extra args, that still wins. The
+  playground and evals already resolve the id from `/v1/models`, so they adapt
+  automatically. Restart an instance (Stop → Start) to pick up the new name.
+
 ## v1.3.1
 - **Fix model downloads that get stuck forever ("Still waiting to acquire
   lock…").** A download interrupted by a control-plane restart left an orphaned

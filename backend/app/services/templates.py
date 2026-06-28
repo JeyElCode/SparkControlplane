@@ -122,7 +122,8 @@ WantedBy=multi-user.target
 
 
 def build_vllm_serve_cmd(
-    *, model_container_path: str, port: int, tensor_parallel_size: int,
+    *, model_container_path: str, served_model_name: str | None = None, port: int,
+    tensor_parallel_size: int,
     distributed_backend: str, max_model_len: int | None, gpu_memory_utilization: float,
     max_num_seqs: int | None, dtype: str | None, enable_tool_choice: bool,
     tool_parser: str | None, api_key: str | None, extra_args: str | None,
@@ -134,6 +135,11 @@ def build_vllm_serve_cmd(
         f"--distributed-executor-backend {distributed_backend}",
         f"--gpu-memory-utilization {gpu_memory_utilization}",
     ]
+    # Serve under a clean name (the registry name) instead of the raw
+    # "/models/<name>" container path, so API clients use a tidy model id. Skip
+    # if the user already set one via extra_args (let theirs win).
+    if served_model_name and not (extra_args and "--served-model-name" in extra_args):
+        parts.append(f"--served-model-name {shlex.quote(served_model_name)}")
     if max_model_len:
         parts.append(f"--max-model-len {max_model_len}")
     if max_num_seqs:

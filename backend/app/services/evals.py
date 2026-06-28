@@ -97,7 +97,7 @@ async def _instance_endpoint(session: AsyncSession, instance_id: int) -> Endpoin
         raise RuntimeError("Instance has no reachable host.")
     base = f"http://{node.lan_ip}:{inst.port}/v1"
     api_key = decrypt(inst.api_key_enc)
-    fallback = f"/models/{inst.model.name}" if inst.model else ""
+    fallback = inst.model.name if inst.model else ""
     model_id = await _served_model_id(base, api_key, fallback)
     return Endpoint(base, model_id, api_key, f"{inst.name} ({inst.model.name if inst.model else '?'})")
 

@@ -94,6 +94,7 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
 
     serve_cmd = templates.build_vllm_serve_cmd(
         model_container_path=model_path,
+        served_model_name=inst.model.name if inst.model else None,
         port=inst.port,
         tensor_parallel_size=inst.tensor_parallel_size,
         distributed_backend="ray" if inst.topology == TOPO_CLUSTER else "mp",
