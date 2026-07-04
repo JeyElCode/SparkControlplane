@@ -31,6 +31,13 @@ def instance_unit_name(name: str) -> str:
     return f"spark-vllm-{name}.service"
 
 
+# Every `docker run` below overrides the image entrypoint with `--entrypoint bash`
+# and passes the script via `-c`/`-lc`. The vLLM images differ: the NGC image
+# (nvcr.io/nvidia/vllm) uses an entrypoint that execs its args, but the Docker Hub
+# `vllm/vllm-openai` image has ENTRYPOINT ["vllm","serve"], so a bare
+# `<image> bash -c '…'` gets parsed as *arguments to vllm serve* and the container
+# never runs our command. Overriding the entrypoint makes the launch image-agnostic
+# (this matches the model-download path in models_svc.py).
 _RAY_INSTALL = (
     "pip install -q --root-user-action=ignore 'ray[default]>=2.9'"
 )
@@ -67,8 +74,9 @@ exec docker run --rm --name {RAY_HEAD_CONTAINER} \\
   -e VLLM_HOST_IP={shlex.quote(head_qsfp)} \\
   -e MASTER_ADDR={shlex.quote(head_qsfp)} \\
 {_net_env_flags(iface)}
+  --entrypoint bash \\
   {shlex.quote(image)} \\
-  bash -c {shlex.quote(
+  -c {shlex.quote(
       f"{_RAY_INSTALL} && ray start --block --head "
       f"--node-ip-address={head_qsfp} --port={ray_port} --dashboard-host=0.0.0.0 "
       f"--dashboard-port={dashboard_port}"
@@ -91,8 +99,9 @@ exec docker run --rm --name {RAY_WORKER_CONTAINER} \\
   -e VLLM_HOST_IP={shlex.quote(worker_qsfp)} \\
   -e MASTER_ADDR={shlex.quote(head_qsfp)} \\
 {_net_env_flags(iface)}
+  --entrypoint bash \\
   {shlex.quote(image)} \\
-  bash -c {shlex.quote(
+  -c {shlex.quote(
       f"{_RAY_INSTALL} && ray start --block "
       f"--address={head_qsfp}:{ray_port} --node-ip-address={worker_qsfp}"
   )}
@@ -203,8 +212,9 @@ exec docker run --rm --name {container} \\
   --ulimit memlock=-1 --ulimit stack=67108864 \\
   -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
   -v {shlex.quote(models_dir)}:/models \\
+  --entrypoint bash \\
   {shlex.quote(image)} \\
-  bash -lc {shlex.quote(serve_cmd)}
+  -lc {shlex.quote(serve_cmd)}
 """
 
 

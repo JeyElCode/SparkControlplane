@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.4
+- **Fix Ray head/worker crash-loop on the Docker Hub `vllm/vllm-openai` image.**
+  The Ray launch scripts ran `docker run <image> bash -c '<ray script>'`, which
+  only works when the image entrypoint execs its args (as the NGC image
+  `nvcr.io/nvidia/vllm` does). The Docker Hub `vllm/vllm-openai` image has
+  `ENTRYPOINT ["vllm","serve"]`, so the script was parsed as *arguments to
+  `vllm serve`* — the container died instantly with
+  `vllm serve: error: argument --compilation-config/-cc … Invalid JSON` and
+  systemd restart-looped it. The Ray head/worker launch scripts and the
+  single-node instance runner now override the entrypoint with
+  `--entrypoint bash … -c/-lc '<script>'`, making the launch image-agnostic (this
+  matches what the model-download path already did). No config change needed —
+  re-run the `ray` setup phase (or restart the units) to pick up the fix.
+
 ## v1.3.3
 - **Fix deleting an instance that has eval-run history.** Deletion failed with
   `FOREIGN KEY constraint failed` because eval runs reference the instance and FK
