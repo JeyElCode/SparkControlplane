@@ -6,7 +6,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import encrypt
 from ..db import SessionLocal, get_session
-from ..models import TOPO_SINGLE, Instance, ModelRegistry, Node
+from ..models import (
+    INST_RUNNING,
+    INST_STARTING,
+    INST_STOPPING,
+    TOPO_SINGLE,
+    Instance,
+    ModelRegistry,
+    Node,
+)
 from ..schemas import InstanceIn, InstanceOut, InstanceUpdate, JobAccepted
 from ..services import instances as inst_svc
 from ..services.jobs import jobs
@@ -86,6 +94,15 @@ async def update_instance(
     inst = await inst_svc.load_instance(session, instance_id)
     if inst is None:
         raise HTTPException(404, "Instance not found")
+    # Serve settings are baked into the systemd unit at start time, so editing a
+    # live instance would silently do nothing until the next restart. Require it
+    # to be stopped first, so the edit is unambiguous.
+    if inst.status in (INST_RUNNING, INST_STARTING, INST_STOPPING):
+        raise HTTPException(
+            409,
+            f"Instance '{inst.name}' is {inst.status}. Stop it before editing — "
+            "serve settings only take effect on start.",
+        )
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(inst, field, value)
     await session.commit()

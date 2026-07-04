@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.3.5
+- **Models page no longer shows stale "present ✓" for offline nodes.** The model
+  registry stores only *last-known* per-node presence, so when a node was
+  unreachable the Models page kept showing its models as present. The page now
+  cross-references the live status snapshot (the authoritative reachability
+  probe): an unreachable node renders a grey **"offline"** badge (with the
+  last-known state in a tooltip) instead of a green check, and a banner warns
+  that presence reflects the last known state. No extra SSH cost on the
+  frequently-polled `/api/models` endpoint — reachability is reused from
+  `/api/status`.
+- **Edit stopped instances.** Instances now have an **Edit** button (shown while
+  stopped or errored) that opens a form for the serve-tuning settings (port,
+  context length, GPU memory fraction, max seqs, dtype, tool parser, extra args,
+  autostart). Changes apply on the next start. Editing a running/starting/
+  stopping instance is rejected (409) since serve settings are baked into the
+  systemd unit at start time.
+
 ## v1.3.4
 - **Fix Ray head/worker crash-loop on the Docker Hub `vllm/vllm-openai` image.**
   The Ray launch scripts ran `docker run <image> bash -c '<ray script>'`, which

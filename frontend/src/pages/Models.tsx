@@ -9,6 +9,10 @@ import { useToast } from "../components/Toast";
 export default function Models() {
   const models = usePoll(() => api.listModels(), 8000);
   const suggestions = usePoll(() => api.suggestions(), 0);
+  // Node reachability comes from the status snapshot (the authoritative live
+  // probe). The model registry stores only last-known presence, so when a node
+  // is offline we must not keep showing a stale "present ✓" for it.
+  const status = usePoll(() => api.getStatus(), 8000);
   const { toast } = useToast();
   const [repo, setRepo] = useState("");
   const [validating, setValidating] = useState(false);
@@ -93,6 +97,13 @@ export default function Models() {
     }
   };
 
+  // node_id -> reachable (only for nodes present in the latest snapshot). A node
+  // missing from the map (snapshot still loading, or node not configured) is
+  // treated as "unknown" and rendered normally rather than falsely "offline".
+  const nodeReach = new Map<number, boolean>();
+  (status.data?.nodes ?? []).forEach((n) => nodeReach.set(n.node_id, n.reachable));
+  const offlineNodes = (status.data?.nodes ?? []).filter((n) => !n.reachable).map((n) => n.name);
+
   const del = (m: Model) => {
     if (
       !confirm(
@@ -142,6 +153,12 @@ export default function Models() {
             <button className="btn btn-sm" onClick={() => models.reload()}>Refresh</button>
           </div>
         </div>
+        {offlineNodes.length > 0 && (
+          <div className="banner banner-warn">
+            ⚠ {offlineNodes.join(", ")} {offlineNodes.length > 1 ? "are" : "is"} unreachable —
+            per-node presence below reflects the last known state, not live disk contents.
+          </div>
+        )}
         {(models.data ?? []).length === 0 ? (
           <EmptyState icon="◈" title="No models yet">Add a model above to get started.</EmptyState>
         ) : (
@@ -176,20 +193,33 @@ export default function Models() {
                     <td><span className="tag">{m.tool_parser ?? "—"}</span></td>
                     <td>
                       <div className="flex-col gap-sm">
-                        {m.node_states.map((s) => (
+                        {m.node_states.map((s) => {
+                          // Confirmed offline (in the snapshot and unreachable) — don't
+                          // present stale registry state as live truth.
+                          const offline = nodeReach.get(s.node_id) === false;
+                          return (
                           <div key={s.node_id} className="flex-col" style={{ gap: 3, minWidth: 160 }}>
-                            <Badge kind={s.present && s.checksum_ok === false ? "amber" : statusKind(s.status)}>
-                              {s.node_name}: {s.present ? "✓" : s.status}
-                              {s.present && s.checksum_ok === false ? " ⚠ checksum" : ""}
-                            </Badge>
-                            {(s.status === "downloading" || s.status === "syncing") && s.progress != null && (
+                            {offline ? (
+                              <Badge kind="gray">
+                                <span title={`Node unreachable — last known: ${s.present ? "present" : s.status}`}>
+                                  {s.node_name}: offline
+                                </span>
+                              </Badge>
+                            ) : (
+                              <Badge kind={s.present && s.checksum_ok === false ? "amber" : statusKind(s.status)}>
+                                {s.node_name}: {s.present ? "✓" : s.status}
+                                {s.present && s.checksum_ok === false ? " ⚠ checksum" : ""}
+                              </Badge>
+                            )}
+                            {!offline && (s.status === "downloading" || s.status === "syncing") && s.progress != null && (
                               <div className="progress-row" style={{ margin: 0 }}>
                                 <Meter value={s.progress} max={1} />
                                 <span className="pct">{Math.round(s.progress * 100)}%</span>
                               </div>
                             )}
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </td>
                     <td><Badge kind={statusKind(m.status)}>{m.status}</Badge></td>

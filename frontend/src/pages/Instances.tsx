@@ -144,10 +144,120 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
   );
 }
 
+// Fields editable after creation (mirrors the backend InstanceUpdate schema).
+// Name / model / topology / node are fixed for an existing instance — changing
+// them would make it a different instance, so those are shown read-only.
+type EditFields = Pick<
+  InstanceInput,
+  "port" | "max_model_len" | "gpu_memory_utilization" | "max_num_seqs" | "dtype" | "enable_tool_choice" | "tool_parser" | "extra_args" | "autostart"
+>;
+
+function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [f, setF] = useState<EditFields>({
+    port: inst.port,
+    max_model_len: inst.max_model_len ?? null,
+    gpu_memory_utilization: inst.gpu_memory_utilization,
+    max_num_seqs: inst.max_num_seqs ?? null,
+    dtype: inst.dtype ?? null,
+    enable_tool_choice: inst.enable_tool_choice,
+    tool_parser: inst.tool_parser ?? null,
+    extra_args: inst.extra_args ?? null,
+    autostart: inst.autostart,
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof EditFields, v: any) => setF((p) => ({ ...p, [k]: v }));
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await api.updateInstance(inst.id, { ...f, port: Number(f.port) });
+      toast("Instance updated", "success");
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Edit ${inst.name}`}
+      wide
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? <Spinner /> : "Save"}</button>
+        </>
+      }
+    >
+      <div className="banner banner-info mb">
+        Editing {inst.model_name} · {inst.topology === "cluster" ? "cluster TP=2" : `single ${inst.node_role ?? ""} TP=1`}.
+        Changes apply the next time this instance is started.
+      </div>
+      <div className="row-2">
+        <Field label="Port"><input type="number" value={f.port} onChange={(e) => set("port", Number(e.target.value))} /></Field>
+        <Field
+          label="GPU memory utilization"
+          help="Fraction of GPU memory vLLM may use for weights + KV cache (--gpu-memory-utilization, 0–1). Higher allows longer context and more concurrency but leaves less headroom; ~0.85 is typical."
+        >
+          <input type="number" step="0.05" min="0.1" max="0.99" value={f.gpu_memory_utilization} onChange={(e) => set("gpu_memory_utilization", Number(e.target.value))} />
+        </Field>
+      </div>
+      <div className="row-2">
+        <Field
+          label="Max model length"
+          help="Maximum context length in tokens vLLM will serve (--max-model-len). Lower it to shrink KV-cache memory use; leave blank to use the model's default."
+        >
+          <input type="number" value={f.max_model_len ?? ""} onChange={(e) => set("max_model_len", e.target.value ? Number(e.target.value) : null)} />
+        </Field>
+        <Field
+          label="Max num seqs (optional)"
+          help="Maximum number of requests vLLM batches at once (--max-num-seqs). Lower it to reduce KV-cache memory pressure; leave blank for vLLM's default."
+        >
+          <input type="number" value={f.max_num_seqs ?? ""} onChange={(e) => set("max_num_seqs", e.target.value ? Number(e.target.value) : null)} />
+        </Field>
+      </div>
+      <div className="row-2">
+        <Field
+          label="dtype (optional)"
+          help="Weight/compute precision (--dtype): auto, bfloat16, float16, or float32. Usually leave as auto."
+        >
+          <input value={f.dtype ?? ""} placeholder="auto" onChange={(e) => set("dtype", e.target.value || null)} />
+        </Field>
+        <Field
+          label="Tool parser override (optional)"
+          hint="Leave blank to auto-map from the model name."
+          help="Overrides the auto-selected --tool-call-parser used for OpenAI tool/function calling (e.g. hermes, qwen3_xml, llama3_json, mistral)."
+        >
+          <input value={f.tool_parser ?? ""} placeholder="auto" onChange={(e) => set("tool_parser", e.target.value || null)} />
+        </Field>
+      </div>
+      <label className="checkbox">
+        <input type="checkbox" checked={f.enable_tool_choice} onChange={(e) => set("enable_tool_choice", e.target.checked)} />
+        <span><span className="cb-label">Enable tool calling</span><div className="cb-sub">Adds --enable-auto-tool-choice with the right parser.</div></span>
+      </label>
+      <Field label="Extra vllm args (optional)"><input value={f.extra_args ?? ""} placeholder="--enforce-eager" onChange={(e) => set("extra_args", e.target.value || null)} /></Field>
+      <label className="checkbox">
+        <input type="checkbox" checked={f.autostart} onChange={(e) => set("autostart", e.target.checked)} />
+        <span><span className="cb-label">Auto-start on boot</span><div className="cb-sub">Enable the systemd unit so it survives reboots.</div></span>
+      </label>
+    </Modal>
+  );
+}
+
+// Serve settings are baked into the unit at start time, so editing only makes
+// sense while the instance is not live.
+const EDITABLE_STATUSES = ["stopped", "error"];
+
 export default function Instances() {
   const instances = usePoll(() => api.listInstances(), 8000);
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Instance | null>(null);
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
 
   const act = async (p: Promise<{ job_id: number }>, label: string) => {
@@ -201,6 +311,9 @@ export default function Instances() {
               <div className="btn-row mt">
                 <button className="btn btn-sm btn-primary" onClick={() => act(api.startInstance(i.id), `Start ${i.name}`)}>Start</button>
                 <button className="btn btn-sm" onClick={() => act(api.stopInstance(i.id), `Stop ${i.name}`)}>Stop</button>
+                {EDITABLE_STATUSES.includes(i.status) && (
+                  <button className="btn btn-sm" onClick={() => setEditing(i)} title="Edit serve settings (applies on next start)">Edit</button>
+                )}
                 <button className="btn btn-sm" onClick={() => copyClient(i)}>Copy client cfg</button>
                 <button className="btn btn-sm btn-danger" onClick={() => del(i)}>Delete</button>
               </div>
@@ -210,6 +323,7 @@ export default function Instances() {
       )}
 
       {creating && <CreateForm onClose={() => setCreating(false)} onCreated={() => instances.reload()} />}
+      {editing && <EditForm inst={editing} onClose={() => setEditing(null)} onSaved={() => instances.reload()} />}
       {job && (
         <Modal title={job.label} wide onClose={() => { setJob(null); instances.reload(); }}>
           <JobLogPanel jobId={job.id} title={job.label} onDone={() => instances.reload()} />
