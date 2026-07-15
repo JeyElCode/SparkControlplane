@@ -5,6 +5,10 @@
   Requires the model present on BOTH nodes.
 * ``single`` topology: a standalone container pinned to one node
   (``--distributed-executor-backend mp``, TP=1). Requires the model on that node.
+* ``distributed`` topology: native (Ray-less) torch.distributed multi-node. A
+  head unit on the head node (rank 0) serves the OpenAI API; a headless worker
+  unit on each other node (rank >= 1) joins over the QSFP interconnect. Requires
+  the model present on every participating node.
 
 Each instance is a systemd unit so it survives reboots when autostart is on.
 """
@@ -27,6 +31,7 @@ from ..models import (
     INST_STOPPED,
     MS_PRESENT,
     TOPO_CLUSTER,
+    TOPO_DISTRIBUTED,
     EvalRun,
     Instance,
     ModelNodeState,
@@ -57,9 +62,15 @@ async def _head_node(session: AsyncSession) -> Node:
     return head  # type: ignore[return-value]
 
 
-def resolve_defaults(inst: Instance) -> None:
-    """Fill topology-derived + auto fields in place before persisting/starting."""
-    if inst.topology == TOPO_CLUSTER:
+def resolve_defaults(inst: Instance, nnodes: int | None = None) -> None:
+    """Fill topology-derived + auto fields in place before persisting/starting.
+
+    ``nnodes`` (when known) sizes the tensor-parallel default for the native
+    ``distributed`` topology: one GPU per participating node, so the world size
+    (== TP) defaults to the node count."""
+    if inst.topology == TOPO_DISTRIBUTED:
+        inst.tensor_parallel_size = inst.tensor_parallel_size or (nnodes or 2)
+    elif inst.topology == TOPO_CLUSTER:
         inst.tensor_parallel_size = inst.tensor_parallel_size or 2
     else:
         inst.tensor_parallel_size = 1
@@ -84,42 +95,64 @@ async def _ensure_model_present(session: AsyncSession, inst: Instance, node_ids:
             )
 
 
-async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
-    inst = await load_instance(session, instance_id)
-    if inst is None:
-        raise RuntimeError("Instance not found.")
-    resolve_defaults(inst)
-    cfg = await _cluster_config(session)
-    model_path = model_container_path(cfg, inst.model.name)
-    api_key = decrypt(inst.api_key_enc)
-
-    serve_cmd = templates.build_vllm_serve_cmd(
+def _serve_kwargs(inst: Instance, model_path: str, api_key: str | None) -> dict:
+    """Shared ``build_vllm_serve_cmd`` kwargs derived from an instance's first-
+    class settings (topology-specific bits — backend, distributed — are added by
+    the caller)."""
+    return dict(
         model_container_path=model_path,
         served_model_name=inst.model.name if inst.model else None,
+        served_model_names=inst.served_model_names,
         port=inst.port,
         tensor_parallel_size=inst.tensor_parallel_size,
-        distributed_backend="ray" if inst.topology == TOPO_CLUSTER else "mp",
         max_model_len=inst.max_model_len,
         gpu_memory_utilization=inst.gpu_memory_utilization,
         max_num_seqs=inst.max_num_seqs,
+        max_num_batched_tokens=inst.max_num_batched_tokens,
         dtype=inst.dtype,
+        kv_cache_dtype=inst.kv_cache_dtype,
+        block_size=inst.block_size,
+        tokenizer_mode=inst.tokenizer_mode,
+        reasoning_parser=inst.reasoning_parser,
+        trust_remote_code=inst.trust_remote_code,
         enable_tool_choice=inst.enable_tool_choice,
         tool_parser=inst.tool_parser,
+        compilation_config=inst.compilation_config,
+        advanced_args=inst.advanced_args,
         api_key=api_key,
         extra_args=inst.extra_args,
     )
 
+
+async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
+    inst = await load_instance(session, instance_id)
+    if inst is None:
+        raise RuntimeError("Instance not found.")
+    cfg = await _cluster_config(session)
+    model_path = model_container_path(cfg, inst.model.name)
+    api_key = decrypt(inst.api_key_enc)
+
+    unit_name = templates.instance_unit_name(inst.name)
+
+    if inst.topology == TOPO_DISTRIBUTED:
+        head = await _head_node(session)
+        workers = await _worker_nodes(session, head)
+        resolve_defaults(inst, nnodes=1 + len(workers))
+    else:
+        resolve_defaults(inst)
+
     inst.status = INST_STARTING
     inst.last_error = None
     await session.commit()
-
-    unit_name = templates.instance_unit_name(inst.name)
 
     try:
         if inst.topology == TOPO_CLUSTER:
             head = await _head_node(session)
             worker = await _other_node(session, head)
             await _ensure_model_present(session, inst, [head.id, worker.id])
+            serve_cmd = templates.build_vllm_serve_cmd(
+                **_serve_kwargs(inst, model_path, api_key), distributed_backend="ray"
+            )
             await handle.log(f"Starting cluster instance '{inst.name}' (TP={inst.tensor_parallel_size}) on the Ray head")
             ssh = await ssh_for_node(session, head)
             unit = templates.render_instance_unit_cluster(
@@ -128,11 +161,16 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
             await nodeops.install_systemd_unit(
                 ssh, unit_name, unit, enable=inst.autostart, log_cb=handle.ssh_log_cb()
             )
+        elif inst.topology == TOPO_DISTRIBUTED:
+            await _start_distributed(session, handle, inst, cfg, model_path, api_key, head, workers)
         else:
             node = inst.node
             if node is None:
                 raise RuntimeError("Single-topology instance requires a target node.")
             await _ensure_model_present(session, inst, [node.id])
+            serve_cmd = templates.build_vllm_serve_cmd(
+                **_serve_kwargs(inst, model_path, api_key), distributed_backend="mp"
+            )
             await handle.log(f"Starting single instance '{inst.name}' (TP=1) on {node.name}")
             ssh = await ssh_for_node(session, node)
             from ..config import get_settings
@@ -157,6 +195,7 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
         inst.status = INST_RUNNING
         await session.commit()
         host = await _endpoint_host(session, inst)
+        ssh = await ssh_for_node(session, await _instance_node(session, inst))
         await handle.log(
             f"Instance '{inst.name}' launched. Endpoint: http://{host}:{inst.port}/v1\n"
             f"Streaming vLLM startup output below (model loading can take a few minutes)…"
@@ -179,6 +218,84 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
         inst.last_error = str(exc)
         await session.commit()
         raise
+
+
+async def _start_distributed(
+    session: AsyncSession, handle: JobHandle, inst: Instance, cfg, model_path: str,
+    api_key: str | None, head: Node, workers: list[Node],
+) -> None:
+    """Install + launch a native torch.distributed instance: a headless worker
+    unit on each worker node (rank >= 1) followed by the head unit (rank 0, which
+    serves the API). ``--master-addr`` is the head node's ``qsfp_ip`` so the
+    rendezvous + collectives run over the QSFP interconnect."""
+    from ..config import get_settings
+
+    if not workers:
+        raise RuntimeError(
+            "Distributed topology requires at least one worker node in addition to the head."
+        )
+    nodes = [head] + workers
+    nnodes = len(nodes)
+    await _ensure_model_present(session, inst, [n.id for n in nodes])
+    install_dir = get_settings().node_install_dir
+    master_addr = head.qsfp_ip
+
+    await handle.log(
+        f"Starting distributed instance '{inst.name}' (native, TP={inst.tensor_parallel_size}, "
+        f"nnodes={nnodes}) — master {master_addr}:{inst.master_port}"
+    )
+
+    # Workers first (rank 1..N-1, --headless), then the head (rank 0).
+    for rank, node in enumerate(workers, start=1):
+        serve_cmd = templates.build_vllm_serve_cmd(
+            **_serve_kwargs(inst, model_path, api_key),
+            distributed={
+                "nnodes": nnodes, "node_rank": rank, "master_addr": master_addr,
+                "master_port": inst.master_port, "headless": True,
+            },
+        )
+        ssh = await ssh_for_node(session, node)
+        run_script = templates.render_instance_docker_run_distributed(
+            name=inst.name, role="worker", image=cfg.vllm_image,
+            hf_home=hf_cache_host_path(node, cfg), models_dir=models_host_dir(node, cfg),
+            shm=cfg.shm_size, iface=node.qsfp_iface, host_qsfp=node.qsfp_ip,
+            master_addr=master_addr, serve_cmd=serve_cmd,
+        )
+        script_path = f"{install_dir}/vllm-{inst.name}-worker.sh"
+        await nodeops.install_file(ssh, script_path, run_script, mode="755")
+        unit = templates.render_instance_unit_distributed_worker(
+            name=inst.name, script_path=script_path
+        )
+        await handle.log(f"[{node.name}] starting worker unit (rank {rank}, headless)")
+        await nodeops.install_systemd_unit(
+            ssh, templates.distributed_worker_unit_name(inst.name), unit,
+            enable=inst.autostart, log_cb=handle.ssh_log_cb(),
+        )
+
+    serve_cmd = templates.build_vllm_serve_cmd(
+        **_serve_kwargs(inst, model_path, api_key),
+        distributed={
+            "nnodes": nnodes, "node_rank": 0, "master_addr": master_addr,
+            "master_port": inst.master_port, "headless": False,
+        },
+    )
+    ssh = await ssh_for_node(session, head)
+    run_script = templates.render_instance_docker_run_distributed(
+        name=inst.name, role="head", image=cfg.vllm_image,
+        hf_home=hf_cache_host_path(head, cfg), models_dir=models_host_dir(head, cfg),
+        shm=cfg.shm_size, iface=head.qsfp_iface, host_qsfp=head.qsfp_ip,
+        master_addr=master_addr, serve_cmd=serve_cmd,
+    )
+    script_path = f"{install_dir}/vllm-{inst.name}.sh"
+    await nodeops.install_file(ssh, script_path, run_script, mode="755")
+    unit = templates.render_instance_unit_distributed_head(
+        name=inst.name, script_path=script_path
+    )
+    await handle.log(f"[{head.name}] starting head unit (rank 0, serves API)")
+    await nodeops.install_systemd_unit(
+        ssh, templates.instance_unit_name(inst.name), unit,
+        enable=inst.autostart, log_cb=handle.ssh_log_cb(),
+    )
 
 
 async def _health_ok(url: str) -> bool:
@@ -227,6 +344,25 @@ async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: i
     inst = await load_instance(session, instance_id)
     if inst is None:
         raise RuntimeError("Instance not found.")
+    if inst.topology == TOPO_DISTRIBUTED:
+        head = await _head_node(session)
+        workers = await _worker_nodes(session, head)
+        await handle.log(
+            f"Stopping distributed instance '{inst.name}' (head + {len(workers)} worker(s))"
+        )
+        head_ssh = await ssh_for_node(session, head)
+        await nodeops.systemctl(
+            head_ssh, "stop", templates.instance_unit_name(inst.name), log_cb=handle.ssh_log_cb()
+        )
+        for node in workers:
+            w_ssh = await ssh_for_node(session, node)
+            await nodeops.systemctl(
+                w_ssh, "stop", templates.distributed_worker_unit_name(inst.name),
+                log_cb=handle.ssh_log_cb(),
+            )
+        inst.status = INST_STOPPED
+        await session.commit()
+        return f"Instance '{inst.name}' stopped"
     node = await _instance_node(session, inst)
     unit_name = inst.systemd_unit or templates.instance_unit_name(inst.name)
     await handle.log(f"Stopping instance '{inst.name}' ({unit_name})")
@@ -241,13 +377,26 @@ async def delete_instance(session: AsyncSession, handle: JobHandle, instance_id:
     inst = await load_instance(session, instance_id)
     if inst is None:
         raise RuntimeError("Instance not found.")
-    node = await _instance_node(session, inst)
-    unit_name = inst.systemd_unit or templates.instance_unit_name(inst.name)
     name = inst.name
-    await handle.log(f"Removing instance '{name}' and its systemd unit")
+    await handle.log(f"Removing instance '{name}' and its systemd unit(s)")
     try:
-        ssh = await ssh_for_node(session, node)
-        await nodeops.remove_systemd_unit(ssh, unit_name, log_cb=handle.ssh_log_cb())
+        if inst.topology == TOPO_DISTRIBUTED:
+            head = await _head_node(session)
+            workers = await _worker_nodes(session, head)
+            head_ssh = await ssh_for_node(session, head)
+            await nodeops.remove_systemd_unit(
+                head_ssh, templates.instance_unit_name(name), log_cb=handle.ssh_log_cb()
+            )
+            for node in workers:
+                w_ssh = await ssh_for_node(session, node)
+                await nodeops.remove_systemd_unit(
+                    w_ssh, templates.distributed_worker_unit_name(name), log_cb=handle.ssh_log_cb()
+                )
+        else:
+            node = await _instance_node(session, inst)
+            unit_name = inst.systemd_unit or templates.instance_unit_name(name)
+            ssh = await ssh_for_node(session, node)
+            await nodeops.remove_systemd_unit(ssh, unit_name, log_cb=handle.ssh_log_cb())
     except Exception as exc:  # noqa: BLE001 - best-effort cleanup
         await handle.log(f"WARNING: unit cleanup failed: {exc}", "stderr")
     # Detach eval-run history from this instance before deleting it. EvalRun keeps
@@ -276,8 +425,14 @@ async def _other_node(session: AsyncSession, node: Node) -> Node:
     return other
 
 
+async def _worker_nodes(session: AsyncSession, head: Node) -> list[Node]:
+    """All nodes other than the head, ordered — the distributed workers."""
+    res = await session.execute(select(Node).where(Node.id != head.id).order_by(Node.id))
+    return list(res.scalars())
+
+
 async def _instance_node(session: AsyncSession, inst: Instance) -> Node:
-    if inst.topology == TOPO_CLUSTER:
+    if inst.topology in (TOPO_CLUSTER, TOPO_DISTRIBUTED):
         return await _head_node(session)
     if inst.node is not None:
         return inst.node

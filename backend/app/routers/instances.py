@@ -10,6 +10,8 @@ from ..models import (
     INST_RUNNING,
     INST_STARTING,
     INST_STOPPING,
+    TOPO_CLUSTER,
+    TOPO_DISTRIBUTED,
     TOPO_SINGLE,
     Instance,
     ModelRegistry,
@@ -45,24 +47,53 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
     model = await session.get(ModelRegistry, payload.model_id)
     if model is None:
         raise HTTPException(404, "Model not found")
+    nnodes = 1
     if payload.topology == TOPO_SINGLE:
         if payload.node_id is None:
             raise HTTPException(400, "Single-topology instances require a target node_id.")
         if await session.get(Node, payload.node_id) is None:
             raise HTTPException(404, "Target node not found")
+    elif payload.topology == TOPO_DISTRIBUTED:
+        # Native multi-node needs ≥2 nodes registered, each with a QSFP IP set
+        # (the head's is used as --master-addr for the rendezvous).
+        nodes = (await session.execute(select(Node))).scalars().all()
+        with_qsfp = [n for n in nodes if n.qsfp_ip]
+        if len(with_qsfp) < 2:
+            raise HTTPException(
+                400,
+                "Distributed topology requires at least 2 nodes registered with a qsfp_ip set "
+                f"(found {len(with_qsfp)}).",
+            )
+        nnodes = len(with_qsfp)
+    if payload.topology == TOPO_CLUSTER:
+        default_tp = 2
+    elif payload.topology == TOPO_DISTRIBUTED:
+        default_tp = nnodes
+    else:
+        default_tp = 1
     inst = Instance(
         name=payload.name,
         model_id=payload.model_id,
         topology=payload.topology,
         node_id=payload.node_id if payload.topology == TOPO_SINGLE else None,
         port=payload.port,
-        tensor_parallel_size=payload.tensor_parallel_size or (2 if payload.topology == "cluster" else 1),
+        tensor_parallel_size=payload.tensor_parallel_size or default_tp,
         max_model_len=payload.max_model_len,
         gpu_memory_utilization=payload.gpu_memory_utilization,
         max_num_seqs=payload.max_num_seqs,
+        max_num_batched_tokens=payload.max_num_batched_tokens,
         dtype=payload.dtype,
+        kv_cache_dtype=payload.kv_cache_dtype,
+        block_size=payload.block_size,
+        tokenizer_mode=payload.tokenizer_mode,
+        reasoning_parser=payload.reasoning_parser,
+        trust_remote_code=payload.trust_remote_code,
         enable_tool_choice=payload.enable_tool_choice,
         tool_parser=payload.tool_parser,
+        served_model_names=payload.served_model_names,
+        compilation_config=payload.compilation_config,
+        advanced_args=payload.advanced_args,
+        master_port=payload.master_port,
         extra_args=payload.extra_args,
         api_key_enc=encrypt(payload.api_key),
         autostart=payload.autostart,

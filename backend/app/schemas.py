@@ -65,6 +65,41 @@ def _v_repo_id(v: str) -> str:
     return v
 
 
+def _v_compilation_config(v: str | None) -> str | None:
+    """``--compilation-config`` is passed to vLLM as a single JSON argument, so
+    it must parse as JSON. Empty/None is allowed (flag omitted)."""
+    if v is None or v.strip() == "":
+        return v
+    try:
+        json.loads(v)
+    except (ValueError, TypeError):
+        raise ValueError("compilation_config must be valid JSON")
+    return v
+
+
+def _v_advanced_args(v: str | None) -> str | None:
+    """Structured passthrough: a JSON array of ``{"flag": "--x", "value": ...}``
+    objects (``value`` null = a boolean flag). Empty/None is allowed."""
+    if v is None or v.strip() == "":
+        return v
+    try:
+        data = json.loads(v)
+    except (ValueError, TypeError):
+        raise ValueError("advanced_args must be valid JSON")
+    if not isinstance(data, list):
+        raise ValueError("advanced_args must be a JSON array of {flag, value} objects")
+    for item in data:
+        if not isinstance(item, dict) or "flag" not in item:
+            raise ValueError('each advanced_args item must be an object with a "flag" key')
+        flag = item["flag"]
+        if not isinstance(flag, str) or not flag.startswith("-"):
+            raise ValueError('advanced_args "flag" must be a string starting with "-"')
+        value = item.get("value")
+        if value is not None and not isinstance(value, (str, int, float, bool)):
+            raise ValueError('advanced_args "value" must be a scalar (str/number/bool) or null')
+    return v
+
+
 # --- Nodes ---------------------------------------------------------------
 class NodeIn(BaseModel):
     role: Literal["head", "worker"]
@@ -304,7 +339,7 @@ class ModelOut(BaseModel):
 class InstanceIn(BaseModel):
     name: str
     model_id: int
-    topology: Literal["cluster", "single"] = "cluster"
+    topology: Literal["cluster", "single", "distributed"] = "cluster"
 
     @field_validator("name")
     @classmethod
@@ -316,12 +351,32 @@ class InstanceIn(BaseModel):
     max_model_len: int | None = None
     gpu_memory_utilization: float = 0.85
     max_num_seqs: int | None = None
+    max_num_batched_tokens: int | None = None
     dtype: str | None = None
+    kv_cache_dtype: str | None = None
+    block_size: int | None = None
+    tokenizer_mode: str | None = None
+    reasoning_parser: str | None = None
+    trust_remote_code: bool = False
     enable_tool_choice: bool = True
     tool_parser: str | None = None  # auto-mapped if None and enable_tool_choice
-    extra_args: str | None = None
+    served_model_names: str | None = None  # space/newline-separated aliases; ≥1 wins
+    compilation_config: str | None = None  # JSON string, validated
+    advanced_args: str | None = None       # JSON array of {flag, value}
+    master_port: int = 29500               # distributed rendezvous port
+    extra_args: str | None = None          # legacy raw passthrough
     api_key: str | None = None
     autostart: bool = True
+
+    @field_validator("compilation_config")
+    @classmethod
+    def _check_compilation_config(cls, v: str | None) -> str | None:
+        return _v_compilation_config(v)
+
+    @field_validator("advanced_args")
+    @classmethod
+    def _check_advanced_args(cls, v: str | None) -> str | None:
+        return _v_advanced_args(v)
 
 
 class InstanceUpdate(BaseModel):
@@ -329,11 +384,31 @@ class InstanceUpdate(BaseModel):
     max_model_len: int | None = None
     gpu_memory_utilization: float | None = None
     max_num_seqs: int | None = None
+    max_num_batched_tokens: int | None = None
     dtype: str | None = None
+    kv_cache_dtype: str | None = None
+    block_size: int | None = None
+    tokenizer_mode: str | None = None
+    reasoning_parser: str | None = None
+    trust_remote_code: bool | None = None
     enable_tool_choice: bool | None = None
     tool_parser: str | None = None
+    served_model_names: str | None = None
+    compilation_config: str | None = None
+    advanced_args: str | None = None
+    master_port: int | None = None
     extra_args: str | None = None
     autostart: bool | None = None
+
+    @field_validator("compilation_config")
+    @classmethod
+    def _check_compilation_config(cls, v: str | None) -> str | None:
+        return _v_compilation_config(v)
+
+    @field_validator("advanced_args")
+    @classmethod
+    def _check_advanced_args(cls, v: str | None) -> str | None:
+        return _v_advanced_args(v)
 
 
 class InstanceOut(BaseModel):
@@ -350,9 +425,19 @@ class InstanceOut(BaseModel):
     max_model_len: int | None
     gpu_memory_utilization: float
     max_num_seqs: int | None
+    max_num_batched_tokens: int | None
     dtype: str | None
+    kv_cache_dtype: str | None
+    block_size: int | None
+    tokenizer_mode: str | None
+    reasoning_parser: str | None
+    trust_remote_code: bool
     enable_tool_choice: bool
     tool_parser: str | None
+    served_model_names: str | None
+    compilation_config: str | None
+    advanced_args: str | None
+    master_port: int
     extra_args: str | None
     has_api_key: bool
     autostart: bool
@@ -376,9 +461,19 @@ class InstanceOut(BaseModel):
             max_model_len=inst.max_model_len,
             gpu_memory_utilization=inst.gpu_memory_utilization,
             max_num_seqs=inst.max_num_seqs,
+            max_num_batched_tokens=inst.max_num_batched_tokens,
             dtype=inst.dtype,
+            kv_cache_dtype=inst.kv_cache_dtype,
+            block_size=inst.block_size,
+            tokenizer_mode=inst.tokenizer_mode,
+            reasoning_parser=inst.reasoning_parser,
+            trust_remote_code=inst.trust_remote_code,
             enable_tool_choice=inst.enable_tool_choice,
             tool_parser=inst.tool_parser,
+            served_model_names=inst.served_model_names,
+            compilation_config=inst.compilation_config,
+            advanced_args=inst.advanced_args,
+            master_port=inst.master_port,
             extra_args=inst.extra_args,
             has_api_key=bool(inst.api_key_enc),
             autostart=inst.autostart,

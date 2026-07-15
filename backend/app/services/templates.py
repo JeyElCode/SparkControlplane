@@ -13,6 +13,8 @@ traffic over the QSFP interface.
 
 from __future__ import annotations
 
+import json
+import re
 import shlex
 
 RAY_HEAD_CONTAINER = "spark-ray-head"
@@ -23,12 +25,20 @@ def instance_container(name: str) -> str:
     return f"spark-vllm-{name}"
 
 
+def distributed_worker_container(name: str) -> str:
+    return f"spark-vllm-{name}-worker"
+
+
 def ray_unit_name(role: str) -> str:
     return f"spark-ray-{role}.service"  # spark-ray-head.service / spark-ray-worker.service
 
 
 def instance_unit_name(name: str) -> str:
     return f"spark-vllm-{name}.service"
+
+
+def distributed_worker_unit_name(name: str) -> str:
+    return f"spark-vllm-{name}-worker.service"
 
 
 # Every `docker run` below overrides the image entrypoint with `--entrypoint bash`
@@ -130,40 +140,118 @@ WantedBy=multi-user.target
 """
 
 
+def parse_served_model_names(served_model_names: str | None) -> list[str]:
+    """Split the stored ``served_model_names`` blob (space/newline-separated
+    aliases) into a clean, ordered list. Empty/None -> []."""
+    if not served_model_names:
+        return []
+    return [tok for tok in re.split(r"\s+", served_model_names.strip()) if tok]
+
+
+def parse_advanced_args(advanced_args: str | None) -> list[tuple[str, str | None]]:
+    """Decode the structured ``advanced_args`` JSON blob into ``(flag, value)``
+    tuples (value ``None`` = a boolean flag). Malformed entries are skipped —
+    the payload is validated at the API boundary, this is defensive only."""
+    if not advanced_args:
+        return []
+    try:
+        data = json.loads(advanced_args)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[tuple[str, str | None]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        flag = item.get("flag")
+        if not isinstance(flag, str) or not flag:
+            continue
+        value = item.get("value")
+        out.append((flag, None if value is None else str(value)))
+    return out
+
+
 def build_vllm_serve_cmd(
-    *, model_container_path: str, served_model_name: str | None = None, port: int,
+    *, model_container_path: str, served_model_name: str | None = None,
+    served_model_names: str | None = None, port: int,
     tensor_parallel_size: int,
-    distributed_backend: str, max_model_len: int | None, gpu_memory_utilization: float,
-    max_num_seqs: int | None, dtype: str | None, enable_tool_choice: bool,
-    tool_parser: str | None, api_key: str | None, extra_args: str | None,
+    distributed_backend: str | None = None, max_model_len: int | None = None,
+    gpu_memory_utilization: float, max_num_seqs: int | None = None,
+    max_num_batched_tokens: int | None = None, dtype: str | None = None,
+    kv_cache_dtype: str | None = None, block_size: int | None = None,
+    tokenizer_mode: str | None = None, reasoning_parser: str | None = None,
+    trust_remote_code: bool = False, enable_tool_choice: bool = False,
+    tool_parser: str | None = None, compilation_config: str | None = None,
+    advanced_args: str | None = None, api_key: str | None = None,
+    extra_args: str | None = None,
+    distributed: dict | None = None,
 ) -> str:
     parts = [
         "vllm serve", shlex.quote(model_container_path),
         "--host 0.0.0.0", f"--port {port}",
         f"--tensor-parallel-size {tensor_parallel_size}",
-        f"--distributed-executor-backend {distributed_backend}",
-        f"--gpu-memory-utilization {gpu_memory_utilization}",
     ]
-    # Serve under a clean name (the registry name) instead of the raw
-    # "/models/<name>" container path, so API clients use a tidy model id. Skip
-    # if the user already set one via extra_args (let theirs win).
-    if served_model_name and not (extra_args and "--served-model-name" in extra_args):
-        parts.append(f"--served-model-name {shlex.quote(served_model_name)}")
+    # Ray (cluster) / mp (single) need an explicit backend; native distributed
+    # leaves it unset so vLLM auto-selects across the torch.distributed group.
+    if distributed_backend:
+        parts.append(f"--distributed-executor-backend {distributed_backend}")
+    parts.append(f"--gpu-memory-utilization {gpu_memory_utilization}")
+    # Serve under one or more clean aliases instead of the raw "/models/<name>"
+    # container path, so API clients use a tidy model id. Prefer the explicit
+    # alias list; else fall back to the single registry name. Skip if the user
+    # already set one via extra_args (let theirs win).
+    names = parse_served_model_names(served_model_names)
+    if not names and served_model_name:
+        names = [served_model_name]
+    if names and not (extra_args and "--served-model-name" in extra_args):
+        parts.append("--served-model-name " + " ".join(shlex.quote(n) for n in names))
     if max_model_len:
         parts.append(f"--max-model-len {max_model_len}")
     if max_num_seqs:
         parts.append(f"--max-num-seqs {max_num_seqs}")
+    if max_num_batched_tokens:
+        parts.append(f"--max-num-batched-tokens {max_num_batched_tokens}")
     if dtype:
         parts.append(f"--dtype {shlex.quote(dtype)}")
+    if kv_cache_dtype:
+        parts.append(f"--kv-cache-dtype {shlex.quote(kv_cache_dtype)}")
+    if block_size:
+        parts.append(f"--block-size {block_size}")
+    if tokenizer_mode:
+        parts.append(f"--tokenizer-mode {shlex.quote(tokenizer_mode)}")
+    if reasoning_parser:
+        parts.append(f"--reasoning-parser {shlex.quote(reasoning_parser)}")
+    if trust_remote_code:
+        parts.append("--trust-remote-code")
     if enable_tool_choice and tool_parser:
         parts.append("--enable-auto-tool-choice")
         parts.append(f"--tool-call-parser {shlex.quote(tool_parser)}")
+    # `--compilation-config` takes a single JSON argument; quote it so the whole
+    # object survives as ONE token through the inner `bash -lc`.
+    if compilation_config:
+        parts.append(f"--compilation-config {shlex.quote(compilation_config)}")
+    # Structured passthrough — each row is `--flag [value]`, individually quoted.
+    for flag, value in parse_advanced_args(advanced_args):
+        if value is None:
+            parts.append(shlex.quote(flag))
+        else:
+            parts.append(f"{shlex.quote(flag)} {shlex.quote(value)}")
     if api_key:
         parts.append(f"--api-key {shlex.quote(api_key)}")
     if extra_args:
         # Tokenize + quote so this passthrough can only add CLI args, never
         # inject shell syntax into the inner `bash -lc`.
         parts.extend(shlex.quote(tok) for tok in shlex.split(extra_args))
+    # Native torch.distributed multi-node rendezvous. `--headless` runs a
+    # worker with no API server (rank >= 1); rank 0 serves the OpenAI API.
+    if distributed:
+        parts.append(f"--nnodes {distributed['nnodes']}")
+        parts.append(f"--node-rank {distributed['node_rank']}")
+        parts.append(f"--master-addr {shlex.quote(str(distributed['master_addr']))}")
+        parts.append(f"--master-port {distributed['master_port']}")
+        if distributed.get("headless"):
+            parts.append("--headless")
     return " ".join(parts)
 
 
@@ -222,6 +310,83 @@ def render_instance_unit_single(*, name: str, script_path: str) -> str:
     container = instance_container(name)
     return f"""[Unit]
 Description=Spark Control Plane - vLLM instance {name} (single node)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart={script_path}
+ExecStop=/usr/bin/docker stop {container}
+ExecStopPost=-/usr/bin/docker rm -f {container}
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def render_instance_docker_run_distributed(
+    *, name: str, role: str, image: str, hf_home: str, models_dir: str, shm: str,
+    iface: str, host_qsfp: str, master_addr: str, serve_cmd: str,
+) -> str:
+    """Docker-run wrapper for one node of a native torch.distributed launch.
+
+    Modeled on :func:`render_instance_docker_run_single`, but pins NCCL/Gloo/UCX
+    traffic to the QSFP interface (like the Ray scripts) so the tensor-parallel
+    all-reduce crosses the fast interconnect, and sets ``VLLM_HOST_IP`` /
+    ``MASTER_ADDR`` for the rendezvous. ``role`` is ``head`` (rank 0, serves the
+    API) or ``worker`` (rank >= 1, ``--headless``)."""
+    container = instance_container(name) if role == "head" else distributed_worker_container(name)
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+docker rm -f {container} >/dev/null 2>&1 || true
+exec docker run --rm --name {container} \\
+  --network host --shm-size {shm} --gpus all \\
+  --ulimit memlock=-1 --ulimit stack=67108864 \\
+  -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
+  -v {shlex.quote(models_dir)}:/models \\
+  -e VLLM_HOST_IP={shlex.quote(host_qsfp)} \\
+  -e MASTER_ADDR={shlex.quote(master_addr)} \\
+{_net_env_flags(iface)}
+  --entrypoint bash \\
+  {shlex.quote(image)} \\
+  -lc {shlex.quote(serve_cmd)}
+"""
+
+
+def render_instance_unit_distributed_head(*, name: str, script_path: str) -> str:
+    """systemd unit for the distributed head (rank 0, serves the OpenAI API)."""
+    container = instance_container(name)
+    return f"""[Unit]
+Description=Spark Control Plane - vLLM instance {name} (distributed head)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart={script_path}
+ExecStop=/usr/bin/docker stop {container}
+ExecStopPost=-/usr/bin/docker rm -f {container}
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=0
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def render_instance_unit_distributed_worker(*, name: str, script_path: str) -> str:
+    """systemd unit for a distributed worker (rank >= 1, ``--headless``)."""
+    container = distributed_worker_container(name)
+    return f"""[Unit]
+Description=Spark Control Plane - vLLM instance {name} (distributed worker)
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service

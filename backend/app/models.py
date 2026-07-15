@@ -33,6 +33,7 @@ SUDO_PASSWORD = "password"
 
 TOPO_CLUSTER = "cluster"   # vllm serve in the ray head container, TP across both nodes
 TOPO_SINGLE = "single"     # standalone container pinned to one node, TP=1
+TOPO_DISTRIBUTED = "distributed"  # native torch.distributed multi-node, headless workers over QSFP
 
 # Model per-node states
 MS_ABSENT = "absent"
@@ -174,8 +175,25 @@ class Instance(Base):
     max_num_seqs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dtype: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    max_num_batched_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    kv_cache_dtype: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    block_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokenizer_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reasoning_parser: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    trust_remote_code: Mapped[bool] = mapped_column(Boolean, default=False)
+
     enable_tool_choice: Mapped[bool] = mapped_column(Boolean, default=True)
     tool_parser: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Multiple `--served-model-name` aliases (space/newline-separated); ≥1 wins
+    # over the registry name. Null falls back to the model's registry name.
+    served_model_names: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # `--compilation-config <json>` — stored as a JSON string, validated as JSON.
+    compilation_config: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Structured passthrough: JSON array of {"flag": "--x", "value": "y"|null}.
+    advanced_args: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # `--master-port` for the native distributed rendezvous (distributed only).
+    master_port: Mapped[int] = mapped_column(Integer, default=29500)
+    # Legacy raw passthrough (kept for backward-compat; UI uses advanced_args).
     extra_args: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
 
