@@ -62,6 +62,8 @@ In the **Role** column below:
 | `SPARK_STATUS_POLL_SECONDS` | `status_poll_seconds` | `10` | Seed → `Setting.status_poll_seconds` | Status polling interval (seconds). The runtime value lives on the `Setting` singleton. |
 | `SPARK_SSH_CONNECT_TIMEOUT` | `ssh_connect_timeout` | `15` | Runtime fixed | asyncssh connect timeout (seconds) for all node operations. |
 | `SPARK_NODE_INSTALL_DIR` | `node_install_dir` | `/opt/spark-controlplane` | Runtime fixed | Where helper scripts + systemd units are installed **on the nodes**. |
+| `SPARK_MCP_ENABLED` | `mcp_enabled` | `false` | Process | Mount the streamable-HTTP MCP server at `/mcp`. Fail-closed: has no effect unless `SPARK_MCP_TOKEN` is also set. See [MCP.md](MCP.md). |
+| `SPARK_MCP_TOKEN` | `mcp_token` | _none_ | Process | Bearer token required on every `/mcp` request. When unset the endpoint stays disabled even if `mcp_enabled` is on. |
 
 `SPARK_FRONTEND_DIR` is also read, but by `app/main.py` (not pydantic-settings) —
 see [§4](#4-frontend-dir).

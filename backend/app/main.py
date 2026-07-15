@@ -27,6 +27,23 @@ logging.basicConfig(
 )
 log = logging.getLogger("spark")
 
+settings = get_settings()
+
+# Build the optional MCP server once, up front, so the same instance backs both
+# the ASGI mount and the session-manager lifespan below. Fail-open: a broken
+# optional dependency must never take down the core API.
+_mcp = None
+if settings.mcp_active:
+    try:
+        from .mcp_server import build_mcp_server
+
+        _mcp = build_mcp_server()
+    except Exception:  # noqa: BLE001 - optional feature; keep serving the API
+        log.exception("MCP enabled but failed to initialize; serving without /mcp")
+        _mcp = None
+elif settings.mcp_enabled:
+    log.warning("MCP enabled but SPARK_MCP_TOKEN is unset; /mcp stays disabled (fail-closed).")
+
 
 async def _startup_discover() -> None:
     """Best-effort: import any on-disk models into the registry shortly after
@@ -47,14 +64,20 @@ async def lifespan(app: FastAPI):
     await init_db()
     log.info("Spark Control Plane %s started", __version__)
     task = asyncio.create_task(_startup_discover())
-    yield
+    # The mounted MCP sub-app's own lifespan is not run by Starlette's Mount, so
+    # drive its streamable-HTTP session manager from here for its whole lifetime.
+    if _mcp is not None:
+        async with _mcp.session_manager.run():
+            log.info("MCP server mounted at /mcp (streamable-HTTP)")
+            yield
+    else:
+        yield
     task.cancel()
     await pool.close_all()
 
 
 app = FastAPI(title="Spark Control Plane", version=__version__, lifespan=lifespan)
 
-settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -74,7 +97,24 @@ async def health():
 
 @app.get("/api/meta")
 async def meta():
-    return {"name": "Spark Control Plane", "version": __version__}
+    return {
+        "name": "Spark Control Plane",
+        "version": __version__,
+        "mcp_enabled": _mcp is not None,
+    }
+
+
+# --- Optional MCP server -------------------------------------------------
+# Mount the streamable-HTTP MCP endpoint at /mcp, behind a bearer-token gate.
+# Mounted before the SPA catch-all so /mcp is not swallowed by the frontend.
+if _mcp is not None:
+    from .mcp_server import BearerAuthMiddleware
+
+    app.mount(
+        "/mcp",
+        BearerAuthMiddleware(_mcp.streamable_http_app(), settings.mcp_token),
+        name="mcp",
+    )
 
 
 # --- Serve the built SPA -------------------------------------------------
