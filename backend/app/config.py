@@ -66,6 +66,21 @@ class Settings(BaseSettings):
     # Approx unified memory per DGX Spark node, GiB, for the memory budget view.
     node_memory_gib: int = Field(default=119)
 
+    # --- MCP server (optional) -------------------------------------------
+    # Expose the control plane over the Model Context Protocol (streamable-HTTP)
+    # at ``/mcp`` for use as a Claude skill / MCP server. Fail-closed: the
+    # endpoint is only mounted when it is both enabled AND a bearer token is
+    # set, so it is never reachable without authentication.
+    mcp_enabled: bool = Field(default=False, description="Mount the MCP server at /mcp")
+    mcp_token: str | None = Field(
+        default=None, description="Bearer token required on /mcp (SPARK_MCP_TOKEN)"
+    )
+
+    @property
+    def mcp_active(self) -> bool:
+        """Effective MCP state: enabled and a bearer token is configured."""
+        return bool(self.mcp_enabled and self.mcp_token)
+
     # --- Status polling --------------------------------------------------
     status_poll_seconds: int = Field(default=10)
     ssh_connect_timeout: int = Field(default=15)

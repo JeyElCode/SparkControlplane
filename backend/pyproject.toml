@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "PyYAML>=6.0",
     "greenlet>=3.0",
+    "mcp>=1.2",
 ]
 
 [project.optional-dependencies]
