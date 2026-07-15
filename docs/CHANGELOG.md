@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.4.0
+- **Native (Ray-less) multi-node `distributed` topology.** Instances can now run
+  as a native `torch.distributed` launch — a head unit (rank 0, serves the OpenAI
+  API) plus a headless worker unit on each other node (rank >= 1) — joined over
+  the QSFP interconnect (`--nnodes/--node-rank/--master-addr/--master-port`, with
+  `--master-addr` taken from the head node's `qsfp_ip`). This is a peer of the
+  existing Ray `cluster` topology and needs no Ray. Requires >= 2 nodes with a
+  `qsfp_ip` set (rejected 4xx otherwise); the model must be present on every
+  participating node. Tensor-parallel size defaults to the node count.
+- **First-class vLLM serve settings.** New per-instance fields replace fragile
+  raw `extra_args` editing: multiple `--served-model-name` aliases, and
+  first-class `--kv-cache-dtype`, `--block-size`, `--max-num-batched-tokens`,
+  `--tokenizer-mode`, `--reasoning-parser`, `--trust-remote-code`, plus a
+  validated `--compilation-config` JSON argument (emitted as a single token) and
+  a structured `advanced_args` passthrough (a JSON array of `{flag, value}` rows;
+  `value: null` = a boolean flag). Legacy `extra_args` is kept for backward
+  compatibility and still appended last. New columns are auto-migrated by `db.py`.
+
 ## v1.3.5
 - **Models page no longer shows stale "present ✓" for offline nodes.** The model
   registry stores only *last-known* per-node presence, so when a node was
