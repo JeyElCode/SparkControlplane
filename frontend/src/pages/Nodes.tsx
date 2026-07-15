@@ -72,7 +72,7 @@ function NodeForm({
       </div>
       <div className="row-2">
         <Field label="LAN IP" hint="Management IP used for SSH"><input value={n.lan_ip} placeholder="192.168.1.160" onChange={(e) => set("lan_ip", e.target.value)} /></Field>
-        <Field label="QSFP IP" hint="Private high-speed link IP"><input value={n.qsfp_ip} placeholder="10.10.10.1" onChange={(e) => set("qsfp_ip", e.target.value)} /></Field>
+        <Field label="QSFP IP" hint="Private high-speed link IP. The head node's is the master-addr for distributed instances."><input value={n.qsfp_ip} placeholder="10.0.0.1" onChange={(e) => set("qsfp_ip", e.target.value)} /></Field>
       </div>
       <div className="row-2">
         <Field label="QSFP interface"><input value={n.qsfp_iface} onChange={(e) => set("qsfp_iface", e.target.value)} /></Field>

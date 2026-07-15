@@ -67,6 +67,11 @@ export interface Settings {
   judge_base_url?: string | null;
   judge_model?: string | null;
   has_judge_api_key?: boolean;
+  // MCP server status — populated by Track C. Absent on builds without MCP.
+  mcp_enabled?: boolean;
+  mcp_path?: string | null;
+  mcp_token?: string | null;
+  has_mcp_token?: boolean;
 }
 
 export interface Catalog {
@@ -213,13 +218,15 @@ export interface Model {
   active_job_id?: number | null;
 }
 
+export type Topology = "cluster" | "single" | "distributed";
+
 export interface Instance {
   id: number;
   name: string;
   model_id: number;
   model_repo_id: string;
   model_name: string;
-  topology: "cluster" | "single";
+  topology: Topology;
   node_id?: number | null;
   node_role?: string | null;
   port: number;
@@ -230,7 +237,18 @@ export interface Instance {
   dtype?: string | null;
   enable_tool_choice: boolean;
   tool_parser?: string | null;
-  extra_args?: string | null;
+  // First-class vLLM serve settings (see docs/PLAN-native-topology-settings-mcp.md).
+  served_model_names?: string | null; // space/newline-separated aliases → --served-model-name
+  trust_remote_code: boolean;
+  kv_cache_dtype?: string | null;
+  block_size?: number | null;
+  max_num_batched_tokens?: number | null;
+  tokenizer_mode?: string | null;
+  reasoning_parser?: string | null;
+  compilation_config?: string | null; // JSON string → --compilation-config
+  advanced_args?: string | null; // JSON array string of {flag,value|null}
+  master_port?: number | null; // distributed only → --master-port
+  extra_args?: string | null; // legacy raw passthrough
   has_api_key: boolean;
   autostart: boolean;
   systemd_unit?: string | null;
@@ -241,7 +259,7 @@ export interface Instance {
 export interface InstanceInput {
   name: string;
   model_id: number;
-  topology: "cluster" | "single";
+  topology: Topology;
   node_id?: number | null;
   port: number;
   tensor_parallel_size?: number | null;
@@ -251,6 +269,16 @@ export interface InstanceInput {
   dtype?: string | null;
   enable_tool_choice?: boolean;
   tool_parser?: string | null;
+  served_model_names?: string | null;
+  trust_remote_code?: boolean;
+  kv_cache_dtype?: string | null;
+  block_size?: number | null;
+  max_num_batched_tokens?: number | null;
+  tokenizer_mode?: string | null;
+  reasoning_parser?: string | null;
+  compilation_config?: string | null;
+  advanced_args?: string | null;
+  master_port?: number | null;
   extra_args?: string | null;
   api_key?: string | null;
   autostart?: boolean;

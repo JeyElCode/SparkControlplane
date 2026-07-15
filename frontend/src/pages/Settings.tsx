@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, ClusterConfig } from "../lib/api";
 import { usePoll } from "../lib/hooks";
-import { Field, Spinner } from "../components/ui";
+import { Badge, Field, Spinner } from "../components/ui";
 import { useToast } from "../components/Toast";
 
 export default function SettingsPage() {
@@ -144,6 +144,33 @@ export default function SettingsPage() {
               </div>
             </Field>
           </div>
+
+          {settings.data?.mcp_enabled !== undefined && (
+            <div className="card">
+              <h2>MCP server</h2>
+              <p className="faint" style={{ fontSize: 12, marginTop: -6 }}>
+                Model Context Protocol endpoint for driving this control plane from an MCP client (e.g. a Claude skill).
+              </p>
+              <div className="kv">
+                <dt>Status</dt>
+                <dd><Badge kind={settings.data.mcp_enabled ? "green" : "gray"}>{settings.data.mcp_enabled ? "enabled" : "disabled"}</Badge></dd>
+                {settings.data.mcp_path && (<><dt>Endpoint</dt><dd className="mono">{settings.data.mcp_path}</dd></>)}
+                <dt>Bearer token</dt>
+                <dd className="mono">
+                  {settings.data.mcp_token ? (
+                    <div className="flex gap-sm">
+                      <span>{settings.data.mcp_token}</span>
+                      <button className="btn btn-sm" onClick={() => { navigator.clipboard?.writeText(settings.data!.mcp_token!); toast("MCP token copied", "success"); }}>Copy</button>
+                    </div>
+                  ) : settings.data.has_mcp_token ? (
+                    "•••••• (set)"
+                  ) : (
+                    <span className="faint">not set</span>
+                  )}
+                </dd>
+              </div>
+            </div>
+          )}
 
           <div className="card">
             <h2>Security</h2>
