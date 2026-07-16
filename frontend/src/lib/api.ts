@@ -249,6 +249,7 @@ export interface Instance {
   advanced_args?: string | null; // JSON array string of {flag,value|null}
   master_port?: number | null; // distributed only → --master-port
   extra_args?: string | null; // legacy raw passthrough
+  vllm_image?: string | null; // per-instance image override (else cluster image)
   has_api_key: boolean;
   autostart: boolean;
   systemd_unit?: string | null;
@@ -280,6 +281,7 @@ export interface InstanceInput {
   advanced_args?: string | null;
   master_port?: number | null;
   extra_args?: string | null;
+  vllm_image?: string | null; // per-instance image override (else cluster image)
   api_key?: string | null;
   autostart?: boolean;
 }

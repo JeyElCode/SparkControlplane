@@ -30,6 +30,7 @@ const DEFAULTS: InstanceInput = {
   advanced_args: null,
   master_port: 29500,
   extra_args: null,
+  vllm_image: null,
   api_key: null,
   autostart: true,
 };
@@ -98,6 +99,7 @@ type AdvValues = Pick<
   | "compilation_config"
   | "advanced_args"
   | "extra_args"
+  | "vllm_image"
 >;
 
 function VllmAdvanced({
@@ -276,6 +278,14 @@ function VllmAdvanced({
           <button type="button" className="btn btn-sm" onClick={addRow}>
             + Add arg
           </button>
+        </Field>
+
+        <Field label="Image override (optional)">
+          <input
+            value={v.vllm_image ?? ""}
+            placeholder="registry/vllm-image:tag — else cluster default"
+            onChange={(e) => patch({ vllm_image: e.target.value || null })}
+          />
         </Field>
 
         <label className="checkbox">
@@ -471,6 +481,7 @@ type EditFields = Pick<
   | "advanced_args"
   | "master_port"
   | "extra_args"
+  | "vllm_image"
   | "autostart"
 >;
 
@@ -495,6 +506,7 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
     advanced_args: inst.advanced_args ?? null,
     master_port: inst.master_port ?? null,
     extra_args: inst.extra_args ?? null,
+    vllm_image: inst.vllm_image ?? null,
     autostart: inst.autostart,
   });
   const [busy, setBusy] = useState(false);

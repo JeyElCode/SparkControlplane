@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.2
+- **Per-instance image override (`vllm_image`).** An instance can now pin its own
+  vLLM/Ray container image instead of always using the cluster-wide
+  `ClusterConfig.vllm_image`. When set, it is used for the single-node run and for
+  both the head and worker units of a `distributed` topology; when unset it falls
+  back to the cluster image (unchanged behaviour). This lets one instance run a
+  custom/experimental build (e.g. a model-specific image) while the rest of the
+  fleet stays on the shared image. New nullable column, auto-migrated by `db.py`;
+  optional field in the create/edit forms.
+
 ## v1.4.1
 - **fix(mcp): configurable Host allowlist for `/mcp` behind a reverse proxy.**
   `SPARK_MCP_ALLOWED_HOSTS` / `SPARK_MCP_ALLOWED_ORIGINS` feed FastMCP's

@@ -365,6 +365,7 @@ class InstanceIn(BaseModel):
     advanced_args: str | None = None       # JSON array of {flag, value}
     master_port: int = 29500               # distributed rendezvous port
     extra_args: str | None = None          # legacy raw passthrough
+    vllm_image: str | None = None          # per-instance image override (else cluster image)
     api_key: str | None = None
     autostart: bool = True
 
@@ -398,6 +399,7 @@ class InstanceUpdate(BaseModel):
     advanced_args: str | None = None
     master_port: int | None = None
     extra_args: str | None = None
+    vllm_image: str | None = None
     autostart: bool | None = None
 
     @field_validator("compilation_config")
@@ -439,6 +441,7 @@ class InstanceOut(BaseModel):
     advanced_args: str | None
     master_port: int
     extra_args: str | None
+    vllm_image: str | None
     has_api_key: bool
     autostart: bool
     systemd_unit: str | None
@@ -475,6 +478,7 @@ class InstanceOut(BaseModel):
             advanced_args=inst.advanced_args,
             master_port=inst.master_port,
             extra_args=inst.extra_args,
+            vllm_image=inst.vllm_image,
             has_api_key=bool(inst.api_key_enc),
             autostart=inst.autostart,
             systemd_unit=inst.systemd_unit,

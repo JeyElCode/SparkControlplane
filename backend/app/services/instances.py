@@ -178,7 +178,7 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
             install_dir = get_settings().node_install_dir
             run_script = templates.render_instance_docker_run_single(
                 name=inst.name,
-                image=cfg.vllm_image,
+                image=inst.vllm_image or cfg.vllm_image,
                 hf_home=hf_cache_host_path(node, cfg),
                 models_dir=models_host_dir(node, cfg),
                 shm=cfg.shm_size,
@@ -256,7 +256,7 @@ async def _start_distributed(
         )
         ssh = await ssh_for_node(session, node)
         run_script = templates.render_instance_docker_run_distributed(
-            name=inst.name, role="worker", image=cfg.vllm_image,
+            name=inst.name, role="worker", image=inst.vllm_image or cfg.vllm_image,
             hf_home=hf_cache_host_path(node, cfg), models_dir=models_host_dir(node, cfg),
             shm=cfg.shm_size, iface=node.qsfp_iface, host_qsfp=node.qsfp_ip,
             master_addr=master_addr, serve_cmd=serve_cmd,
@@ -281,7 +281,7 @@ async def _start_distributed(
     )
     ssh = await ssh_for_node(session, head)
     run_script = templates.render_instance_docker_run_distributed(
-        name=inst.name, role="head", image=cfg.vllm_image,
+        name=inst.name, role="head", image=inst.vllm_image or cfg.vllm_image,
         hf_home=hf_cache_host_path(head, cfg), models_dir=models_host_dir(head, cfg),
         shm=cfg.shm_size, iface=head.qsfp_iface, host_qsfp=head.qsfp_ip,
         master_addr=master_addr, serve_cmd=serve_cmd,

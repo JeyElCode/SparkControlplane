@@ -195,6 +195,10 @@ class Instance(Base):
     master_port: Mapped[int] = mapped_column(Integer, default=29500)
     # Legacy raw passthrough (kept for backward-compat; UI uses advanced_args).
     extra_args: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional per-instance vLLM/Ray image override. Falls back to the cluster's
+    # ClusterConfig.vllm_image when unset — so most instances use the shared image
+    # while one (e.g. a custom build for a specific model) can pin its own.
+    vllm_image: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     autostart: Mapped[bool] = mapped_column(Boolean, default=True)

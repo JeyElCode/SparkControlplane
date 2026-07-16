@@ -95,6 +95,7 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         advanced_args=payload.advanced_args,
         master_port=payload.master_port,
         extra_args=payload.extra_args,
+        vllm_image=payload.vllm_image,
         api_key_enc=encrypt(payload.api_key),
         autostart=payload.autostart,
     )
