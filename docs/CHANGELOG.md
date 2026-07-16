@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.1
+- **fix(mcp): configurable Host allowlist for `/mcp` behind a reverse proxy.**
+  `SPARK_MCP_ALLOWED_HOSTS` / `SPARK_MCP_ALLOWED_ORIGINS` feed FastMCP's
+  `TransportSecuritySettings`, so `/mcp` no longer 421s ("Invalid Host header")
+  behind an ingress. `*` = trusted-proxy mode; localhost always allowed.
+
 ## v1.4.0
 - **Native (Ray-less) multi-node `distributed` topology.** Instances can now run
   as a native `torch.distributed` launch — a head unit (rank 0, serves the OpenAI
