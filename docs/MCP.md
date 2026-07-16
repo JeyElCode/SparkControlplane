@@ -23,6 +23,8 @@ and logs a warning.
 |---|---|---|
 | `SPARK_MCP_ENABLED` | `false` | Mount the MCP server at `/mcp`. |
 | `SPARK_MCP_TOKEN` | _none_ | Bearer token required on every `/mcp` request. |
+| `SPARK_MCP_ALLOWED_HOSTS` | _none_ | Host header allowlist when the app is behind a reverse proxy/ingress. Comma-separated (or JSON). Set to your external host(s) — e.g. `spark.example.com` — or the SDK's DNS-rebinding protection rejects the request with **HTTP 421 "Invalid Host header"**. `localhost`/`127.0.0.1` are always allowed. A single `*` disables the host check (trusted-proxy mode). |
+| `SPARK_MCP_ALLOWED_ORIGINS` | _none_ | Optional `Origin` header allowlist (comma-separated). |
 
 ```bash
 # generate a strong random token

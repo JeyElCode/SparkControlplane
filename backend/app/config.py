@@ -75,6 +75,25 @@ class Settings(BaseSettings):
     mcp_token: str | None = Field(
         default=None, description="Bearer token required on /mcp (SPARK_MCP_TOKEN)"
     )
+    # When the MCP server runs behind a reverse proxy / ingress, the SDK's
+    # DNS-rebinding protection rejects any Host header it doesn't know (HTTP 421
+    # "Invalid Host header"). List the external host(s) here (comma-separated or
+    # JSON). Empty = localhost only. A single "*" disables the host check
+    # entirely (trusted-proxy mode). localhost/127.0.0.1 are always allowed.
+    mcp_allowed_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    mcp_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("mcp_allowed_hosts", "mcp_allowed_origins", mode="before")
+    @classmethod
+    def _split_mcp_list(cls, v):
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("["):
+                import json
+
+                return json.loads(s)
+            return [o.strip() for o in s.split(",") if o.strip()]
+        return v
 
     @property
     def mcp_active(self) -> bool:

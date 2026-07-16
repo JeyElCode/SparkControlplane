@@ -171,6 +171,25 @@ def build_mcp_server() -> "FastMCP":
     FastAPI app, the protocol endpoint is exactly ``/mcp``.
     """
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    from .config import get_settings
+
+    _s = get_settings()
+    # Host-header allowlist so /mcp works behind a reverse proxy/ingress. "*"
+    # disables the DNS-rebinding host check (trusted-proxy mode); otherwise allow
+    # the configured hosts (with any-port variants) plus localhost.
+    if "*" in _s.mcp_allowed_hosts:
+        _transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    else:
+        _hosts = ["localhost", "127.0.0.1"]
+        for h in _s.mcp_allowed_hosts:
+            _hosts += [h, f"{h}:*"]
+        _transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=_hosts,
+            allowed_origins=_s.mcp_allowed_origins,
+        )
 
     mcp = FastMCP(
         "spark-controlplane",
@@ -183,6 +202,7 @@ def build_mcp_server() -> "FastMCP":
         ),
         stateless_http=True,
         streamable_http_path="/",
+        transport_security=_transport_security,
     )
 
     # ---------------- status ---------------- #
