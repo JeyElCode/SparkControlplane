@@ -41,6 +41,14 @@ def distributed_worker_unit_name(name: str) -> str:
     return f"spark-vllm-{name}-worker.service"
 
 
+def tls_container(name: str) -> str:
+    return f"spark-vllm-{name}-tls"
+
+
+def tls_unit_name(name: str) -> str:
+    return f"spark-vllm-{name}-tls.service"
+
+
 # Every `docker run` below overrides the image entrypoint with `--entrypoint bash`
 # and passes the script via `-c`/`-lc`. The vLLM images differ: the NGC image
 # (nvcr.io/nvidia/vllm) uses an entrypoint that execs its args, but the Docker Hub
@@ -186,10 +194,11 @@ def build_vllm_serve_cmd(
     advanced_args: str | None = None, api_key: str | None = None,
     extra_args: str | None = None,
     distributed: dict | None = None,
+    api_host: str = "0.0.0.0",
 ) -> str:
     parts = [
         "vllm serve", shlex.quote(model_container_path),
-        "--host 0.0.0.0", f"--port {port}",
+        f"--host {shlex.quote(api_host)}", f"--port {port}",
         f"--tensor-parallel-size {tensor_parallel_size}",
     ]
     # Ray (cluster) / mp (single) need an explicit backend; native distributed
@@ -400,6 +409,104 @@ Restart=on-failure
 RestartSec=10
 TimeoutStartSec=0
 TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+# --- Optional TLS reverse proxy (nginx sidecar) --------------------------------
+#
+# When an instance has TLS enabled, an nginx container runs on the API-serving
+# node (single / distributed head), terminating HTTPS on ``tls_port`` and
+# reverse-proxying to vLLM on the instance ``port`` (plain HTTP, same host). vLLM
+# itself is unchanged — this is purely additive, so the cert can be rotated
+# (rewrite files + ``nginx -s reload``) without restarting the multi-minute model
+# load. Everything runs on ``--network host`` (like the vLLM container), so the
+# proxy reaches vLLM at 127.0.0.1:<port>.
+
+TLS_CERT_FILE = "cert.pem"
+TLS_KEY_FILE = "key.pem"
+TLS_CONF_FILE = "nginx.conf"
+
+
+def tls_dir(install_dir: str, name: str) -> str:
+    """Per-instance directory on the node holding the cert, key, and nginx.conf."""
+    return f"{install_dir}/tls/{name}"
+
+
+def render_tls_nginx_conf(*, upstream_port: int, tls_port: int, cert_path: str, key_path: str) -> str:
+    """nginx.conf for the TLS sidecar. Streaming-safe for OpenAI SSE responses:
+    ``proxy_buffering off`` + long read timeout so tokens flush as they arrive,
+    HTTP/1.1 upstream, and no request-body size cap (long prompts)."""
+    return f"""worker_processes auto;
+events {{ worker_connections 1024; }}
+http {{
+  access_log /dev/stdout;
+  error_log  /dev/stderr;
+  upstream vllm_backend {{ server 127.0.0.1:{upstream_port}; }}
+  server {{
+    listen {tls_port} ssl;
+    http2 on;
+    ssl_certificate     {cert_path};
+    ssl_certificate_key {key_path};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    client_max_body_size 0;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    location / {{
+      proxy_pass http://vllm_backend;
+      proxy_http_version 1.1;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_buffering off;
+      proxy_cache off;
+      chunked_transfer_encoding on;
+    }}
+  }}
+}}
+"""
+
+
+def render_tls_docker_run(*, name: str, image: str, tls_port: int, conf_dir: str) -> str:
+    """Docker-run wrapper for the nginx TLS sidecar. Host network so it can bind
+    ``tls_port`` and reach vLLM on 127.0.0.1. ``conf_dir`` (holding nginx.conf +
+    cert.pem + key.pem) is mounted read-only at the same path inside."""
+    container = tls_container(name)
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+docker rm -f {container} >/dev/null 2>&1 || true
+exec docker run --rm --name {container} \\
+  --network host \\
+  -v {shlex.quote(conf_dir)}:{shlex.quote(conf_dir)}:ro \\
+  {shlex.quote(image)} \\
+  nginx -c {shlex.quote(f"{conf_dir}/{TLS_CONF_FILE}")} -g 'daemon off;'
+"""
+
+
+def render_tls_unit(*, name: str, script_path: str) -> str:
+    """systemd unit for the nginx TLS sidecar. Ordered after the vLLM unit so the
+    backend exists before the proxy accepts traffic."""
+    container = tls_container(name)
+    vllm_unit = instance_unit_name(name)
+    return f"""[Unit]
+Description=Spark Control Plane - vLLM instance {name} (TLS proxy)
+After=docker.service network-online.target {vllm_unit}
+Wants=network-online.target {vllm_unit}
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart={script_path}
+ExecStop=/usr/bin/docker stop {container}
+ExecStopPost=-/usr/bin/docker rm -f {container}
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=0
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
