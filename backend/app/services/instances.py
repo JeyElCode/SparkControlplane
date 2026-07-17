@@ -196,8 +196,15 @@ async def rotate_tls_cert(
     await nodeops.install_file(ssh, f"{conf_dir}/{templates.TLS_CERT_FILE}", cert, mode="600")
     await nodeops.install_file(ssh, f"{conf_dir}/{templates.TLS_KEY_FILE}", key, mode="600")
     await handle.log(f"[{node.name}] reloading nginx to pick up the new cert (no vLLM restart)")
+    # The sidecar master was started with an explicit `-c <conf_dir>/nginx.conf`,
+    # so the reload MUST pass the same `-c`: a bare `nginx -s reload` reads the
+    # image default config, signals the wrong/absent pid, and the running master
+    # never re-reads the new cert — the reload "succeeds" but is a silent no-op.
+    conf_path = f"{conf_dir}/{templates.TLS_CONF_FILE}"
     res = await nodeops.docker(
-        ssh, f"exec {templates.tls_container(inst.name)} nginx -s reload", log_cb=handle.ssh_log_cb()
+        ssh,
+        f"exec {templates.tls_container(inst.name)} nginx -c {shlex.quote(conf_path)} -s reload",
+        log_cb=handle.ssh_log_cb(),
     )
     if not res.ok:
         raise RuntimeError(f"nginx reload failed: {res.stderr.strip() or res.stdout.strip()}")

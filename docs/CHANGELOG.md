@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.1
+- **fix(tls): cert rotation now actually reloads nginx.** `POST /instances/{id}/tls/reload`
+  ran a bare `nginx -s reload`, but the sidecar master is started with an explicit
+  `-c <conf_dir>/nginx.conf`; without the same `-c`, the reload reads the image default
+  config, signals the wrong/absent pid, and the master never re-reads the new cert — the
+  reload "succeeded" but was a silent no-op (the served leaf never swapped). Reload now
+  passes the same `-c`, so rotation takes effect. Surfaced by the AWX auto-renewal job.
+
+
 ## v1.5.0
 - **First-class TLS termination (nginx sidecar).** An instance can now serve
   HTTPS on a public port (default 443) while vLLM stays on its own port. When
