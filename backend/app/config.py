@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     container_shm_size: str = Field(default="10.24gb")
     # Approx unified memory per DGX Spark node, GiB, for the memory budget view.
     node_memory_gib: int = Field(default=119)
+    # Image for the optional per-instance nginx TLS sidecar (SPARK_TLS_PROXY_IMAGE).
+    tls_proxy_image: str = Field(default="nginx:1.27-alpine")
 
     # --- MCP server (optional) -------------------------------------------
     # Expose the control plane over the Model Context Protocol (streamable-HTTP)

@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.5.0
+- **First-class TLS termination (nginx sidecar).** An instance can now serve
+  HTTPS on a public port (default 443) while vLLM stays on its own port. When
+  `tls_enabled`, the API-serving node (single / distributed head) also runs an
+  nginx sidecar container (its own systemd unit) that terminates TLS on
+  `tls_port` and reverse-proxies to vLLM on `127.0.0.1:<port>` — and vLLM is
+  bound to loopback, so the OpenAI port is no longer network-exposed. The proxy
+  is streaming-safe (`proxy_buffering off`, long read timeout, HTTP/1.1) so
+  OpenAI SSE token streams pass through unbuffered. New per-instance fields
+  `tls_enabled` / `tls_port` and write-only `tls_cert` / `tls_key` (PEM, stored
+  encrypted; `has_tls_cert` on output). New nullable columns, auto-migrated by
+  `db.py`; optional TLS section in the create/edit forms.
+- **In-place cert rotation without a model restart.** `POST
+  /instances/{id}/tls/reload` (allowed while running) writes the new PEM and
+  runs `nginx -s reload`, so certificate renewal never triggers the multi-minute
+  vLLM reload. Configurable proxy image via `SPARK_TLS_PROXY_IMAGE` (default
+  `nginx:1.27-alpine`). Health checks route through the proxy when TLS is on.
+
 ## v1.4.2
 - **Per-instance image override (`vllm_image`).** An instance can now pin its own
   vLLM/Ray container image instead of always using the cluster-wide

@@ -32,6 +32,10 @@ const DEFAULTS: InstanceInput = {
   extra_args: null,
   vllm_image: null,
   api_key: null,
+  tls_enabled: false,
+  tls_port: 443,
+  tls_cert: null,
+  tls_key: null,
   autostart: true,
 };
 
@@ -309,6 +313,66 @@ function VllmAdvanced({
   );
 }
 
+// Optional TLS: an on-node nginx sidecar terminates HTTPS on `tls_port` and
+// proxies to vLLM (which stays on `port`, internal). Cert/key are write-only PEM.
+function TlsConfig({
+  v,
+  patch,
+  editMode,
+  hasTlsCert,
+}: {
+  v: Pick<InstanceInput, "tls_enabled" | "tls_port" | "tls_cert" | "tls_key">;
+  patch: (p: Partial<InstanceInput>) => void;
+  editMode?: boolean;
+  hasTlsCert?: boolean;
+}) {
+  const on = !!v.tls_enabled;
+  return (
+    <details className="collapse">
+      <summary>TLS / HTTPS (optional)</summary>
+      <div className="collapse-body">
+        <label className="checkbox">
+          <input type="checkbox" checked={on} onChange={(e) => patch({ tls_enabled: e.target.checked })} />
+          <span>
+            <span className="cb-label">Terminate HTTPS with an nginx sidecar</span>
+            <div className="cb-sub">vLLM stays on its port (internal, loopback); nginx serves TLS on the port below and proxies to it. Cert can be rotated without restarting the model.</div>
+          </span>
+        </label>
+        {on && (
+          <>
+            <Field label="HTTPS port">
+              <input
+                type="number"
+                value={v.tls_port ?? 443}
+                onChange={(e) => patch({ tls_port: Number(e.target.value) })}
+              />
+            </Field>
+            <Field
+              label={editMode ? "Certificate PEM — leave blank to keep current" : "Certificate (PEM, fullchain)"}
+              hint={editMode && hasTlsCert ? "A certificate is already stored." : undefined}
+            >
+              <textarea
+                rows={4}
+                value={v.tls_cert ?? ""}
+                placeholder="-----BEGIN CERTIFICATE-----"
+                onChange={(e) => patch({ tls_cert: e.target.value || null })}
+              />
+            </Field>
+            <Field label={editMode ? "Private key PEM — leave blank to keep current" : "Private key (PEM)"}>
+              <textarea
+                rows={4}
+                value={v.tls_key ?? ""}
+                placeholder="-----BEGIN PRIVATE KEY-----"
+                onChange={(e) => patch({ tls_key: e.target.value || null })}
+              />
+            </Field>
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const models = usePoll(() => api.listModels(), 0);
   const nodes = usePoll(() => api.listNodes(), 0);
@@ -446,6 +510,7 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
       </Field>
 
       <VllmAdvanced v={f} patch={patch} modelAlias={selModel?.name} />
+      <TlsConfig v={f} patch={patch} />
 
       <div className="row-2">
         <Field label="API key (optional)" hint="Secures the endpoint with --api-key."><input type="password" value={f.api_key ?? ""} onChange={(e) => set("api_key", e.target.value || null)} /></Field>
@@ -482,6 +547,10 @@ type EditFields = Pick<
   | "master_port"
   | "extra_args"
   | "vllm_image"
+  | "tls_enabled"
+  | "tls_port"
+  | "tls_cert"
+  | "tls_key"
   | "autostart"
 >;
 
@@ -507,6 +576,10 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
     master_port: inst.master_port ?? null,
     extra_args: inst.extra_args ?? null,
     vllm_image: inst.vllm_image ?? null,
+    tls_enabled: inst.tls_enabled,
+    tls_port: inst.tls_port,
+    tls_cert: null, // write-only; blank keeps the stored cert
+    tls_key: null,
     autostart: inst.autostart,
   });
   const [busy, setBusy] = useState(false);
@@ -521,7 +594,11 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
     }
     setBusy(true);
     try {
-      await api.updateInstance(inst.id, { ...f, port: Number(f.port) });
+      // Blank cert/key mean "keep the stored one" — drop them so we don't clear it.
+      const payload: Partial<InstanceInput> = { ...f, port: Number(f.port) };
+      if (!payload.tls_cert) delete payload.tls_cert;
+      if (!payload.tls_key) delete payload.tls_key;
+      await api.updateInstance(inst.id, payload);
       toast("Instance updated", "success");
       onSaved();
       onClose();
@@ -597,6 +674,7 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
       </label>
 
       <VllmAdvanced v={f} patch={patch} modelAlias={inst.model_name} />
+      <TlsConfig v={f} patch={patch} editMode hasTlsCert={inst.has_tls_cert} />
 
       <label className="checkbox">
         <input type="checkbox" checked={f.autostart} onChange={(e) => set("autostart", e.target.checked)} />

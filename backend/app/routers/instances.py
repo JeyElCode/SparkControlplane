@@ -17,7 +17,7 @@ from ..models import (
     ModelRegistry,
     Node,
 )
-from ..schemas import InstanceIn, InstanceOut, InstanceUpdate, JobAccepted
+from ..schemas import InstanceIn, InstanceOut, InstanceUpdate, JobAccepted, TlsReloadIn
 from ..services import instances as inst_svc
 from ..services.jobs import jobs
 
@@ -71,6 +71,11 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         default_tp = nnodes
     else:
         default_tp = 1
+    if payload.tls_enabled:
+        if not (payload.tls_cert and payload.tls_key):
+            raise HTTPException(400, "tls_enabled requires both tls_cert and tls_key (PEM).")
+        if payload.tls_port == payload.port:
+            raise HTTPException(400, "tls_port must differ from the vLLM port.")
     inst = Instance(
         name=payload.name,
         model_id=payload.model_id,
@@ -97,6 +102,10 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         extra_args=payload.extra_args,
         vllm_image=payload.vllm_image,
         api_key_enc=encrypt(payload.api_key),
+        tls_enabled=payload.tls_enabled,
+        tls_port=payload.tls_port,
+        tls_cert_enc=encrypt(payload.tls_cert),
+        tls_key_enc=encrypt(payload.tls_key),
         autostart=payload.autostart,
     )
     session.add(inst)
@@ -135,8 +144,19 @@ async def update_instance(
             f"Instance '{inst.name}' is {inst.status}. Stop it before editing — "
             "serve settings only take effect on start.",
         )
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(inst, field, value)
+    data = payload.model_dump(exclude_unset=True)
+    # Write-only PEM fields map to their encrypted columns (like api_key).
+    secret_map = {"tls_cert": "tls_cert_enc", "tls_key": "tls_key_enc"}
+    for field, value in data.items():
+        if field in secret_map:
+            setattr(inst, secret_map[field], encrypt(value))
+        else:
+            setattr(inst, field, value)
+    if inst.tls_enabled:
+        if not (inst.tls_cert_enc and inst.tls_key_enc):
+            raise HTTPException(400, "tls_enabled requires both tls_cert and tls_key (PEM).")
+        if inst.tls_port == inst.port:
+            raise HTTPException(400, "tls_port must differ from the vLLM port.")
     await session.commit()
     return InstanceOut.of(inst)
 
@@ -154,6 +174,29 @@ async def start_instance(instance_id: int, session: AsyncSession = Depends(get_s
 
     job_id = await jobs.start("instance.start", f"Start {name}", coro, target=name)
     return JobAccepted(job_id=job_id, message="Start requested")
+
+
+@router.post("/{instance_id}/tls/reload", response_model=JobAccepted)
+async def reload_tls_cert(
+    instance_id: int, payload: TlsReloadIn, session: AsyncSession = Depends(get_session)
+):
+    """Rotate the TLS cert/key and reload nginx in place — no vLLM restart. This
+    is the renewal path, so (unlike serve-setting edits) it is allowed while the
+    instance is running."""
+    inst = await inst_svc.load_instance(session, instance_id)
+    if inst is None:
+        raise HTTPException(404, "Instance not found")
+    if not inst.tls_enabled:
+        raise HTTPException(409, "TLS is not enabled on this instance.")
+    name = inst.name
+    cert, key = payload.tls_cert, payload.tls_key
+
+    async def coro(h):
+        async with SessionLocal() as s:
+            return await inst_svc.rotate_tls_cert(s, h, instance_id, cert, key)
+
+    job_id = await jobs.start("instance.tls_reload", f"Reload TLS cert {name}", coro, target=name)
+    return JobAccepted(job_id=job_id, message="TLS reload requested")
 
 
 @router.post("/{instance_id}/stop", response_model=JobAccepted)

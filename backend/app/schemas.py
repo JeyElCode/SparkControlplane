@@ -367,6 +367,12 @@ class InstanceIn(BaseModel):
     extra_args: str | None = None          # legacy raw passthrough
     vllm_image: str | None = None          # per-instance image override (else cluster image)
     api_key: str | None = None
+    # First-class TLS: terminate HTTPS on tls_port via an on-node nginx sidecar,
+    # proxying to vLLM on `port` (plain HTTP, internal). cert/key are write-only PEM.
+    tls_enabled: bool = False
+    tls_port: int = 443
+    tls_cert: str | None = None            # write-only PEM (fullchain)
+    tls_key: str | None = None             # write-only PEM (private key)
     autostart: bool = True
 
     @field_validator("compilation_config")
@@ -378,6 +384,13 @@ class InstanceIn(BaseModel):
     @classmethod
     def _check_advanced_args(cls, v: str | None) -> str | None:
         return _v_advanced_args(v)
+
+
+class TlsReloadIn(BaseModel):
+    """New PEM material for an in-place cert rotation (no vLLM restart)."""
+
+    tls_cert: str  # PEM fullchain
+    tls_key: str   # PEM private key
 
 
 class InstanceUpdate(BaseModel):
@@ -400,6 +413,10 @@ class InstanceUpdate(BaseModel):
     master_port: int | None = None
     extra_args: str | None = None
     vllm_image: str | None = None
+    tls_enabled: bool | None = None
+    tls_port: int | None = None
+    tls_cert: str | None = None             # write-only PEM (fullchain)
+    tls_key: str | None = None              # write-only PEM (private key)
     autostart: bool | None = None
 
     @field_validator("compilation_config")
@@ -443,6 +460,9 @@ class InstanceOut(BaseModel):
     extra_args: str | None
     vllm_image: str | None
     has_api_key: bool
+    tls_enabled: bool
+    tls_port: int
+    has_tls_cert: bool
     autostart: bool
     systemd_unit: str | None
     status: str
@@ -480,6 +500,9 @@ class InstanceOut(BaseModel):
             extra_args=inst.extra_args,
             vllm_image=inst.vllm_image,
             has_api_key=bool(inst.api_key_enc),
+            tls_enabled=inst.tls_enabled,
+            tls_port=inst.tls_port,
+            has_tls_cert=bool(inst.tls_cert_enc and inst.tls_key_enc),
             autostart=inst.autostart,
             systemd_unit=inst.systemd_unit,
             status=inst.status,

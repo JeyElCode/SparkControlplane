@@ -201,6 +201,16 @@ class Instance(Base):
     vllm_image: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Optional first-class TLS: when enabled, an nginx sidecar runs on the
+    # API-serving node (single / distributed head), terminating HTTPS on
+    # ``tls_port`` and reverse-proxying to vLLM on the instance ``port`` (which
+    # stays plain HTTP, internal). The cert/key are stored encrypted and written
+    # to the node at deploy time; they can be rotated without restarting vLLM.
+    tls_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    tls_port: Mapped[int] = mapped_column(Integer, default=443)
+    tls_cert_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tls_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     autostart: Mapped[bool] = mapped_column(Boolean, default=True)
     systemd_unit: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=INST_STOPPED)

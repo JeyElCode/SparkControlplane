@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..crypto import decrypt
+from ..crypto import decrypt, encrypt
 from ..models import (
     INST_ERROR,
     INST_RUNNING,
@@ -121,7 +121,87 @@ def _serve_kwargs(inst: Instance, model_path: str, api_key: str | None) -> dict:
         advanced_args=inst.advanced_args,
         api_key=api_key,
         extra_args=inst.extra_args,
+        # With TLS on, the nginx sidecar (same host) is the only front door, so
+        # bind vLLM to loopback — the OpenAI port is not network-exposed.
+        api_host="127.0.0.1" if inst.tls_enabled else "0.0.0.0",
     )
+
+
+async def _deploy_tls_proxy(
+    session: AsyncSession, handle: JobHandle, inst: Instance, node: Node
+) -> None:
+    """(Re)install the optional nginx TLS sidecar on the API-serving ``node``.
+
+    Terminates HTTPS on ``inst.tls_port`` and reverse-proxies to vLLM on
+    127.0.0.1:``inst.port`` (same host, ``--network host``). No-op — and tears any
+    stale proxy down — when TLS is disabled, so toggling off then restarting is
+    clean."""
+    from ..config import get_settings
+
+    settings = get_settings()
+    install_dir = settings.node_install_dir
+    ssh = await ssh_for_node(session, node)
+    unit = templates.tls_unit_name(inst.name)
+    if not inst.tls_enabled:
+        await nodeops.remove_systemd_unit(ssh, unit, log_cb=handle.ssh_log_cb())
+        return
+    cert = decrypt(inst.tls_cert_enc)
+    key = decrypt(inst.tls_key_enc)
+    if not (cert and key):
+        raise RuntimeError("TLS is enabled but the cert/key are not set.")
+    conf_dir = templates.tls_dir(install_dir, inst.name)
+    cert_path = f"{conf_dir}/{templates.TLS_CERT_FILE}"
+    key_path = f"{conf_dir}/{templates.TLS_KEY_FILE}"
+    await handle.log(
+        f"[{node.name}] installing TLS proxy (nginx :{inst.tls_port} → 127.0.0.1:{inst.port})"
+    )
+    await nodeops.install_file(ssh, cert_path, cert, mode="600")
+    await nodeops.install_file(ssh, key_path, key, mode="600")
+    conf = templates.render_tls_nginx_conf(
+        upstream_port=inst.port, tls_port=inst.tls_port, cert_path=cert_path, key_path=key_path
+    )
+    await nodeops.install_file(ssh, f"{conf_dir}/{templates.TLS_CONF_FILE}", conf, mode="644")
+    run_script = templates.render_tls_docker_run(
+        name=inst.name, image=settings.tls_proxy_image, tls_port=inst.tls_port, conf_dir=conf_dir
+    )
+    script_path = f"{install_dir}/vllm-{inst.name}-tls.sh"
+    await nodeops.install_file(ssh, script_path, run_script, mode="755")
+    tls_unit = templates.render_tls_unit(name=inst.name, script_path=script_path)
+    await nodeops.install_systemd_unit(
+        ssh, unit, tls_unit, enable=inst.autostart, log_cb=handle.ssh_log_cb()
+    )
+
+
+async def rotate_tls_cert(
+    session: AsyncSession, handle: JobHandle, instance_id: int, cert: str, key: str
+) -> str:
+    """Replace the TLS cert/key and ``nginx -s reload`` in place — no vLLM restart.
+
+    This is the renewal path: unlike serve settings (baked into the vLLM unit at
+    start), the cert lives only in the proxy, so it can be rotated on a live,
+    serving instance without the multi-minute model reload."""
+    from ..config import get_settings
+
+    inst = await load_instance(session, instance_id)
+    if inst is None:
+        raise RuntimeError("Instance not found.")
+    if not inst.tls_enabled:
+        raise RuntimeError("TLS is not enabled on this instance.")
+    inst.tls_cert_enc = encrypt(cert)
+    inst.tls_key_enc = encrypt(key)
+    await session.commit()
+    node = await _instance_node(session, inst)
+    ssh = await ssh_for_node(session, node)
+    conf_dir = templates.tls_dir(get_settings().node_install_dir, inst.name)
+    await nodeops.install_file(ssh, f"{conf_dir}/{templates.TLS_CERT_FILE}", cert, mode="600")
+    await nodeops.install_file(ssh, f"{conf_dir}/{templates.TLS_KEY_FILE}", key, mode="600")
+    await handle.log(f"[{node.name}] reloading nginx to pick up the new cert (no vLLM restart)")
+    res = await nodeops.docker(
+        ssh, f"exec {templates.tls_container(inst.name)} nginx -s reload", log_cb=handle.ssh_log_cb()
+    )
+    if not res.ok:
+        raise RuntimeError(f"nginx reload failed: {res.stderr.strip() or res.stdout.strip()}")
+    return f"TLS cert rotated for '{inst.name}' (nginx reloaded)"
 
 
 async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
@@ -194,14 +274,29 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
         inst.systemd_unit = unit_name
         inst.status = INST_RUNNING
         await session.commit()
+        api_node = await _instance_node(session, inst)
+        # Optional TLS reverse proxy (nginx sidecar) on the API-serving node. It
+        # comes up alongside vLLM and will serve once the backend is healthy.
+        await _deploy_tls_proxy(session, handle, inst, api_node)
         host = await _endpoint_host(session, inst)
-        ssh = await ssh_for_node(session, await _instance_node(session, inst))
+        ssh = await ssh_for_node(session, api_node)
+        endpoint = (
+            f"https://{host}:{inst.tls_port}/v1 (TLS) → vLLM http://{host}:{inst.port}/v1"
+            if inst.tls_enabled
+            else f"http://{host}:{inst.port}/v1"
+        )
         await handle.log(
-            f"Instance '{inst.name}' launched. Endpoint: http://{host}:{inst.port}/v1\n"
+            f"Instance '{inst.name}' launched. Endpoint: {endpoint}\n"
             f"Streaming vLLM startup output below (model loading can take a few minutes)…"
         )
+        # With TLS on, vLLM is loopback-only — probe through the proxy instead
+        # (verify=False: the cert is for the public name, not the node IP).
+        if inst.tls_enabled:
+            health_url = f"https://{host}:{inst.tls_port}/health"
+        else:
+            health_url = f"http://{host}:{inst.port}/health"
         healthy = await _stream_startup_logs(
-            handle, ssh, unit_name, f"http://{host}:{inst.port}/health"
+            handle, ssh, unit_name, health_url, verify=not inst.tls_enabled
         )
         if healthy:
             await handle.log(f"✅ '{inst.name}' is serving — /health is green.")
@@ -298,16 +393,17 @@ async def _start_distributed(
     )
 
 
-async def _health_ok(url: str) -> bool:
+async def _health_ok(url: str, verify: bool = True) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=4) as client:
+        async with httpx.AsyncClient(timeout=4, verify=verify) as client:
             return (await client.get(url)).status_code == 200
     except Exception:  # noqa: BLE001
         return False
 
 
 async def _stream_startup_logs(
-    handle: JobHandle, ssh, unit_name: str, health_url: str, timeout: int = 900
+    handle: JobHandle, ssh, unit_name: str, health_url: str, timeout: int = 900,
+    verify: bool = True,
 ) -> bool:
     """Follow the instance's journal into the job log until /health is green or
     ``timeout`` elapses. Returns True if the endpoint became healthy.
@@ -327,7 +423,7 @@ async def _stream_startup_logs(
         while not jtask.done() and waited < timeout:
             await asyncio.sleep(5)
             waited += 5
-            if await _health_ok(health_url):
+            if await _health_ok(health_url, verify=verify):
                 healthy = True
                 break
     finally:
@@ -351,6 +447,10 @@ async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: i
             f"Stopping distributed instance '{inst.name}' (head + {len(workers)} worker(s))"
         )
         head_ssh = await ssh_for_node(session, head)
+        if inst.tls_enabled:
+            await nodeops.systemctl(
+                head_ssh, "stop", templates.tls_unit_name(inst.name), log_cb=handle.ssh_log_cb()
+            )
         await nodeops.systemctl(
             head_ssh, "stop", templates.instance_unit_name(inst.name), log_cb=handle.ssh_log_cb()
         )
@@ -367,6 +467,10 @@ async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: i
     unit_name = inst.systemd_unit or templates.instance_unit_name(inst.name)
     await handle.log(f"Stopping instance '{inst.name}' ({unit_name})")
     ssh = await ssh_for_node(session, node)
+    if inst.tls_enabled:
+        await nodeops.systemctl(
+            ssh, "stop", templates.tls_unit_name(inst.name), log_cb=handle.ssh_log_cb()
+        )
     await nodeops.systemctl(ssh, "stop", unit_name, log_cb=handle.ssh_log_cb())
     inst.status = INST_STOPPED
     await session.commit()
@@ -380,13 +484,20 @@ async def delete_instance(session: AsyncSession, handle: JobHandle, instance_id:
     name = inst.name
     await handle.log(f"Removing instance '{name}' and its systemd unit(s)")
     try:
+        from ..config import get_settings
+
+        tls_dir = templates.tls_dir(get_settings().node_install_dir, name)
         if inst.topology == TOPO_DISTRIBUTED:
             head = await _head_node(session)
             workers = await _worker_nodes(session, head)
             head_ssh = await ssh_for_node(session, head)
             await nodeops.remove_systemd_unit(
+                head_ssh, templates.tls_unit_name(name), log_cb=handle.ssh_log_cb()
+            )
+            await nodeops.remove_systemd_unit(
                 head_ssh, templates.instance_unit_name(name), log_cb=handle.ssh_log_cb()
             )
+            await head_ssh.run(f"rm -rf {shlex.quote(tls_dir)}", sudo=True)
             for node in workers:
                 w_ssh = await ssh_for_node(session, node)
                 await nodeops.remove_systemd_unit(
@@ -396,7 +507,11 @@ async def delete_instance(session: AsyncSession, handle: JobHandle, instance_id:
             node = await _instance_node(session, inst)
             unit_name = inst.systemd_unit or templates.instance_unit_name(name)
             ssh = await ssh_for_node(session, node)
+            await nodeops.remove_systemd_unit(
+                ssh, templates.tls_unit_name(name), log_cb=handle.ssh_log_cb()
+            )
             await nodeops.remove_systemd_unit(ssh, unit_name, log_cb=handle.ssh_log_cb())
+            await ssh.run(f"rm -rf {shlex.quote(tls_dir)}", sudo=True)
     except Exception as exc:  # noqa: BLE001 - best-effort cleanup
         await handle.log(f"WARNING: unit cleanup failed: {exc}", "stderr")
     # Detach eval-run history from this instance before deleting it. EvalRun keeps

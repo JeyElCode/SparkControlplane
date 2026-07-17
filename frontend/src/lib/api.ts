@@ -251,6 +251,9 @@ export interface Instance {
   extra_args?: string | null; // legacy raw passthrough
   vllm_image?: string | null; // per-instance image override (else cluster image)
   has_api_key: boolean;
+  tls_enabled: boolean;
+  tls_port: number;
+  has_tls_cert: boolean;
   autostart: boolean;
   systemd_unit?: string | null;
   status: string;
@@ -283,6 +286,10 @@ export interface InstanceInput {
   extra_args?: string | null;
   vllm_image?: string | null; // per-instance image override (else cluster image)
   api_key?: string | null;
+  tls_enabled?: boolean;
+  tls_port?: number | null;
+  tls_cert?: string | null; // write-only PEM (fullchain)
+  tls_key?: string | null; // write-only PEM (private key)
   autostart?: boolean;
 }
 
@@ -472,6 +479,8 @@ export const api = {
     j<Instance>(`/api/instances/${id}`, { method: "PATCH", body: JSON.stringify(i) }),
   startInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/start`, { method: "POST" }),
   stopInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/stop`, { method: "POST" }),
+  reloadInstanceTls: (id: number, tls_cert: string, tls_key: string) =>
+    j<JobAccepted>(`/api/instances/${id}/tls/reload`, { method: "POST", body: JSON.stringify({ tls_cert, tls_key }) }),
   deleteInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}`, { method: "DELETE" }),
 
   // status
