@@ -159,6 +159,7 @@ export default function Nodes() {
   const [form, setForm] = useState<{ initial: NodeInput; editing: Node | null } | null>(null);
   const [tests, setTests] = useState<Record<number, ConnectionTest | "loading">>({});
   const [hardenJob, setHardenJob] = useState<number | null>(null);
+  const [powerJob, setPowerJob] = useState<{ id: number; title: string } | null>(null);
 
   const MAX_NODES = 4;
   const all = nodes ?? [];
@@ -200,6 +201,44 @@ export default function Nodes() {
     }
   };
 
+  const power = async (n: Node, action: "shutdown" | "reboot" | "wake") => {
+    if (action === "wake") {
+      if (!confirm(`Send a Wake-on-LAN magic packet to ${n.name} (${n.mac_address})?`)) return;
+    } else {
+      let msg = `${action === "reboot" ? "Reboot" : "Shut down"} ${n.name}?`;
+      try {
+        const affected = await api.powerAffected(n.id);
+        if (affected.length > 0) {
+          msg += `\n\nThis will take down running instance(s): ${affected.join(", ")}`;
+        }
+      } catch { /* best-effort preview */ }
+      if (action === "shutdown" && !n.mac_address) {
+        msg += "\n\nNote: no MAC captured yet — Wake-on-LAN will NOT be available afterwards.";
+      }
+      if (!confirm(msg)) return;
+    }
+    try {
+      const r = await api.nodePower(n.id, action);
+      setPowerJob({ id: r.job_id, title: `${action} ${n.name}` });
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
+  const batchPower = async (action: "shutdown" | "wake") => {
+    const msg =
+      action === "shutdown"
+        ? "Shut down ALL nodes (workers first, then the head)? Running instances will go down."
+        : "Send Wake-on-LAN to all nodes with a known MAC?";
+    if (!confirm(msg)) return;
+    try {
+      const r = await api.batchPower(action);
+      setPowerJob({ id: r.job_id, title: `Batch ${action}` });
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
   const del = async (n: Node) => {
     if (!confirm(`Remove ${n.name} from the portal? (does not touch the node itself)`)) return;
     await api.deleteNode(n.id);
@@ -221,6 +260,12 @@ export default function Nodes() {
         <div className="btn-row">
           {!hasHead && <button className="btn btn-primary" onClick={() => addRole("head")}>+ Head node</button>}
           {hasHead && canAddWorker && <button className="btn btn-primary" onClick={() => addRole("worker")}>+ Worker node</button>}
+          {all.length > 1 && (
+            <>
+              <button className="btn" onClick={() => batchPower("wake")}>⏻ Wake all</button>
+              <button className="btn btn-danger" onClick={() => batchPower("shutdown")}>⏼ Shut down all</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -239,6 +284,7 @@ export default function Nodes() {
               <dl className="kv">
                 <dt>LAN IP</dt><dd className="mono">{n.lan_ip}:{n.ssh_port}</dd>
                 <dt>QSFP IP</dt><dd className="mono">{n.qsfp_ip} <span className="faint">({n.qsfp_iface})</span></dd>
+                <dt>MAC</dt><dd className="mono">{n.mac_address ?? <span className="faint">unknown — Test connection captures it (needed for Wake)</span>}</dd>
                 <dt>SSH</dt><dd>{n.ssh_user} · {n.auth_method}{n.has_ssh_password ? " (pw set)" : ""}{n.has_ssh_key ? " (key set)" : ""}</dd>
                 <dt>Sudo</dt><dd>{n.sudo_mode}{n.has_sudo_password ? " (pw set)" : ""}</dd>
               </dl>
@@ -262,6 +308,9 @@ export default function Nodes() {
                 </button>
                 <button className="btn btn-sm" onClick={() => setForm({ initial: { ...EMPTY, ...n, ssh_password: "", ssh_private_key: "", sudo_password: "", ssh_key_passphrase: "" }, editing: n })}>Edit</button>
                 {!n.hardened && <button className="btn btn-sm" onClick={() => harden(n.id)}>Harden → key</button>}
+                <button className="btn btn-sm" onClick={() => power(n, "reboot")}>Reboot</button>
+                <button className="btn btn-sm" onClick={() => power(n, "shutdown")}>Shut down</button>
+                <button className="btn btn-sm" disabled={!n.mac_address} title={n.mac_address ? "Wake-on-LAN" : "MAC unknown — run Test connection while the node is up"} onClick={() => power(n, "wake")}>⏻ Wake</button>
                 <button className="btn btn-sm btn-danger" onClick={() => del(n)}>Remove</button>
               </div>
             </div>
@@ -276,6 +325,11 @@ export default function Nodes() {
       {hardenJob && (
         <Modal title="Hardening node" onClose={() => { setHardenJob(null); reload(); }}>
           <JobLogPanel jobId={hardenJob} title="Install key & switch to key auth" onDone={() => reload()} />
+        </Modal>
+      )}
+      {powerJob && (
+        <Modal title="Power control" onClose={() => { setPowerJob(null); reload(); }}>
+          <JobLogPanel jobId={powerJob.id} title={powerJob.title} onDone={() => reload()} />
         </Modal>
       )}
     </div>

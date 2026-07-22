@@ -73,6 +73,10 @@ class Node(Base):
     qsfp_ip: Mapped[str] = mapped_column(String(64))
     qsfp_iface: Mapped[str] = mapped_column(String(32), default="enp1s0f1np1")
 
+    # LAN-interface MAC for Wake-on-LAN; auto-captured on Test connection,
+    # manually editable. Nullable — wake is unavailable until known.
+    mac_address: Mapped[str | None] = mapped_column(String(17), nullable=True)
+
     ssh_user: Mapped[str] = mapped_column(String(64))
     ssh_port: Mapped[int] = mapped_column(Integer, default=22)
     auth_method: Mapped[str] = mapped_column(String(16), default=AUTH_PASSWORD)

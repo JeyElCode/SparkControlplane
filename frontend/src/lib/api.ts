@@ -10,6 +10,7 @@ export interface Node {
   lan_ip: string;
   qsfp_ip: string;
   qsfp_iface: string;
+  mac_address?: string | null;
   ssh_user: string;
   ssh_port: number;
   auth_method: "password" | "key";
@@ -521,6 +522,11 @@ export const api = {
   deleteNode: (id: number) => j<void>(`/api/nodes/${id}`, { method: "DELETE" }),
   testNode: (id: number) => j<ConnectionTest>(`/api/nodes/${id}/test`, { method: "POST" }),
   listInterfaces: (id: number) => j<InterfaceInfo[]>(`/api/nodes/${id}/interfaces`),
+  powerAffected: (id: number) => j<string[]>(`/api/power/nodes/${id}/affected`),
+  nodePower: (id: number, action: "shutdown" | "reboot" | "wake") =>
+    j<JobAccepted>(`/api/power/nodes/${id}/${action}`, { method: "POST" }),
+  batchPower: (action: "shutdown" | "wake") =>
+    j<JobAccepted>(`/api/power/batch/${action}`, { method: "POST" }),
   hardenNode: (id: number) => j<JobAccepted>(`/api/nodes/${id}/harden`, { method: "POST" }),
 
   // cluster

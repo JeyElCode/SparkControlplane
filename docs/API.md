@@ -201,6 +201,20 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Power
+
+`app/routers/power.py` — prefix `/api/power`. Node power controls (all
+actions run as logged jobs).
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `/nodes/{id}/affected` | RUNNING instances a shutdown of this node would take down (for confirmation UIs). | `string[]` |
+| POST | `/nodes/{id}/shutdown` | Graceful `systemctl poweroff` over SSH sudo. | `JobAccepted` |
+| POST | `/nodes/{id}/reboot` | Graceful `systemctl reboot` over SSH sudo. | `JobAccepted` |
+| POST | `/nodes/{id}/wake` | Wake-on-LAN: magic packet relayed via a reachable peer node over SSH, falling back to direct UDP. Requires a stored `mac_address` (auto-captured on Test connection). | `JobAccepted` |
+| POST | `/batch/shutdown` | Shut down all nodes, workers first then the head. | `JobAccepted` |
+| POST | `/batch/wake` | Wake every node with a known MAC. | `JobAccepted` |
+
 ## Status
 
 `app/routers/status.py` — prefix `/api/status`. Live cluster health.

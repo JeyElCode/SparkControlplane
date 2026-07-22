@@ -58,6 +58,10 @@ async def test_node_connection(session: AsyncSession, node: Node) -> ConnectionT
     sudo_ok = sudo.ok and sudo.stdout.strip() == "0"
     docker = await nodeops.docker(ssh, "version --format '{{.Server.Version}}'")
     gpu = await ssh.run("nvidia-smi -L")
+    # Opportunistically capture the LAN MAC for Wake-on-LAN.
+    from . import power
+
+    await power.capture_mac(session, node)
     return ConnectionTest(
         ok=True,
         message=f"Connected to {host}",

@@ -230,6 +230,7 @@ class NodeUpdate(BaseModel):
     lan_ip: str | None = None
     qsfp_ip: str | None = None
     qsfp_iface: str | None = None
+    mac_address: str | None = None
     ssh_user: str | None = None
     ssh_port: int | None = None
     auth_method: Literal["password", "key"] | None = None
@@ -254,6 +255,18 @@ class NodeUpdate(BaseModel):
     def _check_ip(cls, v: str | None) -> str | None:
         return None if v is None else _v_ip(v)
 
+    @field_validator("mac_address")
+    @classmethod
+    def _check_mac(cls, v: str | None) -> str | None:
+        if v is None or v.strip() == "":
+            return None
+        from .services.power import normalize_mac
+
+        mac = normalize_mac(v)
+        if mac is None:
+            raise ValueError("mac_address must look like aa:bb:cc:dd:ee:ff")
+        return mac
+
 
 class NodeOut(BaseModel):
     id: int
@@ -262,6 +275,7 @@ class NodeOut(BaseModel):
     lan_ip: str
     qsfp_ip: str
     qsfp_iface: str
+    mac_address: str | None = None
     ssh_user: str
     ssh_port: int
     auth_method: str
@@ -282,6 +296,7 @@ class NodeOut(BaseModel):
             lan_ip=n.lan_ip,
             qsfp_ip=n.qsfp_ip,
             qsfp_iface=n.qsfp_iface,
+            mac_address=n.mac_address,
             ssh_user=n.ssh_user,
             ssh_port=n.ssh_port,
             auth_method=n.auth_method,
