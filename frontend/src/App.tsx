@@ -56,7 +56,7 @@ export default function App() {
       </aside>
       <div className="main">
         <header className="topbar">
-          <div className="muted">2-node DGX Spark cluster</div>
+          <div className="muted">DGX Spark cluster</div>
           <HealthPill />
         </header>
         <div className="content">

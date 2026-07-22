@@ -71,6 +71,65 @@ export function GroupedBarList({ groups, max, unit }: { groups: Group[]; max?: n
   );
 }
 
+export interface SparkSeries {
+  color?: string;
+  points: [number, number][]; // [ts, value]
+}
+
+/** Compact axis-less area/line chart for in-card trends. The first series gets
+ * a soft area fill; extra series render as plain lines. */
+export function Sparkline({
+  series,
+  height = 34,
+  max,
+}: {
+  series: SparkSeries[];
+  height?: number;
+  max?: number;
+}) {
+  const W = 200;
+  const H = 40; // internal viewBox height; rendered height set via style
+  const all = series.flatMap((s) => s.points);
+  if (all.length < 2) {
+    return <div style={{ height }} className="faint center" />;
+  }
+  const xMin = Math.min(...all.map((p) => p[0]));
+  const xMax = Math.max(...all.map((p) => p[0]));
+  const yTop = Math.max(max ?? 0, ...all.map((p) => p[1]), 1e-9) * (max ? 1 : 1.1);
+  const sx = (x: number) => ((x - xMin) / Math.max(1e-9, xMax - xMin)) * W;
+  const sy = (y: number) => H - 2 - (Math.min(y, yTop) / yTop) * (H - 4);
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      style={{ width: "100%", height, display: "block" }}
+      role="img"
+    >
+      {series.map((s, i) => {
+        const color = s.color ?? PALETTE[i % PALETTE.length];
+        const pts = [...s.points].sort((a, b) => a[0] - b[0]);
+        const line = pts
+          .map((p, j) => `${j === 0 ? "M" : "L"} ${sx(p[0]).toFixed(1)} ${sy(p[1]).toFixed(1)}`)
+          .join(" ");
+        const area =
+          `${line} L ${sx(pts[pts.length - 1][0]).toFixed(1)} ${H} L ${sx(pts[0][0]).toFixed(1)} ${H} Z`;
+        return (
+          <g key={i}>
+            {i === 0 && <path d={area} fill={color} fillOpacity={0.12} stroke="none" />}
+            <path
+              d={line}
+              fill="none"
+              stroke={color}
+              strokeWidth={1.5}
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export interface LineSeries {
   label: string;
   color?: string;
