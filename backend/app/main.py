@@ -108,6 +108,20 @@ async def meta():
     }
 
 
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus exposition of the telemetry caches (nodes + vLLM instances).
+    Registered before the SPA catch-all so it isn't swallowed by the frontend."""
+    from fastapi.responses import PlainTextResponse
+
+    from .services.telemetry import engine as telemetry_engine
+
+    return PlainTextResponse(
+        telemetry_engine.prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 # --- Optional MCP server -------------------------------------------------
 # Mount the streamable-HTTP MCP endpoint at /mcp, behind a bearer-token gate.
 # Mounted before the SPA catch-all so /mcp is not swallowed by the frontend.

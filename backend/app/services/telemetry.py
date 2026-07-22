@@ -346,6 +346,7 @@ def derive_instance_metrics(
     m.gen_tps = round(g_tps, 1) if g_tps is not None else None
     m.req_per_s = round(r_ps, 2) if r_ps is not None else None
     m.total_generation_tokens = parsed.get("vllm:generation_tokens_total")
+    m.total_prompt_tokens = parsed.get("vllm:prompt_tokens_total")
 
     def hist_avg_ms(base: str) -> float | None:
         """Mean over the last window from a histogram's _sum/_count deltas."""
@@ -383,6 +384,7 @@ class TelemetryEngine:
         self._counters: dict[int, CounterState] = {}
         self._history: dict[int, deque[HistoryPoint]] = {}
         self._node_names: dict[int, str] = {}
+        self._node_roles: dict[int, str] = {}
         self._slow = SlowCache()
         self._inst_metrics: dict[int, InstanceMetrics] = {}
         self._inst_counters: dict[int, dict[str, float]] = {}
@@ -428,9 +430,10 @@ class TelemetryEngine:
         while not self._stopping:
             try:
                 async with _db.SessionLocal() as session:
-                    rows = (await session.execute(select(Node.id, Node.name))).all()
+                    rows = (await session.execute(select(Node.id, Node.name, Node.role))).all()
                 ids = {r[0] for r in rows}
                 self._node_names = {r[0]: r[1] for r in rows}
+                self._node_roles = {r[0]: r[2] for r in rows}
                 for nid in ids - self._tasks.keys():
                     self._tasks[nid] = asyncio.create_task(self._node_loop(nid))
                 for nid in list(self._tasks.keys() - ids):
@@ -714,6 +717,82 @@ class TelemetryEngine:
                 NodeHistory(node_id=nid, name=self._node_names.get(nid, str(nid)), points=pts)
             )
         return sorted(out, key=lambda h: h.node_id)
+
+    def prometheus_text(self) -> str:
+        """Render the caches in Prometheus exposition format (spark_* metrics)
+        so an external Prometheus/Grafana can scrape the portal at /metrics.
+        Token totals are re-exported as counters (Prometheus computes its own
+        rates); everything else is a gauge. Dependency-free by design."""
+
+        def esc(v: str) -> str:
+            return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+        lines: list[str] = []
+        seen_meta: set[str] = set()
+
+        def emit(name: str, kind: str, help_: str, labels: dict[str, str], value) -> None:
+            if value is None:
+                return
+            if name not in seen_meta:
+                seen_meta.add(name)
+                lines.append(f"# HELP {name} {help_}")
+                lines.append(f"# TYPE {name} {kind}")
+            lab = ",".join(f'{k}="{esc(str(v))}"' for k, v in labels.items())
+            lines.append(f"{name}{{{lab}}} {float(value):g}" if lab else f"{name} {float(value):g}")
+
+        for nid, s in sorted(self._samples.items()):
+            nl = {"node": self._node_names.get(nid, str(nid)), "role": self._node_roles.get(nid, "")}
+            emit("spark_node_up", "gauge", "Node reachable over SSH (1/0).", nl, 1 if s.reachable else 0)
+            if not s.reachable:
+                continue
+            emit("spark_node_cpu_pct", "gauge", "CPU utilization percent.", nl, s.cpu_pct)
+            emit("spark_node_load1", "gauge", "1-minute load average.", nl, s.loadavg_1m)
+            emit("spark_node_cpu_count", "gauge", "CPU core count.", nl, s.cpu_count)
+            emit("spark_node_uptime_seconds", "gauge", "Node uptime.", nl, s.uptime_seconds)
+            if s.mem_used_mib is not None:
+                emit("spark_node_memory_used_bytes", "gauge", "Unified memory used.", nl, s.mem_used_mib * 1024 * 1024)
+            if s.mem_total_mib is not None:
+                emit("spark_node_memory_total_bytes", "gauge", "Unified memory total.", nl, s.mem_total_mib * 1024 * 1024)
+            for g in s.gpus:
+                gl = {**nl, "gpu": str(g.index)}
+                emit("spark_gpu_utilization_pct", "gauge", "GPU utilization percent.", gl, g.util_pct)
+                emit("spark_gpu_temperature_celsius", "gauge", "GPU temperature.", gl, g.temp_c)
+                emit("spark_gpu_power_watts", "gauge", "GPU power draw.", gl, g.power_w)
+                if g.mem_used_mib is not None:
+                    emit("spark_gpu_memory_used_bytes", "gauge", "GPU memory used.", gl, g.mem_used_mib * 1024 * 1024)
+            for r in s.net:
+                il = {**nl, "iface": r.iface, "kind": r.kind}
+                emit("spark_net_rx_bytes_per_second", "gauge", "Receive throughput.", il, r.rx_bps)
+                emit("spark_net_tx_bytes_per_second", "gauge", "Transmit throughput.", il, r.tx_bps)
+            if s.disk is not None:
+                emit("spark_models_disk_used_bytes", "gauge", "Models filesystem used.", nl, s.disk.used_bytes)
+                emit("spark_models_disk_total_bytes", "gauge", "Models filesystem size.", nl, s.disk.total_bytes)
+                emit("spark_models_disk_free_bytes", "gauge", "Models filesystem free.", nl, s.disk.free_bytes)
+
+        if self._slow.qsfp_ok is not None:
+            emit("spark_qsfp_ok", "gauge", "Head reaches every worker over QSFP (1/0).", {}, 1 if self._slow.qsfp_ok else 0)
+        if self._slow.ray.reachable:
+            emit("spark_ray_nodes_alive", "gauge", "Ray nodes alive.", {}, self._slow.ray.nodes_alive)
+
+        health_by_id = {i.instance_id: i for i in self._slow.instances}
+        ids = sorted(set(self._inst_metrics) | set(health_by_id))
+        for iid in ids:
+            il = {"instance": self._inst_names.get(iid) or getattr(health_by_id.get(iid), "name", str(iid))}
+            st = health_by_id.get(iid)
+            if st is not None and st.health_ok is not None:
+                emit("spark_instance_healthy", "gauge", "Instance /health OK (1/0).", il, 1 if st.health_ok else 0)
+            m = self._inst_metrics.get(iid)
+            if m is None:
+                continue
+            emit("spark_vllm_generation_tokens_total", "counter", "Generated tokens (vLLM counter).", il, m.total_generation_tokens)
+            emit("spark_vllm_prompt_tokens_total", "counter", "Prompt tokens (vLLM counter).", il, m.total_prompt_tokens)
+            emit("spark_vllm_generation_tokens_per_second", "gauge", "Decode throughput (portal-derived).", il, m.gen_tps)
+            emit("spark_vllm_requests_running", "gauge", "Requests currently decoding.", il, m.running)
+            emit("spark_vllm_requests_waiting", "gauge", "Requests queued.", il, m.waiting)
+            emit("spark_vllm_kv_cache_pct", "gauge", "KV-cache utilization percent.", il, m.kv_cache_pct)
+            emit("spark_vllm_ttft_ms", "gauge", "Mean time-to-first-token, last window.", il, m.ttft_ms)
+            emit("spark_vllm_e2e_latency_ms", "gauge", "Mean end-to-end request latency, last window.", il, m.e2e_ms)
+        return "\n".join(lines) + "\n"
 
     def instance_history(self, minutes: int | None = None) -> list[InstanceHistory]:
         cutoff = time.time() - minutes * 60 if minutes else 0

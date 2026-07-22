@@ -163,6 +163,7 @@ class InstanceMetrics(BaseModel):
     ttft_ms: float | None = None        # mean TTFT over the last window
     e2e_ms: float | None = None         # mean end-to-end latency, last window
     total_generation_tokens: float | None = None
+    total_prompt_tokens: float | None = None
 
 
 class InstanceHistoryPoint(BaseModel):
@@ -328,6 +329,22 @@ class ClusterConfigIn(BaseModel):
     models_subdir: str | None = None
     hf_cache_subdir: str | None = None
     shm_size: str | None = None
+
+
+class ImageUpdateIn(BaseModel):
+    """Cluster-wide vLLM image upgrade request."""
+
+    image: str
+    restart_ray: bool = True
+    restart_instances: bool = True
+
+    @field_validator("image")
+    @classmethod
+    def _check_image(cls, v: str) -> str:
+        v = v.strip()
+        if not v or not re.fullmatch(r"[A-Za-z0-9._/:@-]+", v):
+            raise ValueError("image must be a plain container reference (registry/repo:tag)")
+        return v
 
 
 class ClusterConfigOut(BaseModel):

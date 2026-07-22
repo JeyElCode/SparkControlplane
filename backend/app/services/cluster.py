@@ -109,6 +109,92 @@ grep -qxF {shlex.quote(public_line)} ~/.ssh/authorized_keys || echo {shlex.quote
         return f"Node '{node.name}' hardened to key auth"
 
 
+async def update_image(
+    handle: JobHandle, image: str, restart_ray: bool, restart_instances: bool
+) -> str:
+    """Cluster image upgrade: pull ``image`` on every node, persist it as the
+    cluster image, then (optionally) restart the Ray units and rolling-restart
+    running instances so they pick it up. Instances pinned to their own
+    ``vllm_image`` are left alone."""
+    from ..models import INST_RUNNING, Instance
+    from . import instances as inst_svc
+    from .phases import _ray_node_count
+
+    async with SessionLocal() as session:
+        head = await get_node_by_role(session, "head")
+        workers = await get_worker_nodes(session)
+        nodes = [n for n in (head, *workers) if n is not None]
+        if not nodes:
+            raise RuntimeError("No nodes configured.")
+        cfg = await get_cluster_config(session)
+        old = cfg.vllm_image
+
+        for node in nodes:
+            await handle.log(f"[{node.name}] docker pull {image} (this can take a while)…")
+            ssh = await ssh_for_node(session, node)
+            await nodeops.docker(
+                ssh, f"pull {shlex.quote(image)}", check=True, timeout=3600,
+                log_cb=handle.ssh_log_cb(),
+            )
+        cfg.vllm_image = image
+        await session.commit()
+        await handle.log(f"Cluster image updated: {old} → {image}")
+
+        if restart_ray and head is not None:
+            await handle.log("Restarting Ray units to pick up the new image (head, then workers)…")
+            # The launch scripts docker-run $VLLM_IMAGE from the cluster config;
+            # they are re-rendered by the setup phase, so re-render them first
+            # with the new image, then restart.
+            from .phases import PhaseCtx, run_phase
+
+            setting = await get_setting(session)
+            ctx = PhaseCtx(
+                session=session, handle=handle, head=head, workers=workers,
+                cfg=cfg, setting=setting,
+            )
+            await run_phase(ctx, "ray")
+            import asyncio
+
+            ssh = await ssh_for_node(session, head)
+            expected = len(nodes)
+            ok = False
+            for _ in range(20):
+                res = await nodeops.docker(
+                    ssh, f"exec {templates.RAY_HEAD_CONTAINER} ray status"
+                )
+                if res.ok and _ray_node_count(res.stdout) >= expected:
+                    ok = True
+                    break
+                await asyncio.sleep(6)
+            await handle.log(
+                f"Ray cluster {'re-formed with all nodes ✅' if ok else 'has NOT re-formed yet — check the Ray unit logs'}."
+            )
+
+        if restart_instances:
+            insts = list(
+                (
+                    await session.execute(
+                        select(Instance).where(Instance.status == INST_RUNNING)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for inst in insts:
+                if inst.vllm_image:
+                    await handle.log(
+                        f"[{inst.name}] skipped (pinned to its own image {inst.vllm_image})"
+                    )
+                    continue
+                await handle.log(f"--- rolling restart: {inst.name} ---")
+                try:
+                    await inst_svc.stop_instance(session, handle, inst.id)
+                    await inst_svc.start_instance(session, handle, inst.id)
+                except Exception as exc:  # noqa: BLE001 - keep rolling
+                    await handle.log(f"[{inst.name}] restart failed: {exc}", "error")
+    return f"Image update to {image} complete"
+
+
 async def teardown(handle: JobHandle, req: TeardownRequest) -> str:
     async with SessionLocal() as session:
         head = await get_node_by_role(session, "head")

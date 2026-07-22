@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { api, ClusterConfig } from "../lib/api";
+import { api, ClusterConfig, ImageTags } from "../lib/api";
 import { usePoll } from "../lib/hooks";
-import { Badge, Field, Spinner } from "../components/ui";
+import { Badge, Field, Modal, Spinner } from "../components/ui";
+import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
 export default function SettingsPage() {
@@ -15,6 +16,43 @@ export default function SettingsPage() {
   const [judgeUrl, setJudgeUrl] = useState<string | null>(null);
   const [judgeModel, setJudgeModel] = useState<string | null>(null);
   const [judgeKey, setJudgeKey] = useState("");
+  const [tags, setTags] = useState<ImageTags | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [selTag, setSelTag] = useState("");
+  const [restartRay, setRestartRay] = useState(true);
+  const [restartInstances, setRestartInstances] = useState(true);
+  const [updateJob, setUpdateJob] = useState<number | null>(null);
+
+  const checkTags = async () => {
+    setChecking(true);
+    try {
+      const t = await api.getImageTags();
+      setTags(t);
+      const newer = t.tags.find((x) => x !== t.current_tag);
+      setSelTag(newer ?? t.tags[0] ?? "");
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const runImageUpdate = async () => {
+    if (!tags || !selTag) return;
+    const image = `${tags.repository.replace(/^registry-1\.docker\.io\//, "")}:${selTag}`;
+    const parts = [
+      `Pull ${image} on every node`,
+      restartRay ? "restart the Ray cluster" : null,
+      restartInstances ? "rolling-restart running instances (brief downtime each)" : null,
+    ].filter(Boolean);
+    if (!confirm(`Update the cluster image?\n\nThis will: ${parts.join(", ")}.`)) return;
+    try {
+      const r = await api.updateImage({ image, restart_ray: restartRay, restart_instances: restartInstances });
+      setUpdateJob(r.job_id);
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
 
   const saveJudge = async () => {
     await api.updateSettings({
@@ -64,6 +102,11 @@ export default function SettingsPage() {
 
   return (
     <div>
+      {updateJob && (
+        <Modal title="Cluster image update" onClose={() => { setUpdateJob(null); config.reload(); setTags(null); }}>
+          <JobLogPanel jobId={updateJob} title="Pull + restart" onDone={() => config.reload()} />
+        </Modal>
+      )}
       <div className="page-head">
         <div>
           <h1>Settings</h1>
@@ -75,7 +118,40 @@ export default function SettingsPage() {
         <div className="card">
           <h2>Cluster config</h2>
           <Field label="Cluster name"><input value={cfg.cluster_name} onChange={(e) => set("cluster_name", e.target.value)} /></Field>
-          <Field label="vLLM image"><input value={cfg.vllm_image} onChange={(e) => set("vllm_image", e.target.value)} /></Field>
+          <Field label="vLLM image">
+            <div className="flex gap-sm">
+              <input value={cfg.vllm_image} onChange={(e) => set("vllm_image", e.target.value)} />
+              <button className="btn" onClick={checkTags} disabled={checking}>{checking ? <Spinner /> : "Check updates"}</button>
+            </div>
+          </Field>
+          {tags && (
+            <div className="banner banner-info" style={{ marginBottom: 14 }}>
+              <div className="flex-col" style={{ gap: 8 }}>
+                <div>
+                  <strong>{tags.repository}</strong> — current: <span className="mono">{tags.current_tag ?? "?"}</span>
+                  {tags.tags[0] && tags.tags[0] !== tags.current_tag
+                    ? <> · newest: <span className="mono">{tags.tags[0]}</span></>
+                    : <> · up to date</>}
+                </div>
+                <div className="flex wrap gap-sm" style={{ alignItems: "center" }}>
+                  <select value={selTag} onChange={(e) => setSelTag(e.target.value)} style={{ width: "auto" }}>
+                    {tags.tags.map((t) => (
+                      <option key={t} value={t}>{t}{t === tags.current_tag ? " (current)" : ""}</option>
+                    ))}
+                  </select>
+                  <label className="flex gap-sm" style={{ alignItems: "center", fontSize: 12 }}>
+                    <input type="checkbox" checked={restartRay} onChange={(e) => setRestartRay(e.target.checked)} /> restart Ray
+                  </label>
+                  <label className="flex gap-sm" style={{ alignItems: "center", fontSize: 12 }}>
+                    <input type="checkbox" checked={restartInstances} onChange={(e) => setRestartInstances(e.target.checked)} /> restart instances
+                  </label>
+                  <button className="btn btn-primary btn-sm" onClick={runImageUpdate} disabled={!selTag || selTag === tags.current_tag}>
+                    Update cluster
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="row-2">
             <Field label="QSFP netmask"><input type="number" value={cfg.qsfp_netmask} onChange={(e) => set("qsfp_netmask", Number(e.target.value))} /></Field>
             <Field

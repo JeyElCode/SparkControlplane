@@ -8,13 +8,14 @@ from ..db import get_cluster_config, get_session, get_setting
 from ..schemas import (
     ClusterConfigIn,
     ClusterConfigOut,
+    ImageUpdateIn,
     JobAccepted,
     SettingsIn,
     SettingsOut,
     SetupRequest,
     TeardownRequest,
 )
-from ..services import cluster
+from ..services import cluster, registry
 from ..services.jobs import jobs
 from ..services.phases import PHASE_TITLES, PHASES_ORDER
 
@@ -68,6 +69,33 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.judge_api_key_enc = encrypt(payload.judge_api_key)
     await session.commit()
     return _settings_out(s)
+
+
+@router.get("/image-tags")
+async def image_tags(image: str | None = None, session: AsyncSession = Depends(get_session)):
+    """Available tags for the cluster image's repository (or an explicit
+    ``image``), newest first — the 'check for updates' call."""
+    from fastapi import HTTPException
+
+    if image is None:
+        cfg = await get_cluster_config(session)
+        image = cfg.vllm_image
+    try:
+        return await registry.list_tags(image)
+    except Exception as exc:  # noqa: BLE001 - registry unreachable / auth quirk
+        raise HTTPException(502, f"Could not list tags for {image}: {exc}")
+
+
+@router.post("/image-update", response_model=JobAccepted)
+async def image_update(payload: ImageUpdateIn):
+    job_id = await jobs.start(
+        "cluster.image_update",
+        f"Update cluster image to {payload.image}",
+        lambda h: cluster.update_image(
+            h, payload.image, payload.restart_ray, payload.restart_instances
+        ),
+    )
+    return JobAccepted(job_id=job_id, message="Image update started")
 
 
 @router.get("/phases")

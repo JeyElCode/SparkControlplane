@@ -58,6 +58,13 @@ export interface NodeHistory {
   points: HistoryPoint[];
 }
 
+export interface ImageTags {
+  image: string;
+  repository: string;
+  current_tag?: string | null;
+  tags: string[];
+}
+
 export interface InterfaceInfo {
   name: string;
   operstate: string;
@@ -527,6 +534,10 @@ export const api = {
     j<JobAccepted>(`/api/power/nodes/${id}/${action}`, { method: "POST" }),
   batchPower: (action: "shutdown" | "wake") =>
     j<JobAccepted>(`/api/power/batch/${action}`, { method: "POST" }),
+  getImageTags: (image?: string) =>
+    j<ImageTags>(`/api/cluster/image-tags${image ? `?image=${encodeURIComponent(image)}` : ""}`),
+  updateImage: (body: { image: string; restart_ray: boolean; restart_instances: boolean }) =>
+    j<JobAccepted>("/api/cluster/image-update", { method: "POST", body: JSON.stringify(body) }),
   hardenNode: (id: number) => j<JobAccepted>(`/api/nodes/${id}/harden`, { method: "POST" }),
 
   // cluster
