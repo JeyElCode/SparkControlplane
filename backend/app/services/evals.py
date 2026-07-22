@@ -23,7 +23,6 @@ from ..models import (
     JOB_ERROR,
     JOB_RUNNING,
     JOB_SUCCESS,
-    TOPO_CLUSTER,
     EvalResult,
     EvalRun,
     PerfResult,
@@ -41,6 +40,9 @@ class Endpoint:
     model: str
     api_key: str | None
     desc: str
+    # False for TLS instances: the proxy cert is for the public name, and we
+    # dial the node IP directly.
+    verify: bool = True
 
 
 def _now() -> datetime:
@@ -71,10 +73,12 @@ async def _commit(session: AsyncSession, handle: JobHandle) -> None:
 
 
 # --- endpoint resolution -------------------------------------------------
-async def _served_model_id(base_url: str, api_key: str | None, fallback: str) -> str:
+async def _served_model_id(
+    base_url: str, api_key: str | None, fallback: str, verify: bool = True
+) -> str:
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, verify=verify) as client:
             r = await client.get(f"{base_url.rstrip('/')}/models", headers=headers)
             if r.status_code == 200:
                 data = r.json().get("data", [])
@@ -89,17 +93,23 @@ async def _instance_endpoint(session: AsyncSession, instance_id: int) -> Endpoin
     inst = await load_instance(session, instance_id)
     if inst is None:
         raise RuntimeError(f"Instance {instance_id} not found.")
-    if inst.topology == TOPO_CLUSTER:
-        node = await get_node_by_role(session, "head")
-    else:
-        node = inst.node
-    if node is None:
+    # Shared resolution: single -> its pinned node; cluster AND distributed ->
+    # the head; TLS -> https via the nginx sidecar (vLLM binds loopback then).
+    from . import status_svc
+
+    head = await get_node_by_role(session, "head")
+    base_t = status_svc.instance_base_url(inst, head)
+    if base_t is None:
         raise RuntimeError("Instance has no reachable host.")
-    base = f"http://{node.lan_ip}:{inst.port}/v1"
+    url, verify = base_t
+    base = f"{url}/v1"
     api_key = decrypt(inst.api_key_enc)
     fallback = inst.model.name if inst.model else ""
-    model_id = await _served_model_id(base, api_key, fallback)
-    return Endpoint(base, model_id, api_key, f"{inst.name} ({inst.model.name if inst.model else '?'})")
+    model_id = await _served_model_id(base, api_key, fallback, verify=verify)
+    return Endpoint(
+        base, model_id, api_key,
+        f"{inst.name} ({inst.model.name if inst.model else '?'})", verify=verify,
+    )
 
 
 async def _resolve_judge(session: AsyncSession, cfg: dict) -> Endpoint | None:
@@ -179,6 +189,7 @@ async def _judge_score(judge: Endpoint, task_prompt: str, response: str, rubric:
         max_tokens=300,
         temperature=0.0,
         api_key=judge.api_key,
+        verify=judge.verify,
     )
     if not res.ok:
         return None, f"judge error: {res.error}"
@@ -224,6 +235,7 @@ async def _run_tool_task(session, handle, run, task, target, cfg) -> float:
         target.base_url, target.model, [{"role": "user", "content": task.prompt}],
         tools=task.tools, tool_choice="auto", max_tokens=task.max_tokens,
         temperature=float(cfg.get("temperature", 0.2)), api_key=target.api_key,
+        verify=target.verify,
     )
     er.latency_ms = res.latency_ms
     er.prompt_tokens, er.completion_tokens = res.prompt_tokens, res.completion_tokens
@@ -256,7 +268,7 @@ async def _run_capability_task(session, handle, run, task, target, judge, code_s
     res = await chat_stream(
         target.base_url, target.model, messages,
         max_tokens=task.max_tokens, temperature=float(cfg.get("temperature", 0.2)),
-        api_key=target.api_key,
+        api_key=target.api_key, verify=target.verify,
     )
     er.response = (res.content or "")[:8000]
     if not res.ok:
@@ -335,7 +347,7 @@ async def _run_perf(session, handle, run, pt, target, concurrency, reps, cfg) ->
                 chat_stream(
                     target.base_url, target.model, messages,
                     max_tokens=pt.max_tokens, temperature=float(cfg.get("temperature", 0.2)),
-                    api_key=target.api_key,
+                    api_key=target.api_key, verify=target.verify,
                 )
                 for _ in range(concurrency)
             ]

@@ -6,9 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt
 from ..db import get_node_by_role, get_session
-from ..models import TOPO_CLUSTER
 from ..schemas import PlaygroundRequest, PlaygroundResponse
 from ..services import instances as inst_svc
+from ..services import status_svc
 
 router = APIRouter(prefix="/api/playground", tags=["playground"])
 
@@ -18,13 +18,15 @@ async def chat(payload: PlaygroundRequest, session: AsyncSession = Depends(get_s
     inst = await inst_svc.load_instance(session, payload.instance_id)
     if inst is None:
         raise HTTPException(404, "Instance not found")
-    if inst.topology == TOPO_CLUSTER:
-        node = await get_node_by_role(session, "head")
-    else:
-        node = inst.node
-    if node is None:
+    # Shared resolution (same as health/metrics/evals): single -> pinned node;
+    # cluster AND distributed -> head; TLS -> https via the nginx sidecar
+    # (vLLM binds loopback in TLS mode, so plain http://ip:port cannot work).
+    head = await get_node_by_role(session, "head")
+    base_t = status_svc.instance_base_url(inst, head)
+    if base_t is None:
         raise HTTPException(400, "Instance has no reachable host.")
-    base = f"http://{node.lan_ip}:{inst.port}/v1"
+    url, verify = base_t
+    base = f"{url}/v1"
 
     headers = {"Content-Type": "application/json"}
     api_key = decrypt(inst.api_key_enc)
@@ -40,7 +42,7 @@ async def chat(payload: PlaygroundRequest, session: AsyncSession = Depends(get_s
     messages.append({"role": "user", "content": payload.prompt})
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=120, verify=verify) as client:
             try:
                 m = await client.get(f"{base}/models", headers=headers)
                 if m.status_code == 200:

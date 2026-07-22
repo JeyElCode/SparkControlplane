@@ -129,8 +129,12 @@ function GpuProcs({ n }: { n: NodeStatus }) {
   );
 }
 
-function NodeCard({ n, hist }: { n: NodeStatus; hist?: HistoryPoint[] }) {
+function NodeCard({ n, hist, rayRequired }: { n: NodeStatus; hist?: HistoryPoint[]; rayRequired: boolean }) {
   const h = hist ?? [];
+  // A stopped Ray container is only a problem when a cluster-topology
+  // instance needs Ray; with single/distributed instances it's just idle.
+  const rayKind = n.ray_container_up ? "green" : n.ray_container_up == null ? "gray" : rayRequired ? "red" : "gray";
+  const rayLabel = n.ray_container_up ? "ray container" : n.ray_container_up == null ? "ray container" : rayRequired ? "ray container down" : "ray idle";
   return (
     <div className="card">
       <div className="card-head">
@@ -149,7 +153,7 @@ function NodeCard({ n, hist }: { n: NodeStatus; hist?: HistoryPoint[] }) {
         <>
           <div className="flex wrap mb">
             <Badge kind={boolKind(n.docker_ok)}>docker</Badge>
-            <Badge kind={boolKind(n.ray_container_up)}>ray container</Badge>
+            <Badge kind={rayKind}>{rayLabel}</Badge>
           </div>
           {n.gpus.length === 0 ? (
             <div className="faint">No GPU telemetry (nvidia-smi unavailable).</div>
@@ -275,14 +279,24 @@ export default function Dashboard() {
             <Tile label="QSFP link" value={data.qsfp_ok == null ? "unknown" : data.qsfp_ok ? "up" : "down"} kind={data.qsfp_ok ? "green" : data.qsfp_ok === false ? "red" : "gray"} />
             <Tile
               label="Ray nodes"
-              value={data.ray.reachable ? `${data.ray.nodes_alive ?? 0} alive · ${data.ray.gpus_total ?? 0} GPU` : "offline"}
-              kind={data.ray.reachable && (data.ray.nodes_alive ?? 0) >= data.nodes.length ? "green" : data.ray.reachable ? "amber" : "gray"}
+              value={
+                data.ray.reachable
+                  ? `${data.ray.nodes_alive ?? 0} alive · ${data.ray.gpus_total ?? 0} GPU`
+                  : data.ray_required
+                    ? "offline — needed by a cluster instance"
+                    : "not in use"
+              }
+              kind={
+                data.ray.reachable
+                  ? (data.ray.nodes_alive ?? 0) >= data.nodes.length ? "green" : "amber"
+                  : data.ray_required ? "red" : "gray"
+              }
             />
           </div>
 
           <div className="grid grid-2 mb">
             {data.nodes.map((n) => (
-              <NodeCard key={n.node_id} n={n} hist={histByNode.get(n.node_id)?.points} />
+              <NodeCard key={n.node_id} n={n} hist={histByNode.get(n.node_id)?.points} rayRequired={data.ray_required ?? false} />
             ))}
           </div>
 

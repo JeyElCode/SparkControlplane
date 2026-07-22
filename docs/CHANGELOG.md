@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.13.1 — live-cluster fixes (Ray context, Playground/Evals reachability)
+- **fix(playground+evals): distributed and TLS instances are now reachable.**
+  The Playground (and the eval engine's endpoint resolution) still used the
+  pre-v1.9.0 host logic: `cluster` → head, otherwise the pinned node — so a
+  `distributed` instance (no pinned node) failed with *"Instance has no
+  reachable host"*, and a TLS instance would have been dialed on plain
+  `http://ip:port` where vLLM binds loopback. Both now use the shared
+  `instance_base_url` resolution (single → pinned node; cluster/distributed →
+  head; TLS → `https://ip:tls_port` via the nginx sidecar, no cert
+  verification against the raw IP), and the LLM client/judge calls carry the
+  verify flag. Reported from the live cluster running a distributed TLS
+  instance.
+- **fix(dashboard): a stopped Ray cluster is no longer painted as a fault when
+  nothing needs Ray.** With only `single`/`distributed` (Ray-less) instances,
+  the Ray tile showed "offline" and both node cards flagged a red "ray
+  container" badge — alarming, but perfectly normal for that topology. The
+  snapshot now carries `ray_required` (true only when a **cluster**-topology
+  instance exists): when Ray isn't required and isn't running, the tile reads
+  "not in use" and the badge turns gray "ray idle"; when it IS required and
+  down, both go properly **red** (previously the tile was a soft gray even
+  then). Reported from the live cluster running a distributed instance.
+
 ## v1.13.0 — live log viewer
 - **On-demand `journalctl -f` from the UI.** New **Logs** buttons on every
   instance card and node card open a streaming viewer with a unit picker

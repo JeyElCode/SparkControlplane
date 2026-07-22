@@ -55,6 +55,7 @@ async def chat_once(
     temperature: float = 0.0,
     api_key: str | None = None,
     timeout: float = 180.0,
+    verify: bool = True,
 ) -> ChatOnce:
     """Non-streaming completion that surfaces tool calls (for tool-use evals)."""
     headers = {"Content-Type": "application/json"}
@@ -67,7 +68,7 @@ async def chat_once(
         payload["tool_choice"] = tool_choice
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
             r = await client.post(
                 f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers
             )
@@ -101,6 +102,7 @@ async def chat_stream(
     temperature: float = 0.2,
     api_key: str | None = None,
     timeout: float = 600.0,
+    verify: bool = True,
 ) -> ChatResult:
     """Stream a chat completion, measuring TTFT, total latency, and tokens/sec.
     ``base_url`` is the ``/v1`` root."""
@@ -121,7 +123,7 @@ async def chat_stream(
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
             async with client.stream(
                 "POST", f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers
             ) as r:
