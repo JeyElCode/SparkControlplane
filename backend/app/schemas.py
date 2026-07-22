@@ -100,6 +100,55 @@ def _v_advanced_args(v: str | None) -> str | None:
     return v
 
 
+# --- Telemetry -----------------------------------------------------------
+class NetRate(BaseModel):
+    """Live throughput of one interface (computed from /proc/net/dev deltas)."""
+
+    iface: str
+    kind: Literal["qsfp", "lan", "other"] = "other"
+    rx_bps: float | None = None
+    tx_bps: float | None = None
+
+
+class DiskUsage(BaseModel):
+    """Filesystem usage of the models directory on a node."""
+
+    path: str
+    total_bytes: int | None = None
+    used_bytes: int | None = None
+    free_bytes: int | None = None
+
+
+class GpuProc(BaseModel):
+    """A process currently using the GPU (top consumers first)."""
+
+    pid: int
+    name: str
+    mem_mib: int | None = None
+
+
+class HistoryPoint(BaseModel):
+    """One compact telemetry sample for sparklines (all optional — a metric can
+    be momentarily unavailable without dropping the point)."""
+
+    ts: float  # unix seconds
+    cpu_pct: float | None = None
+    mem_used_mib: int | None = None
+    gpu_util_pct: int | None = None
+    gpu_mem_used_mib: int | None = None
+    qsfp_rx_bps: float | None = None
+    qsfp_tx_bps: float | None = None
+    lan_rx_bps: float | None = None
+    lan_tx_bps: float | None = None
+    disk_used_bytes: int | None = None
+
+
+class NodeHistory(BaseModel):
+    node_id: int
+    name: str
+    points: list[HistoryPoint] = []
+
+
 # --- Nodes ---------------------------------------------------------------
 class InterfaceInfo(BaseModel):
     """A physical network port on a node, for the QSFP interface picker."""
@@ -636,6 +685,15 @@ class NodeStatus(BaseModel):
     mem_budget_used_gib: float | None = None
     mem_budget_total_gib: float | None = None
     detail: str | None = None
+    # Telemetry-engine extras (None until the first sample lands)
+    cpu_pct: float | None = None
+    cpu_count: int | None = None
+    loadavg_1m: float | None = None
+    uptime_seconds: float | None = None
+    net: list[NetRate] = Field(default_factory=list)
+    disk: DiskUsage | None = None
+    gpu_procs: list[GpuProc] = Field(default_factory=list)
+    sampled_at: float | None = None  # unix seconds of the underlying sample
 
 
 class RayNodeInfo(BaseModel):

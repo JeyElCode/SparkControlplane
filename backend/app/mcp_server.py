@@ -71,7 +71,7 @@ from .schemas import (
     StatusSnapshot,
     TeardownRequest,
 )
-from .services import status_svc
+from .services import telemetry
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from mcp.server.fastmcp import FastMCP
@@ -210,7 +210,7 @@ def build_mcp_server() -> "FastMCP":
     async def status_get() -> StatusSnapshot:
         """Live cluster status snapshot: nodes, GPUs, Ray, running instances, warnings."""
         async with SessionLocal() as session:
-            return await status_svc.snapshot(session)
+            return await telemetry.engine.compose_snapshot(session)
 
     # ---------------- instances ---------------- #
     @mcp.tool()
@@ -468,7 +468,7 @@ def build_mcp_server() -> "FastMCP":
     async def res_status() -> str:
         """Live cluster status snapshot."""
         async with SessionLocal() as session:
-            return _json(await status_svc.snapshot(session))
+            return _json(await telemetry.engine.compose_snapshot(session))
 
     @mcp.resource("spark://instances", mime_type="application/json")
     async def res_instances() -> str:

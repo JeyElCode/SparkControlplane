@@ -207,12 +207,15 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 | Method | Path | Description | Response |
 |---|---|---|---|
-| GET | `` | Current cluster status snapshot. | `StatusSnapshot` |
-| WS | `/ws?interval=N` | Push a `StatusSnapshot` (as JSON text) every `N` seconds. | stream of `StatusSnapshot` |
+| GET | `` | Current cluster status snapshot (served from the telemetry engine's cache — no SSH on the request path). | `StatusSnapshot` |
+| GET | `/history?minutes=N` | Per-node sparkline history (CPU %, memory, GPU util/mem, QSFP/LAN B/s, disk), up to the ring length (default 15 min). | `NodeHistory[]` |
+| WS | `/ws?interval=N` | Push a `StatusSnapshot` (as JSON text) every `N` seconds, from cache. | stream of `StatusSnapshot` |
 
-The WebSocket reads `interval` from the query string (default `10`, clamped to
-a minimum of `3` seconds) and sends one JSON-encoded `StatusSnapshot` per tick
-until the client disconnects.
+The WebSocket reads `interval` from the query string (default `3`, clamped to
+a minimum of `2` seconds) and sends one JSON-encoded `StatusSnapshot` per tick
+until the client disconnects. Node sampling itself runs server-side on the
+telemetry engine's own cadence (`SPARK_TELEMETRY_FAST_SECONDS`), independent of
+connected clients.
 
 **`StatusSnapshot`** — `setup_complete`, `qsfp_ok`, `ray` (`RayStatus`),
 `nodes` (`NodeStatus[]`), `instances` (`InstanceRuntimeStatus[]`),

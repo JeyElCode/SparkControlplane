@@ -106,6 +106,12 @@ class Settings(BaseSettings):
 
     # --- Status polling --------------------------------------------------
     status_poll_seconds: int = Field(default=10)
+    # Telemetry engine: continuous server-side sampling (one batched SSH command
+    # per node per fast tick), so dashboards read from cache instead of opening
+    # SSH sessions per request. Slow tick covers Ray / QSFP / instance health.
+    telemetry_fast_seconds: float = Field(default=3.0)
+    telemetry_slow_seconds: float = Field(default=12.0)
+    telemetry_history_minutes: int = Field(default=15)
     ssh_connect_timeout: int = Field(default=15)
     # Where helper scripts + systemd units are installed on the nodes.
     node_install_dir: str = Field(default="/opt/spark-controlplane")
