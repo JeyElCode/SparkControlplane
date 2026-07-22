@@ -115,7 +115,8 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         await session.rollback()
         raise HTTPException(409, f"Could not create instance: {exc}")
     full = await inst_svc.load_instance(session, inst.id)
-    inst_svc.resolve_defaults(full)
+    nnodes = len((await session.execute(select(Node.id))).scalars().all()) or 2
+    inst_svc.resolve_defaults(full, nnodes=nnodes)
     await session.commit()
     return InstanceOut.of(full)
 

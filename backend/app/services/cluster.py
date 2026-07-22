@@ -16,6 +16,7 @@ from ..db import (
     get_cluster_config,
     get_node_by_role,
     get_setting,
+    get_worker_nodes,
 )
 from ..models import AUTH_KEY, INST_STOPPED, Instance, Node
 from ..schemas import ConnectionTest, TeardownRequest
@@ -30,12 +31,14 @@ async def run_setup(handle: JobHandle, phase_names: list[str] | None) -> str:
     names = phase_names or PHASES_ORDER
     async with SessionLocal() as session:
         head = await get_node_by_role(session, "head")
-        worker = await get_node_by_role(session, "worker")
-        if head is None or worker is None:
-            raise RuntimeError("Configure both the head and worker nodes before running setup.")
+        workers = await get_worker_nodes(session)
+        if head is None or not workers:
+            raise RuntimeError(
+                "Configure the head node and at least one worker node before running setup."
+            )
         cfg = await get_cluster_config(session)
         setting = await get_setting(session)
-        ctx = PhaseCtx(session=session, handle=handle, head=head, worker=worker, cfg=cfg, setting=setting)
+        ctx = PhaseCtx(session=session, handle=handle, head=head, workers=workers, cfg=cfg, setting=setting)
         for name in names:
             await handle.log("")
             await handle.log(f"========== Phase: {name} ==========")
@@ -105,10 +108,10 @@ grep -qxF {shlex.quote(public_line)} ~/.ssh/authorized_keys || echo {shlex.quote
 async def teardown(handle: JobHandle, req: TeardownRequest) -> str:
     async with SessionLocal() as session:
         head = await get_node_by_role(session, "head")
-        worker = await get_node_by_role(session, "worker")
+        workers = await get_worker_nodes(session)
         cfg = await get_cluster_config(session)
         setting = await get_setting(session)
-        nodes = [n for n in (head, worker) if n is not None]
+        nodes = [n for n in (head, *workers) if n is not None]
 
         async def warn(node, msg):
             await handle.log(f"[{node.name if node else '?'}] WARNING: {msg}", "stderr")
@@ -167,18 +170,22 @@ ip addr del {shlex.quote(node.qsfp_ip)}/{int(cfg.qsfp_netmask)} dev {shlex.quote
                 except Exception as exc:  # noqa: BLE001
                     await warn(node, f"failed removing network: {exc}")
 
-        if req.remove_inter_node_ssh and head is not None and worker is not None:
+        if req.remove_inter_node_ssh and head is not None and workers:
             await handle.log("Removing inter-node SSH trust…")
             try:
                 hssh = await ssh_for_node(session, head)
+                sed_blocks = "; ".join(
+                    f"sed -i {shlex.quote(f'/Host {w.name}/,+4d')} ~/.ssh/config 2>/dev/null || true"
+                    for w in workers
+                )
                 await hssh.run(
-                    "rm -f ~/.ssh/id_ed25519_spark ~/.ssh/id_ed25519_spark.pub; "
-                    f"sed -i {shlex.quote(f'/Host {worker.name}/,+4d')} ~/.ssh/config 2>/dev/null || true"
+                    "rm -f ~/.ssh/id_ed25519_spark ~/.ssh/id_ed25519_spark.pub; " + sed_blocks
                 )
-                wssh = await ssh_for_node(session, worker)
-                await wssh.run(
-                    "sed -i '/spark-vllm/d' ~/.ssh/authorized_keys 2>/dev/null || true"
-                )
+                for worker in workers:
+                    wssh = await ssh_for_node(session, worker)
+                    await wssh.run(
+                        "sed -i '/spark-vllm/d' ~/.ssh/authorized_keys 2>/dev/null || true"
+                    )
             except Exception as exc:  # noqa: BLE001
                 await warn(head, f"failed removing inter-node ssh: {exc}")
 

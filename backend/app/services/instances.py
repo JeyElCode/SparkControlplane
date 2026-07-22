@@ -65,13 +65,11 @@ async def _head_node(session: AsyncSession) -> Node:
 def resolve_defaults(inst: Instance, nnodes: int | None = None) -> None:
     """Fill topology-derived + auto fields in place before persisting/starting.
 
-    ``nnodes`` (when known) sizes the tensor-parallel default for the native
-    ``distributed`` topology: one GPU per participating node, so the world size
-    (== TP) defaults to the node count."""
-    if inst.topology == TOPO_DISTRIBUTED:
+    ``nnodes`` (when known) sizes the tensor-parallel default for the multi-node
+    topologies: one GPU per participating node, so the world size (== TP)
+    defaults to the node count — 2, 3, or 4 Sparks."""
+    if inst.topology in (TOPO_DISTRIBUTED, TOPO_CLUSTER):
         inst.tensor_parallel_size = inst.tensor_parallel_size or (nnodes or 2)
-    elif inst.topology == TOPO_CLUSTER:
-        inst.tensor_parallel_size = inst.tensor_parallel_size or 2
     else:
         inst.tensor_parallel_size = 1
     if inst.enable_tool_choice and not inst.tool_parser and inst.model is not None:
@@ -221,7 +219,7 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
 
     unit_name = templates.instance_unit_name(inst.name)
 
-    if inst.topology == TOPO_DISTRIBUTED:
+    if inst.topology in (TOPO_DISTRIBUTED, TOPO_CLUSTER):
         head = await _head_node(session)
         workers = await _worker_nodes(session, head)
         resolve_defaults(inst, nnodes=1 + len(workers))
@@ -234,9 +232,9 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
 
     try:
         if inst.topology == TOPO_CLUSTER:
-            head = await _head_node(session)
-            worker = await _other_node(session, head)
-            await _ensure_model_present(session, inst, [head.id, worker.id])
+            # The Ray cluster spans every node, so the model must be present on
+            # all of them (the serve command shards across the whole cluster).
+            await _ensure_model_present(session, inst, [head.id] + [w.id for w in workers])
             serve_cmd = templates.build_vllm_serve_cmd(
                 **_serve_kwargs(inst, model_path, api_key), distributed_backend="ray"
             )
@@ -537,14 +535,6 @@ async def _cluster_config(session: AsyncSession):
     from ..db import get_cluster_config
 
     return await get_cluster_config(session)
-
-
-async def _other_node(session: AsyncSession, node: Node) -> Node:
-    res = await session.execute(select(Node).where(Node.id != node.id))
-    other = res.scalar_one_or_none()
-    if other is None:
-        raise RuntimeError("Worker node is not configured.")
-    return other
 
 
 async def _worker_nodes(session: AsyncSession, head: Node) -> list[Node]:

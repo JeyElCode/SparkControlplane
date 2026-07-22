@@ -52,7 +52,7 @@ export default function Setup() {
       </div>
 
       {!ready && (
-        <div className="banner banner-warn">⚠ Configure both the head and worker nodes first on <Link to="/nodes">Nodes</Link>.</div>
+        <div className="banner banner-warn">⚠ Configure the head node and at least one worker first on <Link to="/nodes">Nodes</Link>.</div>
       )}
 
       <div className="grid grid-2">

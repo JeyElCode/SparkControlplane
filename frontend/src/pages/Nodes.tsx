@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, ConnectionTest, Node, NodeInput, Role } from "../lib/api";
+import { api, ConnectionTest, InterfaceInfo, Node, NodeInput, Role } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { boolKind } from "../lib/format";
 import { Badge, Field, Modal, Spinner } from "../components/ui";
@@ -35,7 +35,28 @@ function NodeForm({
 }) {
   const [n, setN] = useState<NodeInput>(initial);
   const [busy, setBusy] = useState(false);
+  const [ifaces, setIfaces] = useState<InterfaceInfo[] | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [detectErr, setDetectErr] = useState<string | null>(null);
   const set = (k: keyof NodeInput, v: any) => setN((p) => ({ ...p, [k]: v }));
+
+  const detect = async () => {
+    if (!editing) return;
+    setDetecting(true);
+    setDetectErr(null);
+    try {
+      setIfaces(await api.listInterfaces(editing.id));
+    } catch (e: any) {
+      setDetectErr(e.message);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const ifaceLabel = (i: InterfaceInfo) => {
+    const speed = i.speed_mbps ? `${i.speed_mbps >= 1000 ? `${i.speed_mbps / 1000}G` : `${i.speed_mbps}M`}` : "?";
+    return `${i.name} — ${i.carrier ? `link UP · ${speed}` : "no link"}${i.qsfp_candidate ? " · QSFP" : ""}`;
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -75,7 +96,29 @@ function NodeForm({
         <Field label="QSFP IP" hint="Private high-speed link IP. The head node's is the master-addr for distributed instances."><input value={n.qsfp_ip} placeholder="10.0.0.1" onChange={(e) => set("qsfp_ip", e.target.value)} /></Field>
       </div>
       <div className="row-2">
-        <Field label="QSFP interface"><input value={n.qsfp_iface} onChange={(e) => set("qsfp_iface", e.target.value)} /></Field>
+        <Field
+          label="QSFP interface"
+          hint={editing ? "Detect lists the node's ports with link state — pick the one with the cable." : "Any back-panel QSFP port works. Save the node, then Edit → Detect ports to pick from a list."}
+        >
+          {ifaces ? (
+            <select value={n.qsfp_iface} onChange={(e) => set("qsfp_iface", e.target.value)}>
+              {!ifaces.some((i) => i.name === n.qsfp_iface) && n.qsfp_iface && (
+                <option value={n.qsfp_iface}>{n.qsfp_iface} (current)</option>
+              )}
+              {ifaces.map((i) => (
+                <option key={i.name} value={i.name}>{ifaceLabel(i)}</option>
+              ))}
+            </select>
+          ) : (
+            <input value={n.qsfp_iface} onChange={(e) => set("qsfp_iface", e.target.value)} />
+          )}
+          {editing && (
+            <button type="button" className="btn btn-sm" style={{ marginTop: 6 }} onClick={detect} disabled={detecting}>
+              {detecting ? <Spinner /> : ifaces ? "Re-detect" : "Detect ports"}
+            </button>
+          )}
+          {detectErr && <div className="faint" style={{ color: "var(--red, #e66)", fontSize: 12 }}>{detectErr}</div>}
+        </Field>
         <Field label="SSH user"><input value={n.ssh_user} placeholder="jlindalen" onChange={(e) => set("ssh_user", e.target.value)} /></Field>
       </div>
       <div className="row-2">
@@ -117,7 +160,10 @@ export default function Nodes() {
   const [tests, setTests] = useState<Record<number, ConnectionTest | "loading">>({});
   const [hardenJob, setHardenJob] = useState<number | null>(null);
 
-  const haveRoles = new Set((nodes ?? []).map((n) => n.role));
+  const MAX_NODES = 4;
+  const all = nodes ?? [];
+  const hasHead = all.some((n) => n.role === "head");
+  const canAddWorker = all.length < MAX_NODES;
 
   const save = async (n: NodeInput) => {
     try {
@@ -160,18 +206,21 @@ export default function Nodes() {
     reload();
   };
 
-  const addRole = (role: Role) => setForm({ initial: { ...EMPTY, role, name: role === "head" ? "spark-01" : "spark-02" }, editing: null });
+  const addRole = (role: Role) => {
+    const name = role === "head" ? "spark-01" : `spark-0${all.length + 1}`;
+    setForm({ initial: { ...EMPTY, role, name }, editing: null });
+  };
 
   return (
     <div>
       <div className="page-head">
         <div>
           <h1>Nodes</h1>
-          <p>SSH access to the two DGX Spark boxes. Credentials are encrypted at rest.</p>
+          <p>SSH access to your DGX Spark boxes — 1 head + up to 3 workers. Credentials are encrypted at rest.</p>
         </div>
         <div className="btn-row">
-          {!haveRoles.has("head") && <button className="btn btn-primary" onClick={() => addRole("head")}>+ Head node</button>}
-          {!haveRoles.has("worker") && <button className="btn btn-primary" onClick={() => addRole("worker")}>+ Worker node</button>}
+          {!hasHead && <button className="btn btn-primary" onClick={() => addRole("head")}>+ Head node</button>}
+          {hasHead && canAddWorker && <button className="btn btn-primary" onClick={() => addRole("worker")}>+ Worker node</button>}
         </div>
       </div>
 
@@ -218,8 +267,8 @@ export default function Nodes() {
             </div>
           );
         })}
-        {(nodes ?? []).length === 0 && (
-          <div className="card faint">No nodes configured. Add the head and worker nodes to begin.</div>
+        {all.length === 0 && (
+          <div className="card faint">No nodes configured. Add the head node, then your worker node(s), to begin.</div>
         )}
       </div>
 

@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 from ..config import get_settings
 from ..crypto import decrypt
 from ..db import get_setting
-from ..models import INST_RUNNING, TOPO_CLUSTER, Instance, Node
+from ..models import INST_RUNNING, TOPO_CLUSTER, TOPO_DISTRIBUTED, Instance, Node
 from ..schemas import (
     GpuStatus,
     InstanceRuntimeStatus,
@@ -43,12 +43,12 @@ async def snapshot(session: AsyncSession) -> StatusSnapshot:
         .all()
     )
     head = next((n for n in nodes if n.role == "head"), None)
-    worker = next((n for n in nodes if n.role == "worker"), None)
+    workers = [n for n in nodes if n.role == "worker"]
 
     node_statuses = await asyncio.gather(
         *[_node_status(session, n) for n in nodes], return_exceptions=False
     )
-    qsfp_ok = await _qsfp_ok(session, head, worker)
+    qsfp_ok = await _qsfp_ok(session, head, workers)
     ray = await _ray_status(session, head)
     inst_statuses = await asyncio.gather(
         *[_instance_status(session, i, head) for i in instances]
@@ -146,13 +146,18 @@ async def _sys_mem(ssh) -> tuple[int | None, int | None]:
     return (used_mib, total_mib)
 
 
-async def _qsfp_ok(session: AsyncSession, head: Node | None, worker: Node | None) -> bool | None:
-    if head is None or worker is None:
+async def _qsfp_ok(
+    session: AsyncSession, head: Node | None, workers: list[Node]
+) -> bool | None:
+    """True when the head reaches every worker over the QSFP fabric."""
+    if head is None or not workers:
         return None
     try:
         ssh = await ssh_for_node(session, head)
-        res = await ssh.run(f"ping -c 1 -W 2 {worker.qsfp_ip}", timeout=10)
-        return res.ok
+        results = await asyncio.gather(
+            *[ssh.run(f"ping -c 1 -W 2 {w.qsfp_ip}", timeout=10) for w in workers]
+        )
+        return all(r.ok for r in results)
     except Exception:  # noqa: BLE001
         return None
 
@@ -226,18 +231,16 @@ def _memory_warnings(
     node_total_gib: int,
 ) -> list[str]:
     by_id = {n.id: n for n in nodes}
-    head = next((n for n in nodes if n.role == "head"), None)
-    worker = next((n for n in nodes if n.role == "worker"), None)
     used: dict[int, float] = {n.id: 0.0 for n in nodes}
 
     for inst in instances:
         if inst.status != INST_RUNNING:
             continue
         share = inst.gpu_memory_utilization * node_total_gib
-        if inst.topology == TOPO_CLUSTER:
-            for n in (head, worker):
-                if n:
-                    used[n.id] += share
+        if inst.topology in (TOPO_CLUSTER, TOPO_DISTRIBUTED):
+            # Multi-node topologies shard across every node.
+            for n in nodes:
+                used[n.id] += share
         elif inst.node_id in used:
             used[inst.node_id] += share
 
