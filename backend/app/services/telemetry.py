@@ -180,9 +180,9 @@ def parse_sample(
             busy = total - idle
             nxt.cpu_busy, nxt.cpu_total = busy, total
             if prev.ts and total > prev.cpu_total:
-                s.cpu_pct = round(
-                    100.0 * (busy - prev.cpu_busy) / (total - prev.cpu_total), 1
-                )
+                # clamp: counters can jump backwards on a reboot mid-window
+                pct = 100.0 * (busy - prev.cpu_busy) / (total - prev.cpu_total)
+                s.cpu_pct = round(min(100.0, max(0.0, pct)), 1)
 
     if sec.get("nproc"):
         s.cpu_count = _int(sec["nproc"][0])

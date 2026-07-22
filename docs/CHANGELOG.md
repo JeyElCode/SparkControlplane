@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.8.0 — Dashboard v2
+- **Live-streaming dashboard.** The Dashboard now rides the status WebSocket
+  (with automatic reconnect and a transparent polling fallback — a "live" /
+  "polling" badge shows which); updates land every ~3s instead of 8s polling.
+- **Sparklines everywhere.** GPU utilization, CPU, unified memory, and QSFP/LAN
+  throughput each render a 15-minute trend (from `/api/status/history`) under
+  their live meter — dependency-free SVG, per-node.
+- **New per-node panels:** CPU (% + cores + loadavg), network split into
+  **QSFP vs LAN** with ↓/↑ rates, models-disk usage with free space, uptime in
+  the card header, and a **GPU process table** (top consumers with memory) so
+  "what's eating the GPU" is one glance away.
+- The Ray tile now compares alive nodes against the actual cluster size
+  (2-4 nodes) instead of a hardcoded 2; topbar label un-hardcoded from
+  "2-node". `cpu_pct` clamped to 0-100 against counter jumps (e.g. a node
+  reboot mid-window).
+
 ## v1.7.0 — telemetry engine
 - **Server-side telemetry engine.** The portal now samples every node
   continuously in the background — one batched SSH command per node per tick
