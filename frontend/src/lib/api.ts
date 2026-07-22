@@ -58,6 +58,13 @@ export interface NodeHistory {
   points: HistoryPoint[];
 }
 
+export interface LogUnit {
+  node_id: number;
+  node_name: string;
+  unit: string;
+  label: string;
+}
+
 export interface ImageTags {
   image: string;
   repository: string;
@@ -534,6 +541,7 @@ export const api = {
     j<JobAccepted>(`/api/power/nodes/${id}/${action}`, { method: "POST" }),
   batchPower: (action: "shutdown" | "wake") =>
     j<JobAccepted>(`/api/power/batch/${action}`, { method: "POST" }),
+  listLogUnits: () => j<LogUnit[]>("/api/logs/units"),
   getImageTags: (image?: string) =>
     j<ImageTags>(`/api/cluster/image-tags${image ? `?image=${encodeURIComponent(image)}` : ""}`),
   updateImage: (body: { image: string; restart_ray: boolean; restart_instances: boolean }) =>

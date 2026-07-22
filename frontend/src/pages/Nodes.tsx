@@ -4,6 +4,7 @@ import { usePoll } from "../lib/hooks";
 import { boolKind } from "../lib/format";
 import { Badge, Field, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
+import { LiveLogPanel } from "../components/LiveLogPanel";
 import { useToast } from "../components/Toast";
 
 const EMPTY: NodeInput = {
@@ -160,6 +161,7 @@ export default function Nodes() {
   const [tests, setTests] = useState<Record<number, ConnectionTest | "loading">>({});
   const [hardenJob, setHardenJob] = useState<number | null>(null);
   const [powerJob, setPowerJob] = useState<{ id: number; title: string } | null>(null);
+  const [logsFor, setLogsFor] = useState<string | null>(null);
 
   const MAX_NODES = 4;
   const all = nodes ?? [];
@@ -308,6 +310,7 @@ export default function Nodes() {
                 </button>
                 <button className="btn btn-sm" onClick={() => setForm({ initial: { ...EMPTY, ...n, ssh_password: "", ssh_private_key: "", sudo_password: "", ssh_key_passphrase: "" }, editing: n })}>Edit</button>
                 {!n.hardened && <button className="btn btn-sm" onClick={() => harden(n.id)}>Harden → key</button>}
+                <button className="btn btn-sm" onClick={() => setLogsFor(n.name)} title="Live journalctl tail (Ray unit)">Logs</button>
                 <button className="btn btn-sm" onClick={() => power(n, "reboot")}>Reboot</button>
                 <button className="btn btn-sm" onClick={() => power(n, "shutdown")}>Shut down</button>
                 <button className="btn btn-sm" disabled={!n.mac_address} title={n.mac_address ? "Wake-on-LAN" : "MAC unknown — run Test connection while the node is up"} onClick={() => power(n, "wake")}>⏻ Wake</button>
@@ -330,6 +333,11 @@ export default function Nodes() {
       {powerJob && (
         <Modal title="Power control" onClose={() => { setPowerJob(null); reload(); }}>
           <JobLogPanel jobId={powerJob.id} title={powerJob.title} onDone={() => reload()} />
+        </Modal>
+      )}
+      {logsFor && (
+        <Modal title="Live logs" wide onClose={() => setLogsFor(null)}>
+          <LiveLogPanel filter={logsFor} />
         </Modal>
       )}
     </div>
