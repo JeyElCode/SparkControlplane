@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { api } from "./lib/api";
 import { usePoll } from "./lib/hooks";
@@ -23,6 +24,35 @@ const NAV = [
   { to: "/teardown", label: "Teardown", icon: "⌫" },
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
+
+const THEMES = [
+  { id: "dark", label: "◐ Dark" },
+  { id: "light", label: "○ Light" },
+  { id: "oled", label: "● OLED" },
+];
+
+function ThemeSelect() {
+  const [theme, setTheme] = useState(
+    () => localStorage.getItem("spark-theme") ?? "dark"
+  );
+  useEffect(() => {
+    if (theme === "dark") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    localStorage.setItem("spark-theme", theme);
+  }, [theme]);
+  return (
+    <select
+      value={theme}
+      onChange={(e) => setTheme(e.target.value)}
+      title="Theme"
+      style={{ width: "auto", padding: "5px 8px", fontSize: 12 }}
+    >
+      {THEMES.map((t) => (
+        <option key={t.id} value={t.id}>{t.label}</option>
+      ))}
+    </select>
+  );
+}
 
 function HealthPill() {
   const { data } = usePoll(() => api.getSettings(), 20000);
@@ -57,7 +87,10 @@ export default function App() {
       <div className="main">
         <header className="topbar">
           <div className="muted">DGX Spark cluster</div>
-          <HealthPill />
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <ThemeSelect />
+            <HealthPill />
+          </div>
         </header>
         <div className="content">
           <Routes>
