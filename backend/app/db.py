@@ -64,11 +64,79 @@ def _add_missing_columns(conn) -> None:
             log.warning("DB migration: added column %s.%s", table.name, col.name)
 
 
+def _nodes_role_unique_on_disk(conn) -> bool:
+    """True when the on-disk ``nodes`` table still carries the legacy UNIQUE
+    constraint on ``role`` (pre-multi-worker schema, <= v1.4.x)."""
+    insp = inspect(conn)
+    if "nodes" not in insp.get_table_names():
+        return False
+    for idx in conn.exec_driver_sql("PRAGMA index_list('nodes')"):
+        # row: (seq, name, unique, origin, partial). origin 'u' = UNIQUE
+        # constraint's auto-index, 'c' = CREATE INDEX.
+        if not idx[2]:
+            continue
+        cols = [r[2] for r in conn.exec_driver_sql(f"PRAGMA index_info('{idx[1]}')")]
+        if cols == ["role"]:
+            return True
+    return False
+
+
+def _migrate_nodes_drop_role_unique(conn) -> None:
+    """One-time rebuild of ``nodes`` without the legacy UNIQUE(role) constraint
+    (SQLite cannot drop a constraint in place). Non-destructive: all rows and
+    their ids are preserved, so FKs from model_node_states/instances/jobs keep
+    pointing at the same nodes.
+
+    Runs on the standard SQLite table-rebuild recipe: with foreign_keys OFF
+    (child tables briefly reference a missing parent mid-rebuild), copy into
+    ``nodes_new``, swap inside one explicit transaction so a crash leaves either
+    the old table or the finished new one — never a half-migrated DB.
+    """
+    interrupted = "nodes_new" in inspect(conn).get_table_names()
+    if not (interrupted or _nodes_role_unique_on_disk(conn)):
+        return
+    log.warning("DB migration: rebuilding 'nodes' to drop the legacy UNIQUE(role) constraint")
+
+    from sqlalchemy import MetaData
+    from sqlalchemy.schema import CreateTable
+
+    new_table = Base.metadata.tables["nodes"].to_metadata(MetaData(), name="nodes_new")
+    create_sql = str(CreateTable(new_table).compile(dialect=conn.dialect))
+
+    conn.exec_driver_sql("DROP TABLE IF EXISTS nodes_new")  # leftover from a crash
+    conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    try:
+        conn.exec_driver_sql("BEGIN")
+        conn.exec_driver_sql(create_sql)
+        disk_cols = [r[1] for r in conn.exec_driver_sql("PRAGMA table_info('nodes')")]
+        common = [c for c in disk_cols if c in {col.name for col in new_table.columns}]
+        collist = ", ".join(f'"{c}"' for c in common)
+        conn.exec_driver_sql(f"INSERT INTO nodes_new ({collist}) SELECT {collist} FROM nodes")
+        conn.exec_driver_sql("DROP TABLE nodes")
+        conn.exec_driver_sql("ALTER TABLE nodes_new RENAME TO nodes")
+        conn.exec_driver_sql("COMMIT")
+    except BaseException:
+        conn.exec_driver_sql("ROLLBACK")
+        raise
+    finally:
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    violations = list(conn.exec_driver_sql("PRAGMA foreign_key_check"))
+    if violations:  # pragma: no cover - defensive; the copy preserves ids
+        raise RuntimeError(f"nodes migration left FK violations: {violations[:5]}")
+    log.warning("DB migration: 'nodes' rebuilt, multiple workers now allowed")
+
+
 async def init_db() -> None:
     """Create tables, add any missing columns, and seed singleton rows."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_missing_columns)
+    async with engine.connect() as conn:
+        # AUTOCOMMIT (set before any statement autobegins a transaction): the
+        # rebuild flips PRAGMA foreign_keys — a no-op inside a transaction — and
+        # manages its own explicit BEGIN/COMMIT around the table swap.
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.run_sync(_migrate_nodes_drop_role_unique)
 
     async with SessionLocal() as session:
         cfg = await session.get(ClusterConfig, 1)
@@ -112,7 +180,21 @@ async def get_setting(session: AsyncSession) -> Setting:
 
 
 async def get_node_by_role(session: AsyncSession, role: str) -> "object | None":
+    """First node with ``role`` (by id). With multiple workers this returns the
+    oldest one — callers that need them all use :func:`get_worker_nodes`."""
     from .models import Node
 
-    res = await session.execute(select(Node).where(Node.role == role))
+    res = await session.execute(
+        select(Node).where(Node.role == role).order_by(Node.id).limit(1)
+    )
     return res.scalar_one_or_none()
+
+
+async def get_worker_nodes(session: AsyncSession) -> list:
+    """All worker nodes, ordered by id (stable rank order for distributed runs)."""
+    from .models import Node
+
+    res = await session.execute(
+        select(Node).where(Node.role == "worker").order_by(Node.id)
+    )
+    return list(res.scalars())

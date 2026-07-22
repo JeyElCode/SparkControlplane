@@ -19,12 +19,14 @@ The whole bring-up is driven from the UI. The order matters: setup must finish
 before a model can be downloaded, and a model must be present before an instance
 that uses it will start.
 
-1. **Configure both nodes.** In **Nodes**, add the head (`spark-01`) and worker
-   (`spark-02`). For each: LAN IP, QSFP IP, SSH user, password **or** private
-   key, and sudo mode (NOPASSWD or password). Click **Test connection** — it
-   reports hostname, sudo, Docker and GPU detection. Both nodes must exist
-   before setup will run (`run_setup` aborts with *"Configure both the head and
-   worker nodes before running setup."* otherwise).
+1. **Configure the nodes.** In **Nodes**, add the head (`spark-01`) and up to
+   3 workers (`spark-02`…`spark-04`). For each: LAN IP, QSFP IP, QSFP interface
+   (**Detect ports** lists the node's physical ports with link state so you can
+   pick the one with the cable), SSH user, password **or** private key, and sudo
+   mode (NOPASSWD or password). Click **Test connection** — it reports hostname,
+   sudo, Docker and GPU detection. The head and at least one worker must exist
+   before setup will run. With 2 nodes a direct QSFP cable works; with 3-4 nodes
+   put a QSFP switch between them (all nodes in one subnet, default `/24`).
 
 2. **Set the HF token + image.** In **Setup** / **Settings**, set the vLLM
    container image and your HuggingFace token. The token is needed to download

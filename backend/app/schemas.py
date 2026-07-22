@@ -101,6 +101,18 @@ def _v_advanced_args(v: str | None) -> str | None:
 
 
 # --- Nodes ---------------------------------------------------------------
+class InterfaceInfo(BaseModel):
+    """A physical network port on a node, for the QSFP interface picker."""
+
+    name: str
+    operstate: str
+    carrier: bool
+    speed_mbps: int | None = None
+    driver: str | None = None
+    mac: str | None = None
+    qsfp_candidate: bool = False
+
+
 class NodeIn(BaseModel):
     role: Literal["head", "worker"]
     name: str

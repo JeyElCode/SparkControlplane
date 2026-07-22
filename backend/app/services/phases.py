@@ -37,7 +37,7 @@ class PhaseCtx:
     session: AsyncSession
     handle: JobHandle
     head: Node
-    worker: Node
+    workers: list[Node]
     cfg: ClusterConfig
     setting: Setting
 
@@ -46,7 +46,7 @@ class PhaseCtx:
 
     @property
     def nodes(self) -> list[Node]:
-        return [self.head, self.worker]
+        return [self.head, *self.workers]
 
     async def ssh(self, node: Node) -> SSHClient:
         return await ssh_for_node(self.session, node)
@@ -81,11 +81,8 @@ async def _phase_prereqs(ctx: PhaseCtx) -> None:
 
 
 async def _phase_hosts(ctx: PhaseCtx) -> None:
-    entries = [
-        f"{ctx.head.lan_ip} {ctx.head.name}",
-        f"{ctx.worker.lan_ip} {ctx.worker.name}",
-        f"{ctx.head.qsfp_ip} {ctx.head.name}-qsfp",
-        f"{ctx.worker.qsfp_ip} {ctx.worker.name}-qsfp",
+    entries = [f"{n.lan_ip} {n.name}" for n in ctx.nodes] + [
+        f"{n.qsfp_ip} {n.name}-qsfp" for n in ctx.nodes
     ]
     for node in ctx.nodes:
         ssh = await ctx.ssh(node)
@@ -104,6 +101,27 @@ async def _phase_network(ctx: PhaseCtx) -> None:
         ssh = await ctx.ssh(node)
         iface, ip = node.qsfp_iface, node.qsfp_ip
         cidr = f"{ip}/{mask}"
+        # Pre-flight: the chosen back-panel port must exist on this node. A typo
+        # here used to surface only as a cryptic ping failure at the end.
+        check = await ssh.run(f"test -d /sys/class/net/{_q(iface)}")
+        if not check.ok:
+            avail = await ssh.run(
+                "ls /sys/class/net | grep -Ev '^(lo|docker|veth|br-)' | tr '\\n' ' '"
+            )
+            raise RuntimeError(
+                f"[{node.name}] interface '{iface}' does not exist. Available: "
+                f"{avail.stdout.strip() or 'unknown'} — pick the QSFP port on the Nodes page "
+                "(Detect ports shows which one has a cable)."
+            )
+        carrier = await ssh.run(
+            f"ip link set {_q(iface)} up >/dev/null 2>&1; sleep 1; cat /sys/class/net/{_q(iface)}/carrier 2>/dev/null",
+            sudo=True,
+        )
+        if carrier.stdout.strip() != "1":
+            await ctx.log(
+                f"[{node.name}] WARNING: {iface} has no link (no cable, or the peer/switch "
+                "is down). Configuring anyway; the connectivity check below will tell."
+            )
         await ctx.log(f"[{node.name}] configuring {iface} -> {cidr} (no gateway)")
         script = f"""
 set -e
@@ -141,22 +159,25 @@ ip -4 addr show dev "$IFACE" | sed -n 's/^.*inet /  inet /p'
 
 
 async def _verify_qsfp(ctx: PhaseCtx, fail: bool) -> bool:
-    head_ssh = await ctx.ssh(ctx.head)
-    worker_ssh = await ctx.ssh(ctx.worker)
+    """Full-mesh ping over the QSFP fabric: every node must reach every other
+    (with 3+ nodes NCCL/Ray traffic flows worker<->worker too, so a head-only
+    check would miss a bad switch port)."""
     ok = True
-    r1 = await head_ssh.run(f"ping -c 2 -W 2 {ctx.worker.qsfp_ip}")
-    await ctx.log(f"[{ctx.head.name}] ping {ctx.worker.qsfp_ip}: {'OK' if r1.ok else 'FAILED'}")
-    r2 = await worker_ssh.run(f"ping -c 2 -W 2 {ctx.head.qsfp_ip}")
-    await ctx.log(f"[{ctx.worker.name}] ping {ctx.head.qsfp_ip}: {'OK' if r2.ok else 'FAILED'}")
-    ok = r1.ok and r2.ok
+    for src in ctx.nodes:
+        ssh = await ctx.ssh(src)
+        for dst in ctx.nodes:
+            if dst.id == src.id:
+                continue
+            r = await ssh.run(f"ping -c 2 -W 2 {dst.qsfp_ip}")
+            await ctx.log(f"[{src.name}] ping {dst.qsfp_ip} ({dst.name}): {'OK' if r.ok else 'FAILED'}")
+            ok = ok and r.ok
     if not ok and fail:
-        raise RuntimeError("QSFP connectivity check failed in both/one direction.")
+        raise RuntimeError("QSFP connectivity check failed between at least one node pair.")
     return ok
 
 
 async def _phase_ssh(ctx: PhaseCtx) -> None:
     head_ssh = await ctx.ssh(ctx.head)
-    worker_ssh = await ctx.ssh(ctx.worker)
     key = "~/.ssh/id_ed25519_spark"
 
     await ctx.log("[head] ensuring ~/.ssh and inter-node key")
@@ -171,39 +192,44 @@ fi
         log_cb=ctx.handle.ssh_log_cb(),
     )
     pub = (await head_ssh.run(f"cat {key}.pub", check=True)).stdout.strip()
-    await ctx.log("[worker] installing head public key into authorized_keys")
-    await worker_ssh.run(
-        f"""
+
+    for worker in ctx.workers:
+        worker_ssh = await ctx.ssh(worker)
+        await ctx.log(f"[{worker.name}] installing head public key into authorized_keys")
+        await worker_ssh.run(
+            f"""
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 grep -qxF {_q(pub)} ~/.ssh/authorized_keys || echo {_q(pub)} >> ~/.ssh/authorized_keys
 """,
-        check=True,
-    )
+            check=True,
+        )
 
-    cfg_block = (
-        f"Host {ctx.worker.name}\n"
-        f"  HostName {ctx.worker.lan_ip}\n"
-        f"  User {ctx.worker.ssh_user}\n"
-        f"  IdentityFile {key}\n"
-        f"  StrictHostKeyChecking accept-new\n"
-    )
-    await head_ssh.run(
-        f"""
+        cfg_block = (
+            f"Host {worker.name}\n"
+            f"  HostName {worker.lan_ip}\n"
+            f"  User {worker.ssh_user}\n"
+            f"  IdentityFile {key}\n"
+            f"  StrictHostKeyChecking accept-new\n"
+        )
+        await head_ssh.run(
+            f"""
 touch ~/.ssh/config && chmod 600 ~/.ssh/config
-if ! grep -q {_q('Host ' + ctx.worker.name)} ~/.ssh/config; then
+if ! grep -q {_q('Host ' + worker.name)} ~/.ssh/config; then
   printf '%s' {_q(cfg_block)} >> ~/.ssh/config
 fi
 """,
-        check=True,
-    )
-    test = await head_ssh.run(
-        f"ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new {_q(ctx.worker.name)} hostname"
-    )
-    if test.ok:
-        await ctx.log(f"[head] passwordless ssh to {ctx.worker.name} OK ({test.stdout.strip()})")
-    else:
-        raise RuntimeError(f"[head] passwordless ssh to worker failed: {test.stderr or test.stdout}")
+            check=True,
+        )
+        test = await head_ssh.run(
+            f"ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new {_q(worker.name)} hostname"
+        )
+        if test.ok:
+            await ctx.log(f"[head] passwordless ssh to {worker.name} OK ({test.stdout.strip()})")
+        else:
+            raise RuntimeError(
+                f"[head] passwordless ssh to {worker.name} failed: {test.stderr or test.stdout}"
+            )
 
 
 async def _phase_packages(ctx: PhaseCtx) -> None:
@@ -263,15 +289,10 @@ async def _phase_ray(ctx: PhaseCtx) -> None:
     shm = ctx.cfg.shm_size
 
     head_ssh = await ctx.ssh(ctx.head)
-    worker_ssh = await ctx.ssh(ctx.worker)
 
     head_hf = hf_cache_host_path(ctx.head, ctx.cfg)
     head_models = models_host_dir(ctx.head, ctx.cfg)
-    worker_hf = hf_cache_host_path(ctx.worker, ctx.cfg)
-    worker_models = models_host_dir(ctx.worker, ctx.cfg)
-
     await head_ssh.run(f"mkdir -p {_q(head_hf)} {_q(head_models)}", check=True)
-    await worker_ssh.run(f"mkdir -p {_q(worker_hf)} {_q(worker_models)}", check=True)
 
     # Head
     head_script = templates.render_ray_head_script(
@@ -289,37 +310,46 @@ async def _phase_ray(ctx: PhaseCtx) -> None:
         head_ssh, templates.ray_unit_name("head"), head_unit, log_cb=ctx.handle.ssh_log_cb()
     )
 
-    # Worker
-    worker_script = templates.render_ray_worker_script(
-        image=image, hf_home=worker_hf, models_dir=worker_models, head_qsfp=ctx.head.qsfp_ip,
-        worker_qsfp=ctx.worker.qsfp_ip, iface=ctx.worker.qsfp_iface, ray_port=ctx.cfg.ray_port,
-        shm=shm,
-    )
-    await nodeops.install_file(worker_ssh, f"{install_dir}/ray-worker.sh", worker_script, mode="755")
-    worker_unit = templates.render_ray_unit(
-        role="worker", script_path=f"{install_dir}/ray-worker.sh",
-        container=templates.RAY_WORKER_CONTAINER,
-    )
-    await ctx.log("[worker] installing + starting spark-ray-worker.service")
-    await nodeops.install_systemd_unit(
-        worker_ssh, templates.ray_unit_name("worker"), worker_unit, log_cb=ctx.handle.ssh_log_cb()
-    )
+    # Workers (each node runs the same unit/container name locally)
+    for worker in ctx.workers:
+        worker_ssh = await ctx.ssh(worker)
+        worker_hf = hf_cache_host_path(worker, ctx.cfg)
+        worker_models = models_host_dir(worker, ctx.cfg)
+        await worker_ssh.run(f"mkdir -p {_q(worker_hf)} {_q(worker_models)}", check=True)
+        worker_script = templates.render_ray_worker_script(
+            image=image, hf_home=worker_hf, models_dir=worker_models, head_qsfp=ctx.head.qsfp_ip,
+            worker_qsfp=worker.qsfp_ip, iface=worker.qsfp_iface, ray_port=ctx.cfg.ray_port,
+            shm=shm,
+        )
+        await nodeops.install_file(
+            worker_ssh, f"{install_dir}/ray-worker.sh", worker_script, mode="755"
+        )
+        worker_unit = templates.render_ray_unit(
+            role="worker", script_path=f"{install_dir}/ray-worker.sh",
+            container=templates.RAY_WORKER_CONTAINER,
+        )
+        await ctx.log(f"[{worker.name}] installing + starting spark-ray-worker.service")
+        await nodeops.install_systemd_unit(
+            worker_ssh, templates.ray_unit_name("worker"), worker_unit,
+            log_cb=ctx.handle.ssh_log_cb(),
+        )
     await ctx.log(
         "Ray containers are starting (each installs ray[default] first; allow ~1 minute). "
-        "Run the verify phase to confirm both nodes joined."
+        f"Run the verify phase to confirm all {len(ctx.nodes)} nodes joined."
     )
 
 
 async def _phase_verify(ctx: PhaseCtx) -> None:
     import asyncio
 
+    expected = len(ctx.nodes)
     await _verify_qsfp(ctx, fail=False)
     head_ssh = await ctx.ssh(ctx.head)
-    await ctx.log("Waiting for Ray to report 2 nodes…")
+    await ctx.log(f"Waiting for Ray to report {expected} nodes…")
     ok = False
     for attempt in range(20):
         res = await nodeops.docker(head_ssh, f"exec {templates.RAY_HEAD_CONTAINER} ray status")
-        if res.ok and _ray_node_count(res.stdout) >= 2:
+        if res.ok and _ray_node_count(res.stdout) >= expected:
             await ctx.log(res.stdout.strip())
             ok = True
             break
@@ -329,10 +359,10 @@ async def _phase_verify(ctx: PhaseCtx) -> None:
     ctx.setting.setup_complete = ok
     await ctx.session.commit()
     if ok:
-        await ctx.log("Ray cluster healthy: 2 nodes joined. ✅")
+        await ctx.log(f"Ray cluster healthy: {expected} nodes joined. ✅")
     else:
         await ctx.log(
-            "Ray did not report 2 nodes yet. Check the Ray service logs on both nodes "
+            f"Ray did not report {expected} nodes yet. Check the Ray service logs on the nodes "
             "(journalctl -u spark-ray-head / spark-ray-worker) and QSFP connectivity."
         )
 

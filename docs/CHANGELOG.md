@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.6.0
+- **Up to 4 Sparks (1 head + up to 3 workers).** The whole provisioning pipeline
+  now loops over N nodes: `/etc/hosts` gets every node everywhere, the QSFP
+  phase configures each node's own interface/IP and verifies **full-mesh** ping
+  (worker↔worker matters once a switch is involved), inter-node SSH installs
+  the head key on every worker, Ray starts head + N workers and verify waits
+  for all N to join. Model auto-sync fans out head → each worker. `cluster`
+  and `distributed` instances default TP to the node count (2/3/4); memory
+  budgeting charges multi-node instances to every node. The Nodes page allows
+  adding workers up to the cap and auto-names them `spark-0N`.
+  Topology guidance: 2 nodes = direct QSFP cable; 3-4 nodes need a QSFP switch
+  with all nodes in one subnet. New installs default to a `/24` QSFP subnet
+  (existing deployments keep their stored netmask, e.g. `/30`).
+- **Upgrade-in-place.** Startup auto-migration rebuilds the `nodes` table to
+  drop the legacy `UNIQUE(role)` constraint (SQLite can't drop constraints in
+  place) — all rows/ids/FKs preserved, crash-safe (single-transaction swap,
+  leftover recovery). A live 2-node deployment upgrades by bumping the image
+  tag; nothing on the DGX nodes changes and no phase re-run is required.
+- **Any back-panel QSFP port.** New `GET /api/nodes/{id}/interfaces` enumerates
+  the node's physical NICs (link state, speed, driver, MAC, QSFP-candidate
+  flag). The node form gained **Detect ports** — pick the port with the cable
+  from a dropdown instead of typing `enp1s0f1np1` on faith. The network phase
+  pre-flights the chosen interface (clear error listing available ports if
+  it doesn't exist; loud warning when it has no link).
+
 ## v1.5.1
 - **fix(tls): cert rotation now actually reloads nginx.** `POST /instances/{id}/tls/reload`
   ran a bare `nginx -s reload`, but the sidecar master is started with an explicit

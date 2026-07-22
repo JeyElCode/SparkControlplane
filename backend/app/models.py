@@ -25,6 +25,9 @@ class Base(DeclarativeBase):
 ROLE_HEAD = "head"
 ROLE_WORKER = "worker"
 
+# Cluster size cap: 1 head + up to 3 workers.
+MAX_NODES = 4
+
 AUTH_PASSWORD = "password"
 AUTH_KEY = "key"
 
@@ -62,7 +65,9 @@ class Node(Base):
     __tablename__ = "nodes"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    role: Mapped[str] = mapped_column(String(16), unique=True)  # head | worker
+    # head | worker. Exactly one head; up to MAX_NODES-1 workers (enforced at the
+    # API layer — the column is deliberately NOT unique so multiple workers fit).
+    role: Mapped[str] = mapped_column(String(16))
     name: Mapped[str] = mapped_column(String(64))               # hostname, e.g. spark-01
     lan_ip: Mapped[str] = mapped_column(String(64))
     qsfp_ip: Mapped[str] = mapped_column(String(64))
@@ -92,7 +97,7 @@ class ClusterConfig(Base):
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     cluster_name: Mapped[str] = mapped_column(String(64), default="spark-vllm")
     vllm_image: Mapped[str] = mapped_column(String(255))
-    qsfp_netmask: Mapped[int] = mapped_column(Integer, default=30)
+    qsfp_netmask: Mapped[int] = mapped_column(Integer, default=24)
     models_subdir: Mapped[str] = mapped_column(String(128), default="models")
     hf_cache_subdir: Mapped[str] = mapped_column(String(128), default=".cache/huggingface")
     models_container_path: Mapped[str] = mapped_column(String(128), default="/models")

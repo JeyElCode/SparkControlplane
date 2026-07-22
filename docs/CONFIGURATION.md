@@ -49,7 +49,7 @@ In the **Role** column below:
 | `SPARK_CORS_ORIGINS` | `cors_origins` | `["http://localhost:5173"]` | Process | Allowed CORS origins. Accepts a JSON array, a single origin, or a comma-separated list. See [§3](#3-cors-origins-formats). |
 | `SPARK_DEFAULT_VLLM_IMAGE` | `default_vllm_image` | `nvcr.io/nvidia/vllm:26.05-py3` | Seed → `ClusterConfig.vllm_image` | Default vLLM/Ray container image for the cluster. |
 | `SPARK_DEFAULT_CLUSTER_NAME` | `default_cluster_name` | `spark-vllm` | Seed → `ClusterConfig.cluster_name` | Default cluster name. |
-| `SPARK_DEFAULT_QSFP_NETMASK` | `default_qsfp_netmask` | `30` | Seed → `ClusterConfig.qsfp_netmask` | CIDR prefix length for the QSFP point-to-point link (`/30` = the two-host 10.10.10.x subnet). |
+| `SPARK_DEFAULT_QSFP_NETMASK` | `default_qsfp_netmask` | `24` | Seed → `ClusterConfig.qsfp_netmask` | CIDR prefix length for the QSFP fabric (`/24` fits 2-4 nodes; a 2-node direct cable works with any prefix — existing deployments keep their stored value, e.g. `/30`). |
 | `SPARK_DEFAULT_QSFP_IFACE` | `default_qsfp_iface` | `enp1s0f1np1` | Seed → `Node.qsfp_iface` | Default QSFP interface name on each node. |
 | `SPARK_DEFAULT_MODELS_SUBDIR` | `default_models_subdir` | `models` | Seed → `ClusterConfig.models_subdir` | Host-side subdirectory (under the node's data root) where model weights live. |
 | `SPARK_DEFAULT_HF_CACHE_SUBDIR` | `default_hf_cache_subdir` | `.cache/huggingface` | Seed → `ClusterConfig.hf_cache_subdir` | Host-side subdirectory for the Hugging Face cache. |

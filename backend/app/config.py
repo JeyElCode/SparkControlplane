@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     # --- Cluster defaults (seed the singleton ClusterConfig row) ----------
     default_vllm_image: str = Field(default="nvcr.io/nvidia/vllm:26.05-py3")
     default_cluster_name: str = Field(default="spark-vllm")
-    default_qsfp_netmask: int = Field(default=30)
+    # /24 fits a switched QSFP fabric (3-4 nodes) and works fine for the 2-node
+    # direct cable too. Existing deployments keep their stored value (e.g. /30).
+    default_qsfp_netmask: int = Field(default=24)
     default_qsfp_iface: str = Field(default="enp1s0f1np1")
     default_models_subdir: str = Field(default="models")
     default_hf_cache_subdir: str = Field(default=".cache/huggingface")

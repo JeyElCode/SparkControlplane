@@ -38,6 +38,16 @@ export interface NodeInput {
   sudo_password?: string | null;
 }
 
+export interface InterfaceInfo {
+  name: string;
+  operstate: string;
+  carrier: boolean;
+  speed_mbps?: number | null;
+  driver?: string | null;
+  mac?: string | null;
+  qsfp_candidate: boolean;
+}
+
 export interface ConnectionTest {
   ok: boolean;
   message: string;
@@ -433,6 +443,7 @@ export const api = {
     j<Node>(`/api/nodes/${id}`, { method: "PATCH", body: JSON.stringify(n) }),
   deleteNode: (id: number) => j<void>(`/api/nodes/${id}`, { method: "DELETE" }),
   testNode: (id: number) => j<ConnectionTest>(`/api/nodes/${id}/test`, { method: "POST" }),
+  listInterfaces: (id: number) => j<InterfaceInfo[]>(`/api/nodes/${id}/interfaces`),
   hardenNode: (id: number) => j<JobAccepted>(`/api/nodes/${id}/harden`, { method: "POST" }),
 
   // cluster

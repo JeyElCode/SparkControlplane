@@ -1,7 +1,8 @@
 # Spark Control Plane
 
 A self-hosted web portal that automates setting up, operating, and monitoring a
-**2-node NVIDIA DGX Spark vLLM cluster** — turning the manual runbook (hostnames,
+**NVIDIA DGX Spark vLLM cluster (2-4 nodes: 1 head + up to 3 workers)** —
+turning the manual runbook (hostnames,
 QSFP networking, inter-node SSH, Docker, Ray, model download/sync, `vllm serve`,
 teardown) into a few clicks, plus live status, a model manager, and a test
 playground.
@@ -41,10 +42,10 @@ It ships as a single container published to
   - One **Delete** that removes the files from all nodes (via `sudo`, so
     root-owned download files are handled) and the registry entry.
 - **Flexible multi-model serving** — each instance is either:
-  - `cluster` topology: `vllm serve` inside the Ray head container, **TP=2 across
-    both nodes** (for big models), or
+  - `cluster` topology: `vllm serve` inside the Ray head container, **TP across
+    all nodes** (2-4, for big models), or
   - `single` topology: a standalone container **pinned to one node, TP=1** — so
-    you can run two different models at once (one per node).
+    you can run a different model on every node at once.
   - Tool-calling parser (`hermes`, `qwen3_xml`, `llama3_json`, `mistral`,
     `kimi_k2`, …) is auto-mapped from the model name, with a per-instance
     override. Inline `?` help explains every serving knob.
@@ -196,7 +197,8 @@ editable at runtime in **Settings**.
 - Run the portal and the cluster only on a **trusted private network**. vLLM/Ray
   inter-node traffic is unencrypted by design and must stay on the private QSFP
   segment.
-- The QSFP network is a point-to-point link **with no gateway**.
+- The QSFP network has **no gateway**: 2 nodes = a direct cable; 3-4 nodes need
+  a QSFP switch with every node in the same subnet (default `/24`).
 - Portal login is **not** enabled in this build; the secret-encryption layer and
   an auth dependency hook are wired in for a future release. Put it behind a
   reverse proxy with auth if you expose it beyond your LAN.
