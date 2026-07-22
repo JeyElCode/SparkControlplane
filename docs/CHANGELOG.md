@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.7.0 — telemetry engine
+- **Server-side telemetry engine.** The portal now samples every node
+  continuously in the background — one batched SSH command per node per tick
+  (default 3s) covering GPU util/mem/temp/power, GPU processes, CPU %, load,
+  unified memory, per-interface network throughput (QSFP vs LAN tagged
+  separately), models-dir disk usage, uptime, and container state. Expensive
+  checks (Ray status, QSFP ping, per-instance systemd + /health) run on their
+  own slower cadence (default 12s). `GET /api/status` and the status WebSocket
+  are now served **entirely from cache** — a dashboard request/connection no
+  longer opens SSH sessions, so many concurrent viewers cost the nodes nothing.
+- **History for sparklines.** ~15 min in-memory ring per node, exposed at
+  `GET /api/status/history?minutes=N` (CPU, memory, GPU, QSFP/LAN B/s, disk).
+- Rates are derived from counter deltas; a node going offline drops its rate
+  baseline so recovery doesn't produce a bogus spike. Tunables:
+  `SPARK_TELEMETRY_FAST_SECONDS`, `SPARK_TELEMETRY_SLOW_SECONDS`,
+  `SPARK_TELEMETRY_HISTORY_MINUTES`.
+
 ## v1.6.0
 - **Up to 4 Sparks (1 head + up to 3 workers).** The whole provisioning pipeline
   now loops over N nodes: `/etc/hosts` gets every node everywhere, the QSFP

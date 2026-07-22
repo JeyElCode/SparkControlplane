@@ -63,6 +63,9 @@ async def _startup_discover() -> None:
 async def lifespan(app: FastAPI):
     await init_db()
     log.info("Spark Control Plane %s started", __version__)
+    from .services.telemetry import engine as telemetry_engine
+
+    telemetry_engine.start()
     task = asyncio.create_task(_startup_discover())
     # The mounted MCP sub-app's own lifespan is not run by Starlette's Mount, so
     # drive its streamable-HTTP session manager from here for its whole lifetime.
@@ -73,6 +76,7 @@ async def lifespan(app: FastAPI):
     else:
         yield
     task.cancel()
+    await telemetry_engine.stop()
     await pool.close_all()
 
 

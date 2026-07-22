@@ -38,6 +38,25 @@ export interface NodeInput {
   sudo_password?: string | null;
 }
 
+export interface HistoryPoint {
+  ts: number;
+  cpu_pct?: number | null;
+  mem_used_mib?: number | null;
+  gpu_util_pct?: number | null;
+  gpu_mem_used_mib?: number | null;
+  qsfp_rx_bps?: number | null;
+  qsfp_tx_bps?: number | null;
+  lan_rx_bps?: number | null;
+  lan_tx_bps?: number | null;
+  disk_used_bytes?: number | null;
+}
+
+export interface NodeHistory {
+  node_id: number;
+  name: string;
+  points: HistoryPoint[];
+}
+
 export interface InterfaceInfo {
   name: string;
   operstate: string;
@@ -352,6 +371,34 @@ export interface NodeStatus {
   mem_budget_used_gib?: number | null;
   mem_budget_total_gib?: number | null;
   detail?: string | null;
+  cpu_pct?: number | null;
+  cpu_count?: number | null;
+  loadavg_1m?: number | null;
+  uptime_seconds?: number | null;
+  net?: NetRate[];
+  disk?: DiskUsage | null;
+  gpu_procs?: GpuProc[];
+  sampled_at?: number | null;
+}
+
+export interface NetRate {
+  iface: string;
+  kind: "qsfp" | "lan" | "other";
+  rx_bps?: number | null;
+  tx_bps?: number | null;
+}
+
+export interface DiskUsage {
+  path: string;
+  total_bytes?: number | null;
+  used_bytes?: number | null;
+  free_bytes?: number | null;
+}
+
+export interface GpuProc {
+  pid: number;
+  name: string;
+  mem_mib?: number | null;
 }
 
 export interface RayStatus {
@@ -496,6 +543,7 @@ export const api = {
 
   // status
   getStatus: () => j<StatusSnapshot>("/api/status"),
+  getStatusHistory: (minutes = 15) => j<NodeHistory[]>(`/api/status/history?minutes=${minutes}`),
 
   // jobs
   listJobs: (limit = 50) => j<Job[]>(`/api/jobs?limit=${limit}`),
