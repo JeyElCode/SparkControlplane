@@ -98,8 +98,12 @@ async def test_old_db_migrates_and_accepts_multiple_workers(app_db):
     # UNIQUE(role) is gone; a second worker inserts cleanly.
     rows = con.execute("SELECT id, role, name FROM nodes ORDER BY id").fetchall()
     assert rows == [(1, "head", "spark-01"), (2, "worker", "spark-02")]
+    # explicit columns: the rebuilt table also gains newer columns (mac_address)
     con.execute(
-        f"INSERT INTO nodes VALUES ({NODE_ROW.format(id=3, role='worker', name='spark-03', o=162)})"
+        "INSERT INTO nodes (id, role, name, lan_ip, qsfp_ip, qsfp_iface, ssh_user, ssh_port, "
+        "auth_method, sudo_mode, hardened, created_at, updated_at) VALUES "
+        "(3, 'worker', 'spark-03', '192.168.1.162', '10.10.10.3', 'enp1s0f1np1', 'user', 22, "
+        "'password', 'nopasswd', 0, '2026-01-01', '2026-01-01')"
     )
     # FKs survived the rebuild (same node ids).
     assert con.execute("SELECT COUNT(*) FROM model_node_states").fetchone()[0] == 2

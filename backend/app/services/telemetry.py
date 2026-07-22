@@ -644,6 +644,11 @@ class TelemetryEngine:
         return metrics
 
     # --- read side -------------------------------------------------------
+    def node_reachable(self, node_id: int) -> bool | None:
+        """Last sampled reachability, or None if never sampled."""
+        s = self._samples.get(node_id)
+        return None if s is None else s.reachable
+
     def node_status(self, node) -> NodeStatus:
         """Build the API NodeStatus for a node from the cached sample."""
         s = self._samples.get(node.id)

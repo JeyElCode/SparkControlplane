@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import cluster, evals, instances, jobs, models, nodes, playground, status
+from .routers import cluster, evals, instances, jobs, models, nodes, playground, power, status
 from .ssh import pool
 
 logging.basicConfig(
@@ -90,7 +90,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power):
     app.include_router(r.router)
 
 

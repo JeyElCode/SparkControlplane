@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.10.0 — power controls
+- **Graceful shutdown / reboot per node** (`systemctl poweroff`/`reboot` over
+  SSH sudo) as logged jobs. The UI confirm dialog lists the RUNNING instances
+  the action would take down (`GET /api/power/nodes/{id}/affected`); a dropped
+  SSH connection mid-command is treated as success.
+- **Wake-on-LAN with peer relay.** The magic packet is sent **via a reachable
+  peer Spark over SSH** (dependency-free python3 one-liner) — essential when
+  the control plane runs in a pod outside the nodes' broadcast domain — with
+  direct UDP broadcast (+ unicast) as fallback. Reachable peers are tried
+  first using the telemetry cache.
+- **MAC auto-capture.** `Node.mac_address` (new auto-migrated column) is
+  captured from the default-route interface on every **Test connection** and
+  before each shutdown, and can be set manually. Wake is disabled until known.
+- **Batch operations**: `POST /api/power/batch/{shutdown|wake}` — shutdown
+  does workers first then the head; wake targets every node with a stored MAC.
+  Nodes page gains per-node Reboot / Shut down / Wake buttons and fleet-wide
+  "Wake all" / "Shut down all".
+
 ## v1.9.0 — live vLLM serving metrics
 - **Per-instance Prometheus scraping.** The telemetry engine now scrapes every
   RUNNING instance's `/metrics` on the fast cadence and derives: **generation
