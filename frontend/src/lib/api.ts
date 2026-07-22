@@ -409,6 +409,35 @@ export interface RayStatus {
   detail?: string | null;
 }
 
+export interface InstanceMetrics {
+  ts: number;
+  running?: number | null;
+  waiting?: number | null;
+  kv_cache_pct?: number | null;
+  prompt_tps?: number | null;
+  gen_tps?: number | null;
+  req_per_s?: number | null;
+  ttft_ms?: number | null;
+  e2e_ms?: number | null;
+  total_generation_tokens?: number | null;
+}
+
+export interface InstanceHistoryPoint {
+  ts: number;
+  gen_tps?: number | null;
+  prompt_tps?: number | null;
+  running?: number | null;
+  waiting?: number | null;
+  kv_cache_pct?: number | null;
+  ttft_ms?: number | null;
+}
+
+export interface InstanceHistory {
+  instance_id: number;
+  name: string;
+  points: InstanceHistoryPoint[];
+}
+
 export interface InstanceRuntimeStatus {
   instance_id: number;
   name: string;
@@ -418,6 +447,7 @@ export interface InstanceRuntimeStatus {
   served_model?: string | null;
   endpoint?: string | null;
   detail?: string | null;
+  metrics?: InstanceMetrics | null;
 }
 
 export interface StatusSnapshot {
@@ -544,6 +574,7 @@ export const api = {
   // status
   getStatus: () => j<StatusSnapshot>("/api/status"),
   getStatusHistory: (minutes = 15) => j<NodeHistory[]>(`/api/status/history?minutes=${minutes}`),
+  getInstanceHistory: (minutes = 15) => j<InstanceHistory[]>(`/api/status/instance-history?minutes=${minutes}`),
 
   // jobs
   listJobs: (limit = 50) => j<Job[]>(`/api/jobs?limit=${limit}`),

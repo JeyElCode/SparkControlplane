@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.9.0 — live vLLM serving metrics
+- **Per-instance Prometheus scraping.** The telemetry engine now scrapes every
+  RUNNING instance's `/metrics` on the fast cadence and derives: **generation
+  and prompt tokens/s** (counter deltas), **running/waiting request counts**,
+  **KV-cache utilization %**, **requests/s**, and **mean TTFT / end-to-end
+  latency** over the last window (histogram sum/count deltas; the last
+  measurement is carried through idle windows). Supports both metric
+  generations (`gpu_cache_usage_perc` and V1's `kv_cache_usage_perc`); an
+  instance restart (counter reset) yields no bogus rates.
+- **Dashboard instance table** gains live **Tokens/s (with sparkline),
+  Run/Wait queue, KV cache %, and TTFT** columns. New
+  `GET /api/status/instance-history?minutes=N` serves the per-instance rings;
+  `InstanceRuntimeStatus` gained a `metrics` object on `/api/status`.
+- **Fix: TLS and distributed instances now get health/metrics probes.** Health
+  checks used plain `http://host:port` even when TLS mode binds vLLM to
+  loopback (always "down"), and distributed instances (no pinned node) were
+  never probed and showed no endpoint. Probes now route through the nginx
+  sidecar (`https://host:tls_port`, no cert verification against the raw IP)
+  and treat the head as the API node for cluster **and** distributed
+  topologies.
+
 ## v1.8.0 — Dashboard v2
 - **Live-streaming dashboard.** The Dashboard now rides the status WebSocket
   (with automatic reconnect and a transparent polling fallback — a "live" /

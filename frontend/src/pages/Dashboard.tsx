@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { api, GpuStatus, HistoryPoint, NodeHistory, NodeStatus } from "../lib/api";
+import { api, GpuStatus, HistoryPoint, InstanceHistory, InstanceRuntimeStatus, NodeHistory, NodeStatus } from "../lib/api";
 import { usePoll, useStatusStream } from "../lib/hooks";
 import { boolKind, fmtBytes, fmtGib, fmtRate, fmtUptime, statusKind } from "../lib/format";
 import { Badge, EmptyState, Meter, Spinner } from "../components/ui";
@@ -202,6 +202,33 @@ function NodeCard({ n, hist }: { n: NodeStatus; hist?: HistoryPoint[] }) {
   );
 }
 
+function InstanceRow({ i, hist }: { i: InstanceRuntimeStatus; hist?: InstanceHistory }) {
+  const m = i.metrics;
+  const tpsPoints: [number, number][] = (hist?.points ?? [])
+    .filter((p) => p.gen_tps != null)
+    .map((p) => [p.ts, p.gen_tps as number]);
+  return (
+    <tr>
+      <td><strong>{i.name}</strong></td>
+      <td><Badge kind={statusKind(i.status)}>{i.status}</Badge></td>
+      <td><Badge kind={boolKind(i.health_ok)}>{i.health_ok == null ? "—" : i.health_ok ? "healthy" : "down"}</Badge></td>
+      <td className="mono">
+        {m?.gen_tps != null ? `${m.gen_tps.toFixed(0)} tok/s` : "—"}
+        {tpsPoints.length > 1 && (
+          <div style={{ width: 110 }}>
+            <Sparkline series={[{ color: CLR.gpu, points: tpsPoints }]} height={20} />
+          </div>
+        )}
+      </td>
+      <td className="mono">{m ? `${m.running ?? "—"} / ${m.waiting ?? "—"}` : "—"}</td>
+      <td className="mono">{m?.kv_cache_pct != null ? `${m.kv_cache_pct.toFixed(0)}%` : "—"}</td>
+      <td className="mono">{m?.ttft_ms != null ? `${m.ttft_ms.toFixed(0)} ms` : "—"}</td>
+      <td className="mono faint">{i.served_model ?? "—"}</td>
+      <td className="mono faint">{i.endpoint ?? "—"}</td>
+    </tr>
+  );
+}
+
 function Tile({ label, value, kind }: { label: string; value: string; kind?: any }) {
   return (
     <div className="card stat">
@@ -215,6 +242,9 @@ export default function Dashboard() {
   const { data, error, connected } = useStatusStream(3);
   const history = usePoll(() => api.getStatusHistory(15), 10000);
   const histByNode = new Map<number, NodeHistory>((history.data ?? []).map((h) => [h.node_id, h]));
+  const anyRunning = (data?.instances ?? []).some((i) => i.status === "running");
+  const instHistory = usePoll(() => (anyRunning ? api.getInstanceHistory(15) : Promise.resolve([])), 10000);
+  const histByInstance = new Map<number, InstanceHistory>((instHistory.data ?? []).map((h) => [h.instance_id, h]));
 
   return (
     <div>
@@ -266,18 +296,18 @@ export default function Dashboard() {
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Name</th><th>Status</th><th>Health</th><th>Service</th><th>Served model</th><th>Endpoint</th></tr>
+                    <tr>
+                      <th>Name</th><th>Status</th><th>Health</th>
+                      <th title="Live decode throughput (from vLLM /metrics)">Tokens/s</th>
+                      <th title="Requests decoding / queued">Run / Wait</th>
+                      <th title="KV-cache utilization">KV cache</th>
+                      <th title="Mean time-to-first-token over the last window">TTFT</th>
+                      <th>Served model</th><th>Endpoint</th>
+                    </tr>
                   </thead>
                   <tbody>
                     {data.instances.map((i) => (
-                      <tr key={i.instance_id}>
-                        <td><strong>{i.name}</strong></td>
-                        <td><Badge kind={statusKind(i.status)}>{i.status}</Badge></td>
-                        <td><Badge kind={boolKind(i.health_ok)}>{i.health_ok == null ? "—" : i.health_ok ? "healthy" : "down"}</Badge></td>
-                        <td><Badge kind={boolKind(i.systemd_active)}>{i.systemd_active == null ? "—" : i.systemd_active ? "active" : "inactive"}</Badge></td>
-                        <td className="mono faint">{i.served_model ?? "—"}</td>
-                        <td className="mono faint">{i.endpoint ?? "—"}</td>
-                      </tr>
+                      <InstanceRow key={i.instance_id} i={i} hist={histByInstance.get(i.instance_id)} />
                     ))}
                   </tbody>
                 </table>
