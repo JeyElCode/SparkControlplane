@@ -1,6 +1,17 @@
 # Changelog
 
-## v1.13.1 — Ray health is contextual
+## v1.13.1 — live-cluster fixes (Ray context, Playground/Evals reachability)
+- **fix(playground+evals): distributed and TLS instances are now reachable.**
+  The Playground (and the eval engine's endpoint resolution) still used the
+  pre-v1.9.0 host logic: `cluster` → head, otherwise the pinned node — so a
+  `distributed` instance (no pinned node) failed with *"Instance has no
+  reachable host"*, and a TLS instance would have been dialed on plain
+  `http://ip:port` where vLLM binds loopback. Both now use the shared
+  `instance_base_url` resolution (single → pinned node; cluster/distributed →
+  head; TLS → `https://ip:tls_port` via the nginx sidecar, no cert
+  verification against the raw IP), and the LLM client/judge calls carry the
+  verify flag. Reported from the live cluster running a distributed TLS
+  instance.
 - **fix(dashboard): a stopped Ray cluster is no longer painted as a fault when
   nothing needs Ray.** With only `single`/`distributed` (Ray-less) instances,
   the Ray tile showed "offline" and both node cards flagged a red "ray
