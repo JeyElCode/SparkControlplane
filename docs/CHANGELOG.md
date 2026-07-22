@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.13.0 — live log viewer
+- **On-demand `journalctl -f` from the UI.** New **Logs** buttons on every
+  instance card and node card open a streaming viewer with a unit picker
+  covering everything the portal manages: Ray head/worker units, each vLLM
+  instance (including distributed workers on their nodes), and TLS proxies.
+  `GET /api/logs/units` lists tailable units; `WS /api/logs/ws?node_id&unit`
+  tails the journal on the owning node over SSH and relays lines until the
+  client disconnects (unit names restricted to the `spark-` namespace, remote
+  `timeout` guard, slow-client backpressure drops oldest lines instead of
+  stalling the tail).
+
 ## v1.12.0 — Prometheus exporter + cluster image updates
 - **`GET /metrics` (Prometheus exposition).** The portal exports its telemetry
   caches for an external Prometheus/Grafana: per-node `spark_node_*` gauges

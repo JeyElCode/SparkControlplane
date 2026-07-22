@@ -203,6 +203,15 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Logs
+
+`app/routers/logs.py` — prefix `/api/logs`. Live journal tailing.
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `/units` | Every tailable `spark-*` unit (Ray head/worker, vLLM instances incl. distributed workers, TLS proxies) mapped to its node. | `LogUnit[]` |
+| WS | `/ws?node_id=N&unit=U` | Stream `journalctl -u U -n 200 -f` from node N until the client disconnects. Unit names must match `spark-*`. | text lines |
+
 ## Prometheus
 
 `GET /metrics` (no `/api` prefix — standard scrape path) renders the telemetry

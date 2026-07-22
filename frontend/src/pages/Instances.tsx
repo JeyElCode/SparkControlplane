@@ -5,6 +5,7 @@ import { usePoll } from "../lib/hooks";
 import { statusKind } from "../lib/format";
 import { Badge, EmptyState, Field, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
+import { LiveLogPanel } from "../components/LiveLogPanel";
 import { useToast } from "../components/Toast";
 
 const DEFAULTS: InstanceInput = {
@@ -693,6 +694,7 @@ export default function Instances() {
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Instance | null>(null);
+  const [logsFor, setLogsFor] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
 
   const act = async (p: Promise<{ job_id: number }>, label: string) => {
@@ -762,6 +764,7 @@ export default function Instances() {
                     <button className="btn btn-sm" onClick={() => setEditing(i)} title="Edit serve settings (applies on next start)">Edit</button>
                   )}
                   <button className="btn btn-sm" onClick={() => copyClient(i)}>Copy client cfg</button>
+                  <button className="btn btn-sm" onClick={() => setLogsFor(i.name)} title="Live journalctl tail">Logs</button>
                   <button className="btn btn-sm btn-danger" onClick={() => del(i)}>Delete</button>
                 </div>
               </div>
@@ -772,6 +775,11 @@ export default function Instances() {
 
       {creating && <CreateForm onClose={() => setCreating(false)} onCreated={() => instances.reload()} />}
       {editing && <EditForm inst={editing} onClose={() => setEditing(null)} onSaved={() => instances.reload()} />}
+      {logsFor && (
+        <Modal title="Live logs" wide onClose={() => setLogsFor(null)}>
+          <LiveLogPanel filter={logsFor} />
+        </Modal>
+      )}
       {job && (
         <Modal title={job.label} wide onClose={() => { setJob(null); instances.reload(); }}>
           <JobLogPanel jobId={job.id} title={job.label} onDone={() => instances.reload()} />
