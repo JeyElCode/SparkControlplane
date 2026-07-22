@@ -789,6 +789,9 @@ class StatusSnapshot(BaseModel):
     setup_complete: bool
     qsfp_ok: bool | None = None
     ray: RayStatus
+    # Ray is only *required* when a cluster-topology instance exists; with only
+    # single/distributed instances a stopped Ray cluster is normal, not a fault.
+    ray_required: bool = False
     nodes: list[NodeStatus]
     instances: list[InstanceRuntimeStatus]
     overcommit_warnings: list[str] = Field(default_factory=list)

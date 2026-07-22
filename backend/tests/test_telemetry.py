@@ -119,8 +119,32 @@ def test_status_and_history_endpoints_serve_from_cache(client):
     assert r.status_code == 200
     body = r.json()
     assert body["nodes"] == [] and body["instances"] == []
+    assert body["ray_required"] is False
     h = client.get("/api/status/history?minutes=5")
     assert h.status_code == 200 and h.json() == []
+
+
+def test_ray_required_only_for_cluster_topology(client):
+    """Ray health is contextual: only a cluster-topology instance makes a
+    stopped Ray cluster a fault."""
+    import asyncio
+
+    import app.db as db
+    from app.models import Instance, ModelRegistry
+
+    async def seed(topology: str, name: str) -> None:
+        async with db.SessionLocal() as s:
+            model = ModelRegistry(repo_id=f"org/{name}", name=name, status="present")
+            s.add(model)
+            await s.flush()
+            s.add(Instance(name=name, model_id=model.id, topology=topology))
+            await s.commit()
+
+    asyncio.run(seed("distributed", "m-dist"))
+    assert client.get("/api/status").json()["ray_required"] is False  # Ray-less topology
+
+    asyncio.run(seed("cluster", "m-clu"))
+    assert client.get("/api/status").json()["ray_required"] is True
 
 
 class _FakeSSH:

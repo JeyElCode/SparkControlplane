@@ -698,10 +698,13 @@ class TelemetryEngine:
         inst_statuses = [s.model_copy() for s in self._slow.instances]
         for s in inst_statuses:
             s.metrics = self._inst_metrics.get(s.instance_id)
+        from ..models import TOPO_CLUSTER
+
         return StatusSnapshot(
             setup_complete=setting.setup_complete,
             qsfp_ok=self._slow.qsfp_ok,
             ray=self._slow.ray,
+            ray_required=any(i.topology == TOPO_CLUSTER for i in instances),
             nodes=node_statuses,
             instances=inst_statuses,
             overcommit_warnings=warnings,

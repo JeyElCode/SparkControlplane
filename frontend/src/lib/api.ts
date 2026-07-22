@@ -469,6 +469,7 @@ export interface StatusSnapshot {
   setup_complete: boolean;
   qsfp_ok?: boolean | null;
   ray: RayStatus;
+  ray_required?: boolean;
   nodes: NodeStatus[];
   instances: InstanceRuntimeStatus[];
   overcommit_warnings: string[];

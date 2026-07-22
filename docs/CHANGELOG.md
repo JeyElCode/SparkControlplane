@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.13.1 — Ray health is contextual
+- **fix(dashboard): a stopped Ray cluster is no longer painted as a fault when
+  nothing needs Ray.** With only `single`/`distributed` (Ray-less) instances,
+  the Ray tile showed "offline" and both node cards flagged a red "ray
+  container" badge — alarming, but perfectly normal for that topology. The
+  snapshot now carries `ray_required` (true only when a **cluster**-topology
+  instance exists): when Ray isn't required and isn't running, the tile reads
+  "not in use" and the badge turns gray "ray idle"; when it IS required and
+  down, both go properly **red** (previously the tile was a soft gray even
+  then). Reported from the live cluster running a distributed instance.
+
 ## v1.13.0 — live log viewer
 - **On-demand `journalctl -f` from the UI.** New **Logs** buttons on every
   instance card and node card open a streaming viewer with a unit picker
