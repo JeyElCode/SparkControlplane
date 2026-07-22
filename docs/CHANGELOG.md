@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.11.0 — themes
+- **Three themes: Dark (default), Light, OLED (true black).** Switcher in the
+  topbar, persisted to localStorage and applied by a pre-paint inline script
+  (no flash of the wrong theme on load). Implemented purely as CSS-variable
+  overrides (`:root[data-theme=…]`) — status colors are re-tuned per theme for
+  contrast (e.g. darker green/amber/red on light backgrounds), and the two
+  previously hardcoded button colors moved into variables
+  (`--accent-bright`/`--accent-contrast`).
+
 ## v1.10.0 — power controls
 - **Graceful shutdown / reboot per node** (`systemctl poweroff`/`reboot` over
   SSH sudo) as logged jobs. The UI confirm dialog lists the RUNNING instances
