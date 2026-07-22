@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal, get_session
-from ..schemas import NodeHistory, StatusSnapshot
+from ..schemas import InstanceHistory, NodeHistory, StatusSnapshot
 from ..services.telemetry import engine
 
 router = APIRouter(prefix="/api/status", tags=["status"])
@@ -22,6 +22,12 @@ async def get_status(session: AsyncSession = Depends(get_session)):
 async def get_history(minutes: int = Query(default=15, ge=1, le=120)):
     """Per-node sparkline history (CPU, memory, GPU, QSFP/LAN throughput, disk)."""
     return engine.history(minutes=minutes)
+
+
+@router.get("/instance-history", response_model=list[InstanceHistory])
+async def get_instance_history(minutes: int = Query(default=15, ge=1, le=120)):
+    """Per-instance vLLM serving history (tokens/s, queue depth, KV cache, TTFT)."""
+    return engine.instance_history(minutes=minutes)
 
 
 @router.websocket("/ws")

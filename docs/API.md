@@ -209,6 +209,7 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 |---|---|---|---|
 | GET | `` | Current cluster status snapshot (served from the telemetry engine's cache — no SSH on the request path). | `StatusSnapshot` |
 | GET | `/history?minutes=N` | Per-node sparkline history (CPU %, memory, GPU util/mem, QSFP/LAN B/s, disk), up to the ring length (default 15 min). | `NodeHistory[]` |
+| GET | `/instance-history?minutes=N` | Per-instance vLLM serving history (tokens/s, queue depth, KV-cache %, TTFT), scraped from each running instance's Prometheus `/metrics`. | `InstanceHistory[]` |
 | WS | `/ws?interval=N` | Push a `StatusSnapshot` (as JSON text) every `N` seconds, from cache. | stream of `StatusSnapshot` |
 
 The WebSocket reads `interval` from the query string (default `3`, clamped to

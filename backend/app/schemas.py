@@ -149,6 +149,38 @@ class NodeHistory(BaseModel):
     points: list[HistoryPoint] = []
 
 
+class InstanceMetrics(BaseModel):
+    """Live vLLM serving metrics scraped from the instance's Prometheus
+    ``/metrics`` endpoint. Rates derive from counter deltas between scrapes."""
+
+    ts: float
+    running: int | None = None          # requests currently decoding
+    waiting: int | None = None          # requests queued
+    kv_cache_pct: float | None = None   # 0-100
+    prompt_tps: float | None = None     # prompt tokens/s (prefill)
+    gen_tps: float | None = None        # generation tokens/s (decode)
+    req_per_s: float | None = None
+    ttft_ms: float | None = None        # mean TTFT over the last window
+    e2e_ms: float | None = None         # mean end-to-end latency, last window
+    total_generation_tokens: float | None = None
+
+
+class InstanceHistoryPoint(BaseModel):
+    ts: float
+    gen_tps: float | None = None
+    prompt_tps: float | None = None
+    running: int | None = None
+    waiting: int | None = None
+    kv_cache_pct: float | None = None
+    ttft_ms: float | None = None
+
+
+class InstanceHistory(BaseModel):
+    instance_id: int
+    name: str
+    points: list[InstanceHistoryPoint] = []
+
+
 # --- Nodes ---------------------------------------------------------------
 class InterfaceInfo(BaseModel):
     """A physical network port on a node, for the QSFP interface picker."""
@@ -718,6 +750,7 @@ class InstanceRuntimeStatus(BaseModel):
     served_model: str | None = None
     endpoint: str | None = None
     detail: str | None = None
+    metrics: InstanceMetrics | None = None
 
 
 class StatusSnapshot(BaseModel):

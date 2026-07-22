@@ -185,16 +185,41 @@ async def _ray_status(session: AsyncSession, head: Node | None) -> RayStatus:
         return RayStatus(reachable=False, detail=str(exc))
 
 
+def instance_api_node(inst: Instance, head: Node | None) -> Node | None:
+    """The node that serves the instance's OpenAI API: the pinned node for
+    ``single`` topology, the head for ``cluster`` and ``distributed``."""
+    return inst.node if inst.topology == "single" else head
+
+
+def instance_base_url(inst: Instance, head: Node | None) -> tuple[str, bool] | None:
+    """(base_url, verify) for reaching the instance's HTTP surface.
+
+    TLS instances bind vLLM to loopback, so all probes must go through the
+    nginx sidecar on ``tls_port`` (verify=False: the cert is for the public
+    name, not the node IP)."""
+    node = instance_api_node(inst, head)
+    if node is None:
+        return None
+    if inst.tls_enabled:
+        return (f"https://{node.lan_ip}:{inst.tls_port}", False)
+    return (f"http://{node.lan_ip}:{inst.port}", True)
+
+
+def instance_auth_headers(inst: Instance) -> dict[str, str]:
+    api_key = decrypt(inst.api_key_enc)
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 async def _instance_status(
     session: AsyncSession, inst: Instance, head: Node | None
 ) -> InstanceRuntimeStatus:
-    node = inst.node if inst.topology != TOPO_CLUSTER else head
-    host = node.lan_ip if node else None
+    node = instance_api_node(inst, head)
+    base = instance_base_url(inst, head)
     out = InstanceRuntimeStatus(
         instance_id=inst.id,
         name=inst.name,
         status=inst.status,
-        endpoint=f"http://{host}:{inst.port}/v1" if host else None,
+        endpoint=f"{base[0]}/v1" if base else None,
     )
     # systemd active state
     if node and inst.systemd_unit:
@@ -203,18 +228,16 @@ async def _instance_status(
             out.systemd_active = await nodeops.unit_active(ssh, inst.systemd_unit)
         except Exception:  # noqa: BLE001
             out.systemd_active = None
-    # HTTP health
-    if host:
-        headers = {}
-        api_key = decrypt(inst.api_key_enc)
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+    # HTTP health (through the TLS proxy when enabled — vLLM is loopback-only then)
+    if base:
+        url, verify = base
+        headers = instance_auth_headers(inst)
         try:
-            async with httpx.AsyncClient(timeout=4) as client:
-                h = await client.get(f"http://{host}:{inst.port}/health", headers=headers)
+            async with httpx.AsyncClient(timeout=4, verify=verify) as client:
+                h = await client.get(f"{url}/health", headers=headers)
                 out.health_ok = h.status_code == 200
                 if out.health_ok:
-                    m = await client.get(f"http://{host}:{inst.port}/v1/models", headers=headers)
+                    m = await client.get(f"{url}/v1/models", headers=headers)
                     if m.status_code == 200:
                         data = m.json().get("data", [])
                         if data:
