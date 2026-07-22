@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.12.0 — Prometheus exporter + cluster image updates
+- **`GET /metrics` (Prometheus exposition).** The portal exports its telemetry
+  caches for an external Prometheus/Grafana: per-node `spark_node_*` gauges
+  (up, cpu, load, memory bytes, uptime), `spark_gpu_*` (util/temp/power/memory
+  per GPU), `spark_net_*` per interface (qsfp/lan tagged),
+  `spark_models_disk_*`, `spark_qsfp_ok`, `spark_ray_nodes_alive`, and
+  per-instance `spark_vllm_*` — token totals re-exported as **counters** so
+  Prometheus computes its own rates, plus derived gauges (tok/s, queue, KV %,
+  TTFT) and `spark_instance_healthy`. Dependency-free; scraping costs the
+  nodes nothing (cache read).
+- **Cluster image update workflow.** *Check updates* on the Settings page lists
+  the registry's tags newest-first (Docker Registry v2 with anonymous bearer
+  auth — works for nvcr.io, Docker Hub, ghcr.io). *Update cluster* runs a job:
+  `docker pull` on every node → persist the new `vllm_image` → optionally
+  re-render + restart the Ray units (waits for all nodes to rejoin) →
+  rolling-restart RUNNING instances (instances pinned to their own
+  `vllm_image` are skipped). New endpoints: `GET /api/cluster/image-tags`,
+  `POST /api/cluster/image-update`.
+
 ## v1.11.0 — themes
 - **Three themes: Dark (default), Light, OLED (true black).** Switcher in the
   topbar, persisted to localStorage and applied by a pre-paint inline script

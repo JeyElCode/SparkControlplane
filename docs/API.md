@@ -105,6 +105,8 @@ settings, and the setup/teardown pipeline.
 | GET | `/phases` | Ordered list of setup phases. | — | `[{ "phase", "title" }]` |
 | POST | `/setup` | Run the setup pipeline (all phases, or a subset). | `SetupRequest` | `JobAccepted` |
 | POST | `/teardown` | Tear down the cluster (selectable scope). | `TeardownRequest` | `JobAccepted` |
+| GET | `/image-tags?image=` | Registry tags for the cluster image (or `image`), newest first (anonymous Docker Registry v2; nvcr.io / Docker Hub / ghcr.io). | — | `{image, repository, current_tag, tags[]}` |
+| POST | `/image-update` | Pull a new image on every node, persist it, optionally restart Ray + rolling-restart running instances. | `ImageUpdateIn` | `JobAccepted` |
 
 **`ClusterConfigIn`** (all optional) — `cluster_name`, `vllm_image`,
 `qsfp_netmask`, `models_subdir`, `hf_cache_subdir`, `shm_size`.
@@ -200,6 +202,14 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 `systemd_unit`, `status`, `last_error`.
 
 ---
+
+## Prometheus
+
+`GET /metrics` (no `/api` prefix — standard scrape path) renders the telemetry
+caches in Prometheus exposition format: `spark_node_*`, `spark_gpu_*`,
+`spark_net_*`, `spark_models_disk_*`, `spark_qsfp_ok`, `spark_ray_nodes_alive`,
+and per-instance `spark_vllm_*` (token totals as counters, throughput/queue/KV/
+latency as gauges). Serving a scrape reads only in-memory caches.
 
 ## Power
 
