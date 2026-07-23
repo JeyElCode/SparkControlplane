@@ -144,6 +144,9 @@ class Settings(BaseSettings):
     telemetry_fast_seconds: float = Field(default=3.0)
     telemetry_slow_seconds: float = Field(default=12.0)
     telemetry_history_minutes: int = Field(default=15)
+    # Usage history: periodic rollup of vLLM token/request counters to SQLite.
+    usage_rollup_seconds: float = Field(default=300.0)
+    usage_retention_days: int = Field(default=90)
     ssh_connect_timeout: int = Field(default=15)
     # Where helper scripts + systemd units are installed on the nodes.
     node_install_dir: str = Field(default="/opt/spark-controlplane")

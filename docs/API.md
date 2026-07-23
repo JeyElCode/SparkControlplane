@@ -203,6 +203,16 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Usage
+
+`app/routers/usage.py` — prefix `/api/usage`. Persistent serving history
+(5-minute rollups of the vLLM counters into `usage_samples`; retention
+`SPARK_USAGE_RETENTION_DAYS`).
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `?days=N&bucket=day\|hour` | Per-model usage: totals + bucketed points (gen/prompt tokens, requests, request-weighted mean TTFT), most-used first. | `ModelUsage[]` |
+
 ## Auth
 
 `app/routers/auth.py` — prefix `/api/auth`. Only active when

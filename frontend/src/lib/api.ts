@@ -58,6 +58,23 @@ export interface NodeHistory {
   points: HistoryPoint[];
 }
 
+export interface UsagePoint {
+  bucket: string;
+  ts: number;
+  gen_tokens: number;
+  prompt_tokens: number;
+  requests: number;
+  ttft_ms_avg?: number | null;
+}
+
+export interface ModelUsage {
+  model_name: string;
+  total_gen_tokens: number;
+  total_prompt_tokens: number;
+  total_requests: number;
+  points: UsagePoint[];
+}
+
 export interface AuthMe {
   auth_mode: string;
   auth_required: boolean;
@@ -597,6 +614,8 @@ export const api = {
   batchPower: (action: "shutdown" | "wake") =>
     j<JobAccepted>(`/api/power/batch/${action}`, { method: "POST" }),
   listLogUnits: () => j<LogUnit[]>("/api/logs/units"),
+  getUsage: (days = 30, bucket: "day" | "hour" = "day") =>
+    j<ModelUsage[]>(`/api/usage?days=${days}&bucket=${bucket}`),
   authMe: () => j<AuthMe>("/api/auth/me"),
   login: (username: string, password: string) =>
     j<AuthMe>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
