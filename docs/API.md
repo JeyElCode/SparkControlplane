@@ -203,6 +203,20 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Schedules
+
+`app/routers/schedules.py` — prefix `/api/schedules`. Weekly live-windows per
+instance; the scheduler starts/stops instances on window edges (manual
+overrides respected between edges; failed actions retried with backoff).
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `` | All windows with instance context + planner fields (`est_gib_per_node`, `node_scope`). | `ScheduleOut[]` |
+| GET | `/now` | Scheduler wall clock (tz, weekday, minutes) for the planner UI. | `{now, weekday, tz, minutes}` |
+| POST | `` | Create a window (`days` 0-6 Mon-first, `start_time`/`end_time` HH:MM; end ≤ start wraps past midnight). | `201 ScheduleOut` |
+| PATCH | `/{id}` | Update days/times/enabled. | `ScheduleOut` |
+| DELETE | `/{id}` | Remove the window. | `204` |
+
 ## Usage
 
 `app/routers/usage.py` — prefix `/api/usage`. Persistent serving history

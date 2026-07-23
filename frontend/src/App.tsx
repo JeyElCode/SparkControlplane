@@ -11,6 +11,7 @@ import Models from "./pages/Models";
 import Instances from "./pages/Instances";
 import Evals from "./pages/Evals";
 import Usage from "./pages/Usage";
+import SchedulePage from "./pages/Schedule";
 import Playground from "./pages/Playground";
 import Teardown from "./pages/Teardown";
 import SettingsPage from "./pages/Settings";
@@ -23,6 +24,7 @@ const NAV = [
   { to: "/instances", label: "Instances", icon: "▶" },
   { to: "/evals", label: "Evals", icon: "≈" },
   { to: "/usage", label: "Usage", icon: "≋" },
+  { to: "/schedule", label: "Schedule", icon: "◷" },
   { to: "/playground", label: "Playground", icon: "✦" },
   { to: "/teardown", label: "Teardown", icon: "⌫" },
   { to: "/settings", label: "Settings", icon: "⚙" },
@@ -134,6 +136,7 @@ export default function App() {
             <Route path="/instances" element={<Instances />} />
             <Route path="/evals" element={<Evals />} />
             <Route path="/usage" element={<Usage />} />
+            <Route path="/schedule" element={<SchedulePage />} />
             <Route path="/playground" element={<Playground />} />
             <Route path="/teardown" element={<Teardown />} />
             <Route path="/settings" element={<SettingsPage />} />

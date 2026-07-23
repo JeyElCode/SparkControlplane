@@ -147,6 +147,10 @@ class Settings(BaseSettings):
     # Usage history: periodic rollup of vLLM token/request counters to SQLite.
     usage_rollup_seconds: float = Field(default=300.0)
     usage_retention_days: int = Field(default=90)
+    # Instance scheduling: evaluation tick and the IANA timezone schedule
+    # times are interpreted in (empty = the container/system timezone).
+    schedule_tick_seconds: float = Field(default=60.0)
+    schedule_tz: str = Field(default="")
     ssh_connect_timeout: int = Field(default=15)
     # Where helper scripts + systemd units are installed on the nodes.
     node_install_dir: str = Field(default="/opt/spark-controlplane")
