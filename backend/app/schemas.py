@@ -388,6 +388,7 @@ class SettingsIn(BaseModel):
     backup_s3_secret: str | None = None
     backup_interval_hours: float | None = None
     backup_retention: int | None = None
+    gateway_token: str | None = None  # write-only; "" clears
 
 
 class SettingsOut(BaseModel):
@@ -408,6 +409,7 @@ class SettingsOut(BaseModel):
     has_backup_s3_secret: bool = False
     backup_interval_hours: float = 24.0
     backup_retention: int = 14
+    has_gateway_token: bool = False
 
 
 class ActiveAlert(BaseModel):

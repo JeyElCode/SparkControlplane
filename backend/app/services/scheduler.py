@@ -88,6 +88,27 @@ def decide(prev: bool | None, desired: bool, status: str) -> str | None:
     return None
 
 
+def next_window_open(schedules: list[InstanceSchedule], now: datetime) -> datetime | None:
+    """Earliest future window-open time within the next week (for 'model not
+    live right now' messages), or None if nothing is scheduled."""
+    from datetime import timedelta
+
+    best: datetime | None = None
+    for s in schedules:
+        if not s.enabled:
+            continue
+        days = parse_days(s.days)
+        h, _, m = s.start_time.partition(":")
+        for offset in range(8):
+            d = now + timedelta(days=offset)
+            if d.weekday() not in days:
+                continue
+            cand = d.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+            if cand > now and (best is None or cand < best):
+                best = cand
+    return best
+
+
 def now_tz() -> datetime:
     settings = get_settings()
     if settings.schedule_tz:

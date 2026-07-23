@@ -49,6 +49,7 @@ In the **Role** column below:
 | `SPARK_AUTH_SESSION_HOURS` | `auth_session_hours` | `24` | Process | Session cookie lifetime. |
 | `SPARK_AUTH_COOKIE_SECURE` | `auth_cookie_secure` | `false` | Process | Set `true` when the portal is served over HTTPS. |
 | `SPARK_METRICS_TOKEN` | `metrics_token` | _none_ | Process | Bearer token allowing Prometheus to scrape `/metrics` while auth is on. |
+| `SPARK_GATEWAY_TOKEN` | `gateway_token` | _none_ | Process | Bearer token for the `/v1` API gateway while auth is on (overrides the Settings-stored token). |
 | `SPARK_LDAP_URL` | `ldap_url` | _none_ | Process | `ldap://host:389` or `ldaps://host:636` (required for `ldap` mode). |
 | `SPARK_LDAP_USER_DN_TEMPLATE` | `ldap_user_dn_template` | _none_ | Process | Direct-bind DN template, e.g. `uid={username},ou=people,dc=example,dc=com`. |
 | `SPARK_LDAP_BIND_DN` / `SPARK_LDAP_BIND_PASSWORD` | `ldap_bind_dn` / `ldap_bind_password` | _none_ | Process | Service account for search+bind (alternative to the DN template). |

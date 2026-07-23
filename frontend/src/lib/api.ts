@@ -166,6 +166,7 @@ export interface Settings {
   has_backup_s3_secret?: boolean;
   backup_interval_hours?: number;
   backup_retention?: number;
+  has_gateway_token?: boolean;
 }
 
 export interface NodeStorage {
@@ -705,6 +706,7 @@ export const api = {
     backup_s3_secret?: string;
     backup_interval_hours?: number;
     backup_retention?: number;
+    gateway_token?: string;
   }) => j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
   getStorage: () => j<NodeStorage[]>("/api/storage"),
   deleteOrphan: (node_id: number, name: string) =>

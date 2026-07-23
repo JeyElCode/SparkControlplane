@@ -25,6 +25,7 @@ from .routers import (
     auth,
     backup,
     cluster,
+    gateway,
     evals,
     instances,
     jobs,
@@ -126,7 +127,7 @@ app.add_middleware(AuthMiddleware)
 if settings.effective_auth_mode != "none":
     log.info("Portal auth is ON (mode=%s)", settings.effective_auth_mode)
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage, gateway):
     app.include_router(r.router)
 
 

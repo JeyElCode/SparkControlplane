@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.21.0 — OpenAI-compatible API gateway
+- **One endpoint for external clients.** `POST /v1/chat/completions` (plus
+  `/v1/completions`, `/v1/embeddings`, `GET /v1/models`) on the portal itself:
+  the `model` field routes to whichever RUNNING instance serves that name
+  (registry name or any `served_model_names` alias). SSE token streams pass
+  through unbuffered; each instance's internal API key is injected on the way
+  through, so clients only ever hold the gateway credential. Per-instance
+  ports keep working for internal use.
+- **Schedule-aware errors.** Unknown model → 404 listing what's live right
+  now; a model that exists but is outside its live window → 503 including
+  *when its next window opens*.
+- **Auth (per operator decision):** with portal auth ON, `/v1` requires
+  `Authorization: Bearer <gateway token>` (Settings → API gateway, stored
+  encrypted, or `SPARK_GATEWAY_TOKEN`; a logged-in portal session also
+  works). With auth off (homelab default) the gateway is open. Supersedes
+  the v1.0 "no unified gateway" decision.
+
 ## v1.20.1 — LDAP TLS certificate validation
 - **fix(auth): LDAPS/STARTTLS connections now validate the directory's
   certificate by default.** The `ldap3` library's own default is `CERT_NONE` —

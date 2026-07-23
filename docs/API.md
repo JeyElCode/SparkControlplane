@@ -203,6 +203,24 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Gateway
+
+`app/routers/gateway.py` — prefix `/v1` (no `/api`). OpenAI-compatible proxy:
+the `model` field routes to the RUNNING instance serving that name; SSE
+streams pass through unbuffered; instance API keys are injected server-side.
+With portal auth on, requires `Authorization: Bearer SPARK_GATEWAY_TOKEN`
+(or the Settings-stored token, or a portal session).
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/v1/models` | Every served name of every running instance. |
+| POST | `/v1/chat/completions` | Routed + streamed passthrough. |
+| POST | `/v1/completions` | Routed passthrough. |
+| POST | `/v1/embeddings` | Routed passthrough. |
+
+Errors: unknown model → `404` listing live models; known model outside its
+schedule window → `503` with the next window-open time.
+
 ## Storage
 
 `app/routers/storage.py` — prefix `/api/storage`. Models-filesystem

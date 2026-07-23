@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = Field(default=False)  # set true when served over HTTPS
     # Bearer token that lets Prometheus scrape /metrics while auth is on.
     metrics_token: str | None = Field(default=None)
+    # Bearer token for the /v1 API gateway (env override; the Settings-stored
+    # token is used when this is unset). Only enforced when auth is on.
+    gateway_token: str | None = Field(default=None)
     # LDAP: either a direct-bind DN template ({username} placeholder), or a
     # service account + search (bind_dn/bind_password + user_search_base).
     ldap_url: str | None = Field(default=None)  # ldap://host:389 or ldaps://host:636

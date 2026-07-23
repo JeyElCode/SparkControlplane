@@ -59,6 +59,7 @@ def _settings_out(s) -> SettingsOut:
         has_backup_s3_secret=bool(s.backup_s3_secret_enc),
         backup_interval_hours=s.backup_interval_hours,
         backup_retention=s.backup_retention,
+        has_gateway_token=bool(s.gateway_token_enc),
     )
 
 
@@ -117,6 +118,8 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.backup_interval_hours = max(0.25, payload.backup_interval_hours)
     if payload.backup_retention is not None:
         s.backup_retention = max(1, payload.backup_retention)
+    if payload.gateway_token is not None:
+        s.gateway_token_enc = encrypt(payload.gateway_token) if payload.gateway_token else None
     await session.commit()
     return _settings_out(s)
 

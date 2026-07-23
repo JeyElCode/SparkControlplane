@@ -142,6 +142,8 @@ class Setting(Base):
     backup_s3_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     backup_interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
     backup_retention: Mapped[int] = mapped_column(Integer, default=14)
+    # Bearer token for the /v1 API gateway (required when portal auth is on)
+    gateway_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
