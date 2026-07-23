@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.22.0 — full MCP parity
+- **28 new MCP tools** close the gap between the MCP server (frozen at the
+  pre-v1.6 feature set) and everything since: telemetry + instance history,
+  NIC detection, power controls (with `power_affected` preview), one-shot log
+  tailing, alerts, usage history, schedule CRUD, backup/restore (incl. S3),
+  storage report/cleanup, and image tag discovery / rolling updates — 74
+  tools total. Destructive tools (power, restore, orphan delete, image
+  update) are explicitly marked in their descriptions so agents ask before
+  acting; that marking is pinned by a test.
+
 ## v1.21.0 — OpenAI-compatible API gateway
 - **One endpoint for external clients.** `POST /v1/chat/completions` (plus
   `/v1/completions`, `/v1/embeddings`, `GET /v1/models`) on the portal itself:
