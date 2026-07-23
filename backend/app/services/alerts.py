@@ -37,6 +37,8 @@ DEFAULTS: dict = {
     "kv_cache_pct": 95,
     "kv_cache_seconds": 120,
     "qsfp_down_seconds": 60,
+    "gpu_throttle_seconds": 60,
+    "xid_window_seconds": 600,
     "webhook_kind": "generic",  # generic | ntfy | discord | slack
 }
 
@@ -103,6 +105,22 @@ def gather_facts(cfg: dict) -> list[Fact]:
                 f"Models disk on {name} is {free_pct:.0f}% free "
                 f"(threshold {cfg['disk_free_pct']}%).",
             ))
+        facts.append(Fact(
+            "gpu_throttle", name, s.gpu_throttle is True, cfg["gpu_throttle_seconds"], "warn",
+            f"GPU on {name} is thermal-throttling — performance is degraded.",
+        ))
+        # XID errors are events, not conditions: alert while one occurred within
+        # the window (fires immediately), auto-resolving after a quiet spell.
+        ring = telemetry._xids.get(nid)
+        last = max((e.ts for e in ring), default=0.0) if ring else 0.0
+        recent = last > time.time() - cfg["xid_window_seconds"]
+        last_ev = ring[-1] if ring else None
+        facts.append(Fact(
+            "gpu_xid", name, recent, 0, "crit",
+            f"GPU XID error on {name}"
+            + (f" (Xid {last_ev.xid}): {last_ev.message[:120]}" if last_ev else "")
+            + " — check dmesg; the GPU/driver may be in a bad state.",
+        ))
 
     if telemetry._slow.qsfp_ok is not None:
         facts.append(Fact(
