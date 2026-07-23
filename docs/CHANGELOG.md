@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.16.0 — portal authentication (optional; password or LDAP)
+- **Three auth modes via `SPARK_AUTH_MODE`** — `none` (default: open portal,
+  unchanged homelab behavior), `password` (single admin credential:
+  `SPARK_ADMIN_USER`/`SPARK_ADMIN_PASSWORD`), and `ldap` (bind against a
+  directory: `SPARK_LDAP_URL` + either a direct-bind `SPARK_LDAP_USER_DN_TEMPLATE`
+  or service-account search via `SPARK_LDAP_BIND_DN`/`_BIND_PASSWORD`/
+  `_USER_SEARCH_BASE`/`_USER_FILTER`; optional `SPARK_LDAP_GROUP_REQUIRED`
+  membership check, `SPARK_LDAP_START_TLS`, ldaps:// supported). Works with AD
+  (`(sAMAccountName={username})`).
+- **Fail-closed by design.** A misconfigured mode locks logins out rather than
+  silently opening the portal; empty passwords are rejected before the LDAP
+  bind (anonymous-bind trap); usernames are escaped in DNs and filters;
+  per-IP login throttling (5 failures → 30s).
+- **Sessions** are Fernet-encrypted HttpOnly cookies (same key as secrets at
+  rest; `SPARK_AUTH_SESSION_HOURS`, `SPARK_AUTH_COOKIE_SECURE`). Enforcement
+  is ASGI middleware covering **both HTTP and WebSockets**; open paths:
+  the login flow, `/api/health`, the SPA shell, `/mcp` (own bearer gate) —
+  and `/metrics` accepts `Authorization: Bearer SPARK_METRICS_TOKEN` so
+  Prometheus can scrape while the portal is locked.
+- **Login page** (auto-shown on 401), current user + sign-out in the sidebar.
+  Auth config lives in env vars only — the portal can't weaken its own lock.
+
 ## v1.15.0 — thermal throttle & GPU XID detection
 - **Thermal throttling** is now sampled every fast tick straight from
   nvidia-smi's clocks-event reasons (supports both the new

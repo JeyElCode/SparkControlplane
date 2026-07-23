@@ -203,6 +203,20 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Auth
+
+`app/routers/auth.py` — prefix `/api/auth`. Only active when
+`SPARK_AUTH_MODE` is `password` or `ldap`; in `none` mode (default) the portal
+is open. Enforcement is ASGI middleware over `/api/*` **and** the WebSockets;
+open paths: `/api/auth/*`, `/api/health`, the SPA shell, `/mcp`; `/metrics`
+accepts `Authorization: Bearer SPARK_METRICS_TOKEN`.
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `/me` | Auth mode + current session state (always accessible). | `{auth_mode, auth_required, authenticated, user}` |
+| POST | `/login` | Verify credentials (password compare or LDAP bind), set the HttpOnly session cookie. Per-IP throttling (5 failures → 30s → `429`). | `MeOut` |
+| POST | `/logout` | Clear the session cookie. | `{ok}` |
+
 ## Alerts
 
 `app/routers/alerts.py` — prefix `/api/alerts`. Threshold alerting evaluated
