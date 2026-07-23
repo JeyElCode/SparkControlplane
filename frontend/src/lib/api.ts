@@ -75,6 +75,21 @@ export interface ModelUsage {
   points: UsagePoint[];
 }
 
+export interface ScheduleEntry {
+  id: number;
+  instance_id: number;
+  instance_name: string;
+  model_name: string;
+  topology: string;
+  status: string;
+  days: number[];
+  start_time: string;
+  end_time: string;
+  enabled: boolean;
+  est_gib_per_node: number;
+  node_scope: string;
+}
+
 export interface AuthMe {
   auth_mode: string;
   auth_required: boolean;
@@ -616,6 +631,13 @@ export const api = {
   listLogUnits: () => j<LogUnit[]>("/api/logs/units"),
   getUsage: (days = 30, bucket: "day" | "hour" = "day") =>
     j<ModelUsage[]>(`/api/usage?days=${days}&bucket=${bucket}`),
+  listSchedules: () => j<ScheduleEntry[]>("/api/schedules"),
+  schedulesNow: () => j<{ now: string; weekday: number; tz: string; minutes: number }>("/api/schedules/now"),
+  createSchedule: (s: { instance_id: number; days: number[]; start_time: string; end_time: string; enabled: boolean }) =>
+    j<ScheduleEntry>("/api/schedules", { method: "POST", body: JSON.stringify(s) }),
+  updateSchedule: (id: number, s: { days?: number[]; start_time?: string; end_time?: string; enabled?: boolean }) =>
+    j<ScheduleEntry>(`/api/schedules/${id}`, { method: "PATCH", body: JSON.stringify(s) }),
+  deleteSchedule: (id: number) => j<void>(`/api/schedules/${id}`, { method: "DELETE" }),
   authMe: () => j<AuthMe>("/api/auth/me"),
   login: (username: string, password: string) =>
     j<AuthMe>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),

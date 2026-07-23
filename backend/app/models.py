@@ -236,6 +236,27 @@ class Instance(Base):
     node: Mapped[Node | None] = relationship()
 
 
+class InstanceSchedule(Base):
+    """A weekly live-window for an instance: on the listed weekdays the
+    scheduler starts the instance at ``start_time`` and stops it at
+    ``end_time`` (end <= start means the window wraps past midnight).
+    Instances without schedules are fully manual, as before."""
+
+    __tablename__ = "instance_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instance_id: Mapped[int] = mapped_column(
+        ForeignKey("instances.id", ondelete="CASCADE"), index=True
+    )
+    days: Mapped[str] = mapped_column(String(32))       # csv of 0-6, Monday=0
+    start_time: Mapped[str] = mapped_column(String(5))  # "HH:MM"
+    end_time: Mapped[str] = mapped_column(String(5))    # "HH:MM"
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    instance: Mapped["Instance"] = relationship()
+
+
 class UsageSample(Base):
     """One rollup window of serving activity for one instance (deltas of the
     vLLM counters over ~5 min). Names are snapshots so history survives

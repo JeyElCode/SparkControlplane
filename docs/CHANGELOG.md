@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.18.0 — instance schedules + week planner
+- **Time-share your memory: models get live windows.** Attach weekly windows
+  (days + start/end, overnight wrap supported) to any instance; the scheduler
+  starts it when a window opens and stops it when it closes. Semantics are
+  **edge-triggered** — a manual start/stop between edges is respected, so the
+  scheduler never fights the operator — with a boot reconcile (a portal
+  restart mid-window still brings the model up) and **failure retry with
+  backoff** (a transiently-failed scheduled action doesn't lose its edge;
+  gives up after 5 attempts). Instances without windows stay fully manual.
+- **New Schedule page**: a week planner drawing every window as a block with
+  the instance's estimated memory (~`gpu_memory_utilization × node budget`
+  GiB/node), hour gridlines, a now-line, and **red shading on any hour where
+  scheduled instances would exceed the ~119 GiB node budget** — plan your
+  time-sharing visually. Click a block to edit; windows table with
+  enable/disable/delete.
+- API: `GET/POST /api/schedules`, `PATCH/DELETE /api/schedules/{id}`,
+  `GET /api/schedules/now`. Actions run as normal jobs (`schedule.start`/
+  `schedule.stop`). Env: `SPARK_SCHEDULE_TICK_SECONDS` (60),
+  `SPARK_SCHEDULE_TZ` (IANA name; empty = system), `SPARK_SCHEDULE_RETRY_SECONDS`
+  (120). New auto-created `instance_schedules` table.
+
 ## v1.17.0 — persistent usage history
 - **Tokens-per-day per model, kept for months.** A collector rolls up each
   running instance's vLLM counters every 5 minutes (`SPARK_USAGE_ROLLUP_SECONDS`)
