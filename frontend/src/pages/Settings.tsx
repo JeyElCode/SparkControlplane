@@ -26,6 +26,21 @@ export default function SettingsPage() {
   const [webhookUrl, setWebhookUrl] = useState("");
   const [alertBusy, setAlertBusy] = useState(false);
 
+  const [gwToken, setGwToken] = useState("");
+
+  const saveGwToken = async () => {
+    await api.updateSettings({ gateway_token: gwToken });
+    setGwToken("");
+    settings.reload();
+    toast("Gateway token saved", "success");
+  };
+
+  const clearGwToken = async () => {
+    await api.updateSettings({ gateway_token: "" });
+    settings.reload();
+    toast("Gateway token removed", "success");
+  };
+
   const [bk, setBk] = useState<Record<string, any>>({});
   const [bkSecret, setBkSecret] = useState("");
   const [bkBusy, setBkBusy] = useState(false);
@@ -277,6 +292,31 @@ export default function SettingsPage() {
         </div>
 
         <div className="flex-col" style={{ gap: 16 }}>
+          <div className="card">
+            <h2>API gateway</h2>
+            <p className="faint" style={{ marginTop: -6 }}>
+              One OpenAI-compatible endpoint for all models: clients call{" "}
+              <span className="mono">{window.location.origin}/v1/chat/completions</span> and the{" "}
+              <span className="mono">model</span> field routes to whichever instance serves that name.
+              With portal auth on, requests need <span className="mono">Authorization: Bearer &lt;token&gt;</span>;
+              with auth off the gateway is open.
+            </p>
+            <Field label="Gateway bearer token" hint={settings.data?.has_gateway_token ? "A token is stored. Enter a new one to replace it, save empty via Remove to clear." : "Stored encrypted. Only enforced while portal auth is enabled."}>
+              <div className="flex gap-sm">
+                <input type="password" placeholder={settings.data?.has_gateway_token ? "•••••• (stored)" : "generate something long"} value={gwToken} onChange={(e) => setGwToken(e.target.value)} />
+                <button className="btn" disabled={!gwToken} onClick={saveGwToken}>Save</button>
+                {settings.data?.has_gateway_token && (
+                  <button className="btn btn-danger" onClick={clearGwToken}>Remove</button>
+                )}
+              </div>
+            </Field>
+            <div className="faint mono" style={{ fontSize: 11, whiteSpace: "pre-wrap" }}>
+{`curl ${window.location.origin}/v1/chat/completions \\
+  -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \\
+  -d '{"model": "<served name>", "messages": [{"role": "user", "content": "hi"}]}'`}
+            </div>
+          </div>
+
           <div className="card">
             <h2>Backups</h2>
             <p className="faint" style={{ marginTop: -6 }}>
