@@ -56,6 +56,8 @@ In the **Role** column below:
 | `SPARK_LDAP_USER_FILTER` | `ldap_user_filter` | `(uid={username})` | Process | User filter; Active Directory: `(sAMAccountName={username})`. |
 | `SPARK_LDAP_GROUP_REQUIRED` | `ldap_group_required` | _none_ | Process | Group DN the user must be a `memberOf` to sign in. |
 | `SPARK_LDAP_START_TLS` | `ldap_start_tls` | `false` | Process | Upgrade a plain `ldap://` connection with STARTTLS before binding. |
+| `SPARK_LDAP_VERIFY_CERT` | `ldap_verify_cert` | `true` | Process | Validate the directory server's TLS certificate (ldaps:// and STARTTLS). Fail-closed: an invalid cert blocks logins. Disable only for self-signed lab DCs. |
+| `SPARK_LDAP_CA_FILE` | `ldap_ca_file` | _none_ | Process | PEM CA bundle for validating the directory's certificate (enterprise/private CAs). |
 | `SPARK_ADMIN_PASSWORD` | `admin_password` | _none_ | Process | Admin password used when `auth_enabled` is on. No effect while auth is disabled. |
 | `SPARK_HOST` | `host` | `0.0.0.0` | Process | Bind address. (Note: the container `CMD` passes `--host 0.0.0.0` to uvicorn explicitly; this field applies when you run the app yourself without that flag.) |
 | `SPARK_PORT` | `port` | `8080` | Process | Listen port (same caveat as `host`). |

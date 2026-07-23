@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     ldap_user_filter: str = Field(default="(uid={username})")  # AD: (sAMAccountName={username})
     ldap_group_required: str | None = Field(default=None)  # group DN the user must belong to
     ldap_start_tls: bool = Field(default=False)
+    # TLS certificate validation for ldaps:// and STARTTLS (fail-closed: an
+    # invalid cert blocks logins). Disable only for self-signed lab DCs, or
+    # point ldap_ca_file at your enterprise CA bundle instead.
+    ldap_verify_cert: bool = Field(default=True)
+    ldap_ca_file: str | None = Field(default=None)
 
     @property
     def effective_auth_mode(self) -> str:
