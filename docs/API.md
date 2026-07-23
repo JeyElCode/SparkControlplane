@@ -203,6 +203,23 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Alerts
+
+`app/routers/alerts.py` — prefix `/api/alerts`. Threshold alerting evaluated
+server-side from the telemetry caches (rules: `node_offline`,
+`instance_unhealthy`, `gpu_temp`, `disk_low`, `kv_cache_full`, `qsfp_down`).
+Active alerts also ride the status snapshot (`active_alerts`) for banners.
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `?limit=N` | Alert history, newest first (`resolved_at` null = still active). | `AlertOut[]` |
+| GET | `/active` | Currently-firing alerts. | `ActiveAlert[]` |
+| POST | `/test` | Send a test notification through the configured webhook. | `{ok, message}` |
+
+Thresholds/durations and the webhook (ntfy / Discord / Slack / generic JSON;
+URL stored encrypted) are configured via `PATCH /api/cluster/settings`
+(`alerts` partial dict + write-only `alert_webhook_url`).
+
 ## Logs
 
 `app/routers/logs.py` — prefix `/api/logs`. Live journal tailing.

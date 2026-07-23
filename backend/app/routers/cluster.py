@@ -39,6 +39,8 @@ async def update_config(payload: ClusterConfigIn, session: AsyncSession = Depend
 
 
 def _settings_out(s) -> SettingsOut:
+    from ..services.alerts import merged_config
+
     return SettingsOut(
         has_hf_token=bool(s.hf_token_enc),
         status_poll_seconds=s.status_poll_seconds,
@@ -46,6 +48,8 @@ def _settings_out(s) -> SettingsOut:
         judge_base_url=s.judge_base_url,
         judge_model=s.judge_model,
         has_judge_api_key=bool(s.judge_api_key_enc),
+        alerts=merged_config(s.alerts_json),
+        has_alert_webhook=bool(s.alert_webhook_url_enc),
     )
 
 
@@ -67,6 +71,23 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.judge_model = payload.judge_model or None
     if payload.judge_api_key is not None:
         s.judge_api_key_enc = encrypt(payload.judge_api_key)
+    if payload.alerts is not None:
+        import json as _json
+
+        from ..services.alerts import DEFAULTS, merged_config
+
+        unknown = set(payload.alerts) - set(DEFAULTS)
+        if unknown:
+            from fastapi import HTTPException
+
+            raise HTTPException(422, f"Unknown alert setting(s): {', '.join(sorted(unknown))}")
+        merged = merged_config(s.alerts_json)
+        merged.update(payload.alerts)
+        s.alerts_json = _json.dumps(merged)
+    if payload.alert_webhook_url is not None:
+        s.alert_webhook_url_enc = (
+            encrypt(payload.alert_webhook_url) if payload.alert_webhook_url else None
+        )
     await session.commit()
     return _settings_out(s)
 

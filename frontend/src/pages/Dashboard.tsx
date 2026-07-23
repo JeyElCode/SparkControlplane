@@ -270,6 +270,11 @@ export default function Dashboard() {
               ◆ Cluster setup is not complete. Head to <Link to="/setup">Setup</Link> to provision the nodes.
             </div>
           )}
+          {(data.active_alerts ?? []).map((a, i) => (
+            <div key={`al-${i}`} className={`banner ${a.severity === "crit" ? "banner-crit" : "banner-warn"}`}>
+              {a.severity === "crit" ? "🚨" : "⚠"} <strong>{a.rule.replace(/_/g, " ")}</strong> — {a.message}
+            </div>
+          ))}
           {data.overcommit_warnings.map((w, i) => (
             <div key={i} className="banner banner-warn">⚠ {w}</div>
           ))}

@@ -366,6 +366,10 @@ class SettingsIn(BaseModel):
     judge_base_url: str | None = None
     judge_model: str | None = None
     judge_api_key: str | None = None  # write-only
+    # Alerting: partial threshold overrides (validated/merged server-side) and
+    # a write-only webhook URL ("" clears it).
+    alerts: dict | None = None
+    alert_webhook_url: str | None = None
 
 
 class SettingsOut(BaseModel):
@@ -375,6 +379,29 @@ class SettingsOut(BaseModel):
     judge_base_url: str | None = None
     judge_model: str | None = None
     has_judge_api_key: bool = False
+    alerts: dict = Field(default_factory=dict)
+    has_alert_webhook: bool = False
+
+
+class ActiveAlert(BaseModel):
+    """A currently-firing alert (for dashboard banners)."""
+
+    rule: str
+    subject: str
+    severity: str = "warn"
+    message: str
+    since: float | None = None
+
+
+class AlertOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    rule: str
+    subject: str
+    severity: str
+    message: str
+    fired_at: datetime
+    resolved_at: datetime | None = None
 
 
 # --- Models --------------------------------------------------------------
@@ -795,6 +822,7 @@ class StatusSnapshot(BaseModel):
     nodes: list[NodeStatus]
     instances: list[InstanceRuntimeStatus]
     overcommit_warnings: list[str] = Field(default_factory=list)
+    active_alerts: list[ActiveAlert] = Field(default_factory=list)
     generated_at: datetime
 
 

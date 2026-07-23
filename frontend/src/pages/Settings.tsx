@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, ClusterConfig, ImageTags } from "../lib/api";
+import { AlertConfig, api, ClusterConfig, ImageTags } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { Badge, Field, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
@@ -22,6 +22,45 @@ export default function SettingsPage() {
   const [restartRay, setRestartRay] = useState(true);
   const [restartInstances, setRestartInstances] = useState(true);
   const [updateJob, setUpdateJob] = useState<number | null>(null);
+  const [alertDraft, setAlertDraft] = useState<Partial<AlertConfig>>({});
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [alertBusy, setAlertBusy] = useState(false);
+
+  const alertCfg = { ...(settings.data?.alerts ?? {}), ...alertDraft } as AlertConfig;
+  const setAlert = (k: keyof AlertConfig, v: any) => setAlertDraft((p) => ({ ...p, [k]: v }));
+
+  const saveAlerts = async () => {
+    setAlertBusy(true);
+    try {
+      await api.updateSettings({
+        ...(Object.keys(alertDraft).length ? { alerts: alertDraft } : {}),
+        ...(webhookUrl ? { alert_webhook_url: webhookUrl } : {}),
+      });
+      setAlertDraft({});
+      setWebhookUrl("");
+      settings.reload();
+      toast("Alert settings saved", "success");
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setAlertBusy(false);
+    }
+  };
+
+  const clearWebhook = async () => {
+    await api.updateSettings({ alert_webhook_url: "" });
+    settings.reload();
+    toast("Webhook removed", "success");
+  };
+
+  const testWebhook = async () => {
+    try {
+      const r = await api.testAlertWebhook();
+      toast(r.message, "success");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
 
   const checkTags = async () => {
     setChecking(true);
@@ -174,6 +213,54 @@ export default function SettingsPage() {
         </div>
 
         <div className="flex-col" style={{ gap: 16 }}>
+          <div className="card">
+            <h2>Alerts</h2>
+            <p className="faint" style={{ marginTop: -6 }}>
+              Banners always show on the Dashboard; add a webhook to get notified when the tab is closed.
+              Alerts fire only after a condition holds for its duration, and send a recovery notice.
+            </p>
+            <div className="row-2">
+              <Field label="GPU temp threshold (°C)">
+                <input type="number" value={alertCfg.gpu_temp_c ?? 85} onChange={(e) => setAlert("gpu_temp_c", Number(e.target.value))} />
+              </Field>
+              <Field label="KV cache threshold (%)" hint="sustained = model overloaded">
+                <input type="number" value={alertCfg.kv_cache_pct ?? 95} onChange={(e) => setAlert("kv_cache_pct", Number(e.target.value))} />
+              </Field>
+            </div>
+            <div className="row-2">
+              <Field label="Disk free threshold (%)">
+                <input type="number" value={alertCfg.disk_free_pct ?? 10} onChange={(e) => setAlert("disk_free_pct", Number(e.target.value))} />
+              </Field>
+              <Field label="Node offline after (s)">
+                <input type="number" value={alertCfg.node_offline_seconds ?? 60} onChange={(e) => setAlert("node_offline_seconds", Number(e.target.value))} />
+              </Field>
+            </div>
+            <div className="row-2">
+              <Field label="Webhook type">
+                <select value={alertCfg.webhook_kind ?? "generic"} onChange={(e) => setAlert("webhook_kind", e.target.value)}>
+                  <option value="generic">Generic JSON POST</option>
+                  <option value="ntfy">ntfy</option>
+                  <option value="discord">Discord</option>
+                  <option value="slack">Slack</option>
+                </select>
+              </Field>
+              <Field label="Webhook URL" hint={settings.data?.has_alert_webhook ? "A webhook is stored. Enter a new URL to replace it." : "e.g. https://ntfy.sh/your-topic — stored encrypted"}>
+                <input type="password" placeholder={settings.data?.has_alert_webhook ? "•••••• (stored)" : "https://…"} value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} />
+              </Field>
+            </div>
+            <div className="btn-row">
+              <button className="btn btn-primary" onClick={saveAlerts} disabled={alertBusy || (Object.keys(alertDraft).length === 0 && !webhookUrl)}>
+                {alertBusy ? <Spinner /> : "Save alerts"}
+              </button>
+              {settings.data?.has_alert_webhook && (
+                <>
+                  <button className="btn" onClick={testWebhook}>Send test</button>
+                  <button className="btn btn-danger" onClick={clearWebhook}>Remove webhook</button>
+                </>
+              )}
+            </div>
+          </div>
+
           <div className="card">
             <h2>HuggingFace token</h2>
             <Field label="Token" hint={settings.data?.has_hf_token ? "A token is stored. Enter a new one to replace it." : "Required for gated/private downloads. Stored encrypted."}>

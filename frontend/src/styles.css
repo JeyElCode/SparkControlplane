@@ -306,6 +306,7 @@ textarea { resize: vertical; min-height: 70px; font-family: var(--mono); }
   border: 1px solid var(--border-light); background: var(--bg-elev-2); margin-bottom: 16px;
 }
 .banner-warn { border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.07); color: var(--amber); }
+.banner-crit { border-color: rgba(248, 113, 113, 0.5); background: rgba(248, 113, 113, 0.08); color: var(--red); }
 .banner-info { border-color: rgba(79, 156, 255, 0.35); background: rgba(79, 156, 255, 0.07); }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13px; }
 .kv dt { color: var(--text-faint); }

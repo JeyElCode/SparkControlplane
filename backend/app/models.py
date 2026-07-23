@@ -128,6 +128,10 @@ class Setting(Base):
     judge_base_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
     judge_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     judge_api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Alerting: JSON blob of thresholds/durations (defaults merged in code) and
+    # an optional notification webhook (URL may embed a token -> encrypted).
+    alerts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alert_webhook_url_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
@@ -230,6 +234,21 @@ class Instance(Base):
 
     model: Mapped[ModelRegistry] = relationship(back_populates="instances")
     node: Mapped[Node | None] = relationship()
+
+
+class Alert(Base):
+    """A fired alert (and its resolution) — history for the API/UI; the live
+    active set is kept in memory by services/alerts.py."""
+
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule: Mapped[str] = mapped_column(String(32))       # e.g. node_offline
+    subject: Mapped[str] = mapped_column(String(128))   # e.g. node/instance name
+    severity: Mapped[str] = mapped_column(String(8), default="warn")  # warn | crit
+    message: Mapped[str] = mapped_column(Text)
+    fired_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class Job(Base):
