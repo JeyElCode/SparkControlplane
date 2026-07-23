@@ -168,6 +168,19 @@ export interface Settings {
   backup_retention?: number;
 }
 
+export interface NodeStorage {
+  node_id: number;
+  node_name: string;
+  reachable: boolean;
+  models_dir: string;
+  hf_cache_dir: string;
+  models: { name: string; size_bytes: number }[];
+  orphans: { name: string; size_bytes: number }[];
+  hf_cache_bytes?: number | null;
+  disk?: { total_bytes: number; used_bytes: number; free_bytes: number } | null;
+  error?: string;
+}
+
 export interface BackupObject {
   key: string;
   size: number;
@@ -693,6 +706,11 @@ export const api = {
     backup_interval_hours?: number;
     backup_retention?: number;
   }) => j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
+  getStorage: () => j<NodeStorage[]>("/api/storage"),
+  deleteOrphan: (node_id: number, name: string) =>
+    j<JobAccepted>("/api/storage/delete-orphan", { method: "POST", body: JSON.stringify({ node_id, name }) }),
+  clearHfCache: (node_ids?: number[]) =>
+    j<JobAccepted>("/api/storage/clear-hf-cache", { method: "POST", body: JSON.stringify(node_ids ? { node_ids } : {}) }),
   importBackup: (bundle: unknown) =>
     j<RestoreSummary>("/api/backup/import", { method: "POST", body: JSON.stringify(bundle) }),
   runBackup: () => j<{ ok: boolean; key: string }>("/api/backup/run", { method: "POST" }),
