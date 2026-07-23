@@ -77,6 +77,8 @@ In the **Role** column below:
 | `SPARK_TELEMETRY_FAST_SECONDS` | `telemetry_fast_seconds` | `3.0` | Runtime fixed | Telemetry engine fast tick: one batched SSH sample per node (GPU/CPU/mem/net/disk/uptime/processes). |
 | `SPARK_TELEMETRY_SLOW_SECONDS` | `telemetry_slow_seconds` | `12.0` | Runtime fixed | Telemetry engine slow tick: Ray status, QSFP ping, per-instance systemd + `/health` probes. |
 | `SPARK_TELEMETRY_HISTORY_MINUTES` | `telemetry_history_minutes` | `15` | Runtime fixed | Length of the in-memory per-node history ring served by `GET /api/status/history`. |
+| `SPARK_USAGE_ROLLUP_SECONDS` | `usage_rollup_seconds` | `300` | Runtime fixed | Interval for persisting vLLM token/request counter rollups to the `usage_samples` table. |
+| `SPARK_USAGE_RETENTION_DAYS` | `usage_retention_days` | `90` | Runtime fixed | How long usage-history rows are kept before being purged. |
 | `SPARK_NODE_INSTALL_DIR` | `node_install_dir` | `/opt/spark-controlplane` | Runtime fixed | Where helper scripts + systemd units are installed **on the nodes**. |
 | `SPARK_MCP_ENABLED` | `mcp_enabled` | `false` | Process | Mount the streamable-HTTP MCP server at `/mcp`. Fail-closed: has no effect unless `SPARK_MCP_TOKEN` is also set. See [MCP.md](MCP.md). |
 | `SPARK_MCP_TOKEN` | `mcp_token` | _none_ | Process | Bearer token required on every `/mcp` request. When unset the endpoint stays disabled even if `mcp_enabled` is on. |

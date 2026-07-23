@@ -33,6 +33,7 @@ from .routers import (
     playground,
     power,
     status,
+    usage,
 )
 from .ssh import pool
 
@@ -80,8 +81,11 @@ async def lifespan(app: FastAPI):
     from .services.alerts import manager as alert_manager
     from .services.telemetry import engine as telemetry_engine
 
+    from .services.usage import collector as usage_collector
+
     telemetry_engine.start()
     alert_manager.start()
+    usage_collector.start()
     task = asyncio.create_task(_startup_discover())
     # The mounted MCP sub-app's own lifespan is not run by Starlette's Mount, so
     # drive its streamable-HTTP session manager from here for its whole lifetime.
@@ -92,6 +96,7 @@ async def lifespan(app: FastAPI):
     else:
         yield
     task.cancel()
+    await usage_collector.stop()
     await alert_manager.stop()
     await telemetry_engine.stop()
     await pool.close_all()
@@ -111,7 +116,7 @@ app.add_middleware(AuthMiddleware)
 if settings.effective_auth_mode != "none":
     log.info("Portal auth is ON (mode=%s)", settings.effective_auth_mode)
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage):
     app.include_router(r.router)
 
 

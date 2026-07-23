@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.17.0 — persistent usage history
+- **Tokens-per-day per model, kept for months.** A collector rolls up each
+  running instance's vLLM counters every 5 minutes (`SPARK_USAGE_ROLLUP_SECONDS`)
+  into a new `usage_samples` table: generated/prompt token deltas, completed
+  requests, and the window's request-weighted mean TTFT. Counter resets
+  (instance restarts) count from zero; idle windows write nothing; rows purge
+  after `SPARK_USAGE_RETENTION_DAYS` (default 90). Survives portal restarts —
+  unlike the 15-minute in-memory sparkline rings.
+- **New Usage page** (24h/7d/30d/90d): totals table per model and
+  per-day/per-hour charts for generated tokens and mean TTFT.
+  `GET /api/usage?days=N&bucket=day|hour` serves the aggregation.
+
 ## v1.16.0 — portal authentication (optional; password or LDAP)
 - **Three auth modes via `SPARK_AUTH_MODE`** — `none` (default: open portal,
   unchanged homelab behavior), `password` (single admin credential:

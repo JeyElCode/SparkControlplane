@@ -236,6 +236,24 @@ class Instance(Base):
     node: Mapped[Node | None] = relationship()
 
 
+class UsageSample(Base):
+    """One rollup window of serving activity for one instance (deltas of the
+    vLLM counters over ~5 min). Names are snapshots so history survives
+    instance/model deletion."""
+
+    __tablename__ = "usage_samples"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    instance_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    instance_name: Mapped[str] = mapped_column(String(64))
+    model_name: Mapped[str] = mapped_column(String(255))
+    gen_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    ttft_ms_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
 class Alert(Base):
     """A fired alert (and its resolution) — history for the API/UI; the live
     active set is kept in memory by services/alerts.py."""
