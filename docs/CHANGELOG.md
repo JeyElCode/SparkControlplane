@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.20.0 — storage cleanup tools
+- **Per-node storage breakdown** (Models page → Storage → Scan): one batched
+  `du`/`df` per node reports every directory in the models dir mapped against
+  the registry — flagging **orphans** (directories no registry row references)
+  — plus the HuggingFace cache size and disk used/free with a meter.
+- **Cleanup actions as jobs**: delete an orphan directory (name validated at
+  the API boundary; a *registered* model name is refused server-side — use the
+  Models delete flow for those), and clear the HF cache per node or fleet-wide
+  (cached downloads only; model files untouched).
+- **Free-space projection on download**: Validate now appends the head node's
+  free space next to the model size, with a warning when the model wouldn't
+  fit. New endpoints: `GET /api/storage`, `POST /api/storage/delete-orphan`,
+  `POST /api/storage/clear-hf-cache`.
+
 ## v1.19.0 — config backup & restore (manual + scheduled S3)
 - **One-file config snapshot.** `GET /api/backup/export` downloads a JSON
   bundle of every configuration table — nodes, cluster config, settings,

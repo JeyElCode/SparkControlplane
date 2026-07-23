@@ -35,6 +35,7 @@ from .routers import (
     power,
     schedules,
     status,
+    storage,
     usage,
 )
 from .ssh import pool
@@ -125,7 +126,7 @@ app.add_middleware(AuthMiddleware)
 if settings.effective_auth_mode != "none":
     log.info("Portal auth is ON (mode=%s)", settings.effective_auth_mode)
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage):
     app.include_router(r.router)
 
 

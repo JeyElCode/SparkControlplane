@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, Model } from "../lib/api";
+import { api, Model, NodeStorage } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { fmtBytes, statusKind } from "../lib/format";
 import { Badge, EmptyState, HelpTip, Meter, Modal, Spinner } from "../components/ui";
@@ -20,6 +20,22 @@ export default function Models() {
   const [adding, setAdding] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
+  const [storage, setStorage] = useState<NodeStorage[] | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+
+  const scanStorage = async () => {
+    setStorageBusy(true);
+    try {
+      setStorage(await api.getStorage());
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setStorageBusy(false);
+    }
+  };
+
+  // Free-space projection for downloads: the download lands on the head first.
+  const headDisk = (status.data?.nodes ?? []).find((n) => n.role === "head")?.disk;
 
   const scan = async () => {
     setScanning(true);
@@ -43,7 +59,13 @@ export default function Models() {
     try {
       const r = await api.validateRepo(repo.trim());
       if (r.ok) {
-        setValInfo(`✓ Found · ${r.size_bytes ? fmtBytes(r.size_bytes) : "size n/a"} · parser: ${r.tool_parser ?? "none"}${r.gated ? " · gated (accept license on HF)" : ""}`);
+        const fits =
+          r.size_bytes && headDisk?.free_bytes != null
+            ? r.size_bytes > headDisk.free_bytes
+              ? ` · ⚠ head has only ${fmtBytes(headDisk.free_bytes)} free`
+              : ` · head has ${fmtBytes(headDisk.free_bytes)} free`
+            : "";
+        setValInfo(`✓ Found · ${r.size_bytes ? fmtBytes(r.size_bytes) : "size n/a"} · parser: ${r.tool_parser ?? "none"}${r.gated ? " · gated (accept license on HF)" : ""}${fits}`);
       } else {
         setValInfo(`✗ ${r.error}`);
       }
@@ -250,8 +272,75 @@ export default function Models() {
         )}
       </div>
 
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-head">
+          <h2 style={{ margin: 0 }}>Storage</h2>
+          <button className="btn btn-sm" onClick={scanStorage} disabled={storageBusy}>
+            {storageBusy ? <Spinner /> : storage ? "Re-scan" : "Scan storage"}
+          </button>
+        </div>
+        {!storage ? (
+          <div className="faint">Scan to see per-node disk usage, orphaned model directories, and the HuggingFace cache.</div>
+        ) : (
+          <div className="grid grid-2">
+            {storage.map((n) => (
+              <div key={n.node_id}>
+                <div className="spread mb">
+                  <strong>{n.node_name}</strong>
+                  {n.disk && (
+                    <span className="mono faint" style={{ fontSize: 12 }}>
+                      {fmtBytes(n.disk.used_bytes)} / {fmtBytes(n.disk.total_bytes)} · {fmtBytes(n.disk.free_bytes)} free
+                    </span>
+                  )}
+                </div>
+                {n.disk && <Meter value={n.disk.used_bytes} max={n.disk.total_bytes} />}
+                {!n.reachable ? (
+                  <div className="faint" style={{ marginTop: 8 }}>{n.error ?? "Unreachable."}</div>
+                ) : (
+                  <table style={{ width: "100%", fontSize: 12, marginTop: 8 }}>
+                    <tbody>
+                      {n.models.map((m) => (
+                        <tr key={m.name}>
+                          <td className="mono">{m.name}</td>
+                          <td className="mono faint" style={{ textAlign: "right" }}>{fmtBytes(m.size_bytes)}</td>
+                          <td style={{ width: 70 }} />
+                        </tr>
+                      ))}
+                      {n.orphans.map((o) => (
+                        <tr key={o.name}>
+                          <td className="mono" style={{ color: "var(--amber)" }}>{o.name} <span className="faint">(orphan)</span></td>
+                          <td className="mono faint" style={{ textAlign: "right" }}>{fmtBytes(o.size_bytes)}</td>
+                          <td style={{ textAlign: "right" }}>
+                            <button className="btn btn-sm btn-danger" onClick={() => {
+                              if (confirm(`Delete orphaned directory '${o.name}' (${fmtBytes(o.size_bytes)}) on ${n.node_name}? No registry model references it.`))
+                                startJob(api.deleteOrphan(n.node_id, o.name), `Delete orphan ${o.name}`);
+                            }}>Delete</button>
+                          </td>
+                        </tr>
+                      ))}
+                      <tr>
+                        <td className="faint">HuggingFace cache</td>
+                        <td className="mono faint" style={{ textAlign: "right" }}>{n.hf_cache_bytes != null ? fmtBytes(n.hf_cache_bytes) : "—"}</td>
+                        <td style={{ textAlign: "right" }}>
+                          {(n.hf_cache_bytes ?? 0) > 0 && (
+                            <button className="btn btn-sm" onClick={() => {
+                              if (confirm(`Clear the HuggingFace cache on ${n.node_name} (${fmtBytes(n.hf_cache_bytes)})? Only cached downloads are removed — models are untouched.`))
+                                startJob(api.clearHfCache([n.node_id]), `Clear HF cache on ${n.node_name}`);
+                            }}>Clear</button>
+                          )}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {job && (
-        <Modal title={job.label} wide onClose={() => { setJob(null); models.reload(); }}>
+        <Modal title={job.label} wide onClose={() => { setJob(null); models.reload(); setStorage(null); }}>
           <JobLogPanel jobId={job.id} title={job.label} onDone={() => models.reload()} />
         </Modal>
       )}

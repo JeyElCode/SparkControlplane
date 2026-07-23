@@ -203,6 +203,17 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Storage
+
+`app/routers/storage.py` — prefix `/api/storage`. Models-filesystem
+inspection & cleanup.
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `` | Per-node breakdown (live SSH `du`/`df`): registry model sizes, **orphan** directories, HF cache size, disk totals. | `NodeStorage[]` |
+| POST | `/delete-orphan` | Delete an unreferenced directory in the models dir (`{node_id, name}`; registered model names are refused). | `JobAccepted` |
+| POST | `/clear-hf-cache` | Empty the HF cache (`{node_ids?}`, omitted = all nodes). Cache only — model files untouched. | `JobAccepted` |
+
 ## Backup
 
 `app/routers/backup.py` — prefix `/api/backup`. Config snapshot bundles
