@@ -154,6 +154,12 @@ function NodeCard({ n, hist, rayRequired }: { n: NodeStatus; hist?: HistoryPoint
           <div className="flex wrap mb">
             <Badge kind={boolKind(n.docker_ok)}>docker</Badge>
             <Badge kind={rayKind}>{rayLabel}</Badge>
+            {n.gpu_throttle && <Badge kind="amber">thermal throttling</Badge>}
+            {(n.recent_xids ?? []).length > 0 && (
+              <span title={n.recent_xids![n.recent_xids!.length - 1].message}>
+                <Badge kind="red">XID {n.recent_xids![n.recent_xids!.length - 1].xid ?? "?"}</Badge>
+              </span>
+            )}
           </div>
           {n.gpus.length === 0 ? (
             <div className="faint">No GPU telemetry (nvidia-smi unavailable).</div>

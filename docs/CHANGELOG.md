@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.15.0 — thermal throttle & GPU XID detection
+- **Thermal throttling** is now sampled every fast tick straight from
+  nvidia-smi's clocks-event reasons (supports both the new
+  `clocks_event_reasons.*` and legacy `clocks_throttle_reasons.*` field
+  names). An active SW/HW thermal slowdown shows an amber **"thermal
+  throttling"** badge on the node card, exports as
+  `spark_gpu_thermal_throttle`, and fires a `gpu_throttle` alert when
+  sustained — the silent performance killer is no longer silent.
+- **GPU XID errors** are scanned from each node's kernel journal on the slow
+  tick (cursor-based `journalctl -k`, so each event is reported once, with a
+  10-minute lookback on startup). Recent XIDs appear as a red **"XID nn"**
+  badge (message in the tooltip), ride `NodeStatus.recent_xids`, export as the
+  `spark_gpu_xid_events_total` counter, and fire an immediate **critical**
+  `gpu_xid` alert that auto-resolves after a configurable quiet window
+  (`xid_window_seconds`, default 600).
+
+
+
 ## v1.14.0 — alerts & notifications
 - **Threshold alerting on top of the telemetry engine.** Rules evaluated every
   ~5s from the caches: node offline, instance running-but-unhealthy, GPU

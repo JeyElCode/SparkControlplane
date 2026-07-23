@@ -127,6 +127,14 @@ class GpuProc(BaseModel):
     mem_mib: int | None = None
 
 
+class XidEvent(BaseModel):
+    """A GPU XID error observed in the node's kernel journal."""
+
+    ts: float
+    xid: int | None = None
+    message: str
+
+
 class HistoryPoint(BaseModel):
     """One compact telemetry sample for sparklines (all optional — a metric can
     be momentarily unavailable without dropping the point)."""
@@ -785,6 +793,8 @@ class NodeStatus(BaseModel):
     disk: DiskUsage | None = None
     gpu_procs: list[GpuProc] = Field(default_factory=list)
     sampled_at: float | None = None  # unix seconds of the underlying sample
+    gpu_throttle: bool | None = None            # active SW/HW thermal slowdown
+    recent_xids: list[XidEvent] = Field(default_factory=list)
 
 
 class RayNodeInfo(BaseModel):

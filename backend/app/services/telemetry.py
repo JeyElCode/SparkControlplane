@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -64,6 +65,8 @@ echo '@@gpu@@'
 nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null || true
 echo '@@gpuproc@@'
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null || true
+echo '@@throttle@@'
+nvidia-smi --query-gpu=clocks_event_reasons.sw_thermal_slowdown,clocks_event_reasons.hw_thermal_slowdown --format=csv,noheader 2>/dev/null || nvidia-smi --query-gpu=clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_thermal_slowdown --format=csv,noheader 2>/dev/null || true
 echo '@@cpu@@'
 head -1 /proc/stat
 echo '@@nproc@@'
@@ -128,6 +131,8 @@ class NodeSample:
     docker_ok: bool | None = None
     docker_names: list[str] = field(default_factory=list)
     ray_container_up: bool | None = None
+    # True when any GPU reports an active SW/HW thermal slowdown
+    gpu_throttle: bool | None = None
 
 
 def parse_sample(
@@ -164,6 +169,16 @@ def parse_sample(
                 temp_c=_int(parts[5]),
                 power_w=_float(parts[6]),
             )
+        )
+
+    # Thermal slowdown flags: one CSV row per GPU, fields "Active"/"Not Active".
+    # ("Not Active" contains "Active", so compare whole fields, not substrings.)
+    throttle_rows = sec.get("throttle", [])
+    if throttle_rows:
+        s.gpu_throttle = any(
+            fieldv.strip() == "Active"
+            for line in throttle_rows
+            for fieldv in line.split(",")
         )
 
     for line in sec.get("gpuproc", []):
@@ -368,6 +383,41 @@ def _i(v: float | None) -> int | None:
     return int(v) if v is not None else None
 
 
+# --- GPU XID error scanning ----------------------------------------------
+_XID_RE = re.compile(r"Xid\s*\([^)]*\):\s*(\d+)", re.IGNORECASE)
+_XID_FALLBACK_RE = re.compile(r"\bXid\b\D{0,20}?(\d+)", re.IGNORECASE)
+XID_LOOKBACK_SECONDS = 600  # first scan looks this far back
+XID_KEEP = 20               # events retained per node
+
+
+def parse_xid_lines(raw: str) -> list["XidEvent"]:
+    """Parse `journalctl -k -o short-unix` output for NVRM Xid events.
+
+    Line shape: ``1721721721.123456 host kernel: NVRM: Xid (PCI:...): 79, ...``
+    """
+    from ..schemas import XidEvent
+
+    out: list[XidEvent] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or "xid" not in line.lower():
+            continue
+        parts = line.split(None, 1)
+        try:
+            ts = float(parts[0])
+        except (ValueError, IndexError):
+            ts = 0.0
+        m = _XID_RE.search(line) or _XID_FALLBACK_RE.search(line)
+        xid = int(m.group(1)) if m else None
+        msg = parts[1] if len(parts) > 1 else line
+        # drop the "<host> kernel: " prefix — the interesting part is NVRM's text
+        _, sep, tail = msg.partition("kernel: ")
+        if sep:
+            msg = tail
+        out.append(XidEvent(ts=ts, xid=xid, message=msg[:300]))
+    return out
+
+
 @dataclass
 class SlowCache:
     ts: float = 0.0
@@ -390,6 +440,9 @@ class TelemetryEngine:
         self._inst_counters: dict[int, dict[str, float]] = {}
         self._inst_history: dict[int, deque[InstanceHistoryPoint]] = {}
         self._inst_names: dict[int, str] = {}
+        self._xids: dict[int, deque] = {}          # node_id -> recent XidEvents
+        self._xid_cursor: dict[int, float] = {}    # node_id -> last scanned epoch
+        self._xid_total: dict[int, int] = {}       # node_id -> events since start
         self._tasks: dict[int, asyncio.Task] = {}
         self._manager: asyncio.Task | None = None
         self._slow_task: asyncio.Task | None = None
@@ -536,6 +589,10 @@ class TelemetryEngine:
                     inst_statuses = await asyncio.gather(
                         *[status_svc._instance_status(session, i, head) for i in instances]
                     )
+                    await asyncio.gather(
+                        *[self._scan_xids(session, n) for n in nodes],
+                        return_exceptions=True,
+                    )
                 self._slow = SlowCache(
                     ts=time.time(), ray=ray, qsfp_ok=qsfp_ok, instances=list(inst_statuses)
                 )
@@ -646,6 +703,37 @@ class TelemetryEngine:
         self._inst_counters[inst.id] = nxt
         return metrics
 
+    async def _scan_xids(self, session, node: Node) -> None:
+        """Scan the node's kernel journal for new NVRM Xid events (cursor-based
+        so each event is reported once)."""
+        if self.node_reachable(node.id) is not True:
+            return
+        cursor = self._xid_cursor.get(node.id, time.time() - XID_LOOKBACK_SECONDS)
+        started = time.time()
+        try:
+            ssh = await ssh_for_node(session, node)
+            import shlex
+
+            res = await ssh.run(
+                f"journalctl -k --since=@{int(cursor)} --no-pager -o short-unix 2>/dev/null "
+                f"| grep -i {shlex.quote('xid')} | tail -40",
+                sudo=True,
+                timeout=20,
+            )
+        except Exception:  # noqa: BLE001 - node just sampled reachable; transient
+            return
+        self._xid_cursor[node.id] = started
+        if not res.ok or not res.stdout.strip():
+            return
+        events = parse_xid_lines(res.stdout)
+        if not events:
+            return
+        ring = self._xids.setdefault(node.id, deque(maxlen=XID_KEEP))
+        ring.extend(events)
+        self._xid_total[node.id] = self._xid_total.get(node.id, 0) + len(events)
+        for e in events:
+            log.warning("GPU XID on %s: xid=%s %s", node.name, e.xid, e.message[:120])
+
     # --- read side -------------------------------------------------------
     def node_reachable(self, node_id: int) -> bool | None:
         """Last sampled reachability, or None if never sampled."""
@@ -678,6 +766,8 @@ class TelemetryEngine:
         st.disk = s.disk
         st.docker_ok = s.docker_ok
         st.ray_container_up = s.ray_container_up
+        st.gpu_throttle = s.gpu_throttle
+        st.recent_xids = list(self._xids.get(node.id, []))
         return st
 
     async def compose_snapshot(self, session) -> StatusSnapshot:
@@ -779,6 +869,9 @@ class TelemetryEngine:
                 emit("spark_models_disk_used_bytes", "gauge", "Models filesystem used.", nl, s.disk.used_bytes)
                 emit("spark_models_disk_total_bytes", "gauge", "Models filesystem size.", nl, s.disk.total_bytes)
                 emit("spark_models_disk_free_bytes", "gauge", "Models filesystem free.", nl, s.disk.free_bytes)
+            if s.gpu_throttle is not None:
+                emit("spark_gpu_thermal_throttle", "gauge", "Any GPU reports active SW/HW thermal slowdown (1/0).", nl, 1 if s.gpu_throttle else 0)
+            emit("spark_gpu_xid_events_total", "counter", "GPU XID errors observed since portal start.", nl, self._xid_total.get(nid, 0))
 
         if self._slow.qsfp_ok is not None:
             emit("spark_qsfp_ok", "gauge", "Head reaches every worker over QSFP (1/0).", {}, 1 if self._slow.qsfp_ok else 0)

@@ -427,6 +427,14 @@ export interface NodeStatus {
   disk?: DiskUsage | null;
   gpu_procs?: GpuProc[];
   sampled_at?: number | null;
+  gpu_throttle?: boolean | null;
+  recent_xids?: XidEvent[];
+}
+
+export interface XidEvent {
+  ts: number;
+  xid?: number | null;
+  message: string;
 }
 
 export interface NetRate {
