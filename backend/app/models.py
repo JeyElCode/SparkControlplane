@@ -132,6 +132,16 @@ class Setting(Base):
     # an optional notification webhook (URL may embed a token -> encrypted).
     alerts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     alert_webhook_url_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Scheduled config backups to S3-compatible storage (MinIO/AWS/R2/…)
+    backup_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    backup_s3_endpoint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    backup_s3_bucket: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    backup_s3_prefix: Mapped[str] = mapped_column(String(128), default="spark-controlplane/")
+    backup_s3_region: Mapped[str] = mapped_column(String(64), default="us-east-1")
+    backup_s3_access_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    backup_s3_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backup_interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
+    backup_retention: Mapped[int] = mapped_column(Integer, default=14)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 

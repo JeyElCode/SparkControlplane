@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.19.0 — config backup & restore (manual + scheduled S3)
+- **One-file config snapshot.** `GET /api/backup/export` downloads a JSON
+  bundle of every configuration table — nodes, cluster config, settings,
+  model registry + per-node states, instances, schedules, custom eval tasks
+  (history is deliberately excluded). Secrets travel **Fernet-encrypted**: a
+  restore is fully functional with the same `SPARK_SECRET_KEY`; with a
+  different key everything else restores and the response lists exactly which
+  secrets were cleared and need re-entering. `POST /api/backup/import`
+  replaces all config tables (ids preserved, FKs intact).
+- **Scheduled backups to S3-compatible storage** (MinIO, Cloudflare R2, AWS,
+  Backblaze — anything speaking S3): endpoint/bucket/prefix/region/keys
+  configured in **Settings → Backups** (secret key stored encrypted),
+  interval (default 24 h) and retention (keep newest N, default 14).
+  Implemented with a **built-in minimal SigV4 client** (~150 lines, verified
+  against AWS's published signature test vector) instead of an 80 MB boto3
+  dependency. "Back up now", backup list with one-click **Restore**, and
+  restore-from-file for fresh installs.
+
+
+
 ## v1.18.0 — instance schedules + week planner
 - **Time-share your memory: models get live windows.** Attach weekly windows
   (days + start/end, overnight wrap supported) to any instance; the scheduler

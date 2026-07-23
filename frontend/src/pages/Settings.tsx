@@ -26,6 +26,70 @@ export default function SettingsPage() {
   const [webhookUrl, setWebhookUrl] = useState("");
   const [alertBusy, setAlertBusy] = useState(false);
 
+  const [bk, setBk] = useState<Record<string, any>>({});
+  const [bkSecret, setBkSecret] = useState("");
+  const [bkBusy, setBkBusy] = useState(false);
+  const [restoreSummary, setRestoreSummary] = useState<import("../lib/api").RestoreSummary | null>(null);
+  const s3list = usePoll(
+    () => (settings.data?.has_backup_s3_secret ? api.listS3Backups().catch(() => []) : Promise.resolve([])),
+    0
+  );
+  const bkv = (k: string) => bk[k] ?? (settings.data as any)?.[k];
+
+  const saveBackup = async () => {
+    setBkBusy(true);
+    try {
+      await api.updateSettings({ ...bk, ...(bkSecret ? { backup_s3_secret: bkSecret } : {}) });
+      setBk({});
+      setBkSecret("");
+      settings.reload();
+      s3list.reload();
+      toast("Backup settings saved", "success");
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setBkBusy(false);
+    }
+  };
+
+  const backupNow = async () => {
+    setBkBusy(true);
+    try {
+      const r = await api.runBackup();
+      toast(`Backup uploaded: ${r.key}`, "success");
+      s3list.reload();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setBkBusy(false);
+    }
+  };
+
+  const restoreFile = async (file: File) => {
+    if (!confirm("Restore this bundle? ALL current config (nodes, instances, schedules, settings) will be replaced.")) return;
+    try {
+      const bundle = JSON.parse(await file.text());
+      setRestoreSummary(await api.importBackup(bundle));
+      config.reload();
+      settings.reload();
+      toast("Backup restored", "success");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
+  const restoreS3 = async (key: string) => {
+    if (!confirm(`Restore ${key}? ALL current config will be replaced.`)) return;
+    try {
+      setRestoreSummary(await api.restoreS3Backup(key));
+      config.reload();
+      settings.reload();
+      toast("Backup restored", "success");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
+
   const alertCfg = { ...(settings.data?.alerts ?? {}), ...alertDraft } as AlertConfig;
   const setAlert = (k: keyof AlertConfig, v: any) => setAlertDraft((p) => ({ ...p, [k]: v }));
 
@@ -213,6 +277,83 @@ export default function SettingsPage() {
         </div>
 
         <div className="flex-col" style={{ gap: 16 }}>
+          <div className="card">
+            <h2>Backups</h2>
+            <p className="faint" style={{ marginTop: -6 }}>
+              Config snapshot (nodes, instances, schedules, models, settings — secrets stay encrypted;
+              restoring needs the same SPARK_SECRET_KEY). Point it at any S3-compatible store
+              (MinIO, R2, AWS) for scheduled off-box copies, or just download a file.
+            </p>
+            {restoreSummary && (
+              <div className={`banner ${restoreSummary.cleared_secrets.length ? "banner-warn" : "banner-info"}`} style={{ marginBottom: 12 }}>
+                Restored {Object.entries(restoreSummary.restored).map(([t, n]) => `${n} ${t}`).join(", ")}
+                {restoreSummary.cleared_secrets.length > 0 && (
+                  <> — ⚠ different secret key: re-enter {restoreSummary.cleared_secrets.join(", ")}</>
+                )}
+              </div>
+            )}
+            <div className="btn-row mb">
+              <a className="btn" href="/api/backup/export">Download export</a>
+              <label className="btn" style={{ cursor: "pointer" }}>
+                Restore from file
+                <input type="file" accept=".json" style={{ display: "none" }}
+                       onChange={(e) => e.target.files?.[0] && restoreFile(e.target.files[0])} />
+              </label>
+            </div>
+            <div className="row-2">
+              <Field label="S3 endpoint" hint="e.g. https://minio.lab:9000">
+                <input value={bkv("backup_s3_endpoint") ?? ""} onChange={(e) => setBk((p) => ({ ...p, backup_s3_endpoint: e.target.value }))} />
+              </Field>
+              <Field label="Bucket">
+                <input value={bkv("backup_s3_bucket") ?? ""} onChange={(e) => setBk((p) => ({ ...p, backup_s3_bucket: e.target.value }))} />
+              </Field>
+            </div>
+            <div className="row-2">
+              <Field label="Access key">
+                <input value={bkv("backup_s3_access_key") ?? ""} onChange={(e) => setBk((p) => ({ ...p, backup_s3_access_key: e.target.value }))} />
+              </Field>
+              <Field label="Secret key" hint={settings.data?.has_backup_s3_secret ? "Stored. Enter a new one to replace." : "stored encrypted"}>
+                <input type="password" placeholder={settings.data?.has_backup_s3_secret ? "•••••• (stored)" : ""} value={bkSecret} onChange={(e) => setBkSecret(e.target.value)} />
+              </Field>
+            </div>
+            <div className="row-2">
+              <Field label="Interval (hours)">
+                <input type="number" value={bkv("backup_interval_hours") ?? 24} onChange={(e) => setBk((p) => ({ ...p, backup_interval_hours: Number(e.target.value) }))} />
+              </Field>
+              <Field label="Keep newest N">
+                <input type="number" value={bkv("backup_retention") ?? 14} onChange={(e) => setBk((p) => ({ ...p, backup_retention: Number(e.target.value) }))} />
+              </Field>
+            </div>
+            <div className="btn-row">
+              <label className="flex gap-sm" style={{ alignItems: "center", fontSize: 13 }}>
+                <input type="checkbox" checked={!!bkv("backup_enabled")} onChange={(e) => setBk((p) => ({ ...p, backup_enabled: e.target.checked }))} />
+                scheduled backups
+              </label>
+              <button className="btn btn-primary" onClick={saveBackup} disabled={bkBusy || (Object.keys(bk).length === 0 && !bkSecret)}>
+                {bkBusy ? <Spinner /> : "Save backup config"}
+              </button>
+              {settings.data?.has_backup_s3_secret && (
+                <button className="btn" onClick={backupNow} disabled={bkBusy}>Back up now</button>
+              )}
+            </div>
+            {(s3list.data ?? []).length > 0 && (
+              <div className="table-wrap" style={{ marginTop: 12 }}>
+                <table>
+                  <thead><tr><th>Backup</th><th>Size</th><th /></tr></thead>
+                  <tbody>
+                    {(s3list.data ?? []).slice(0, 8).map((o) => (
+                      <tr key={o.key}>
+                        <td className="mono" style={{ fontSize: 12 }}>{o.key}</td>
+                        <td className="mono faint">{(o.size / 1024).toFixed(1)} kB</td>
+                        <td><button className="btn btn-sm" onClick={() => restoreS3(o.key)}>Restore</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
           <div className="card">
             <h2>Alerts</h2>
             <p className="faint" style={{ marginTop: -6 }}>

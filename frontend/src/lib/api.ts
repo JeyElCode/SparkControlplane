@@ -157,6 +157,28 @@ export interface Settings {
   has_mcp_token?: boolean;
   alerts?: AlertConfig;
   has_alert_webhook?: boolean;
+  backup_enabled?: boolean;
+  backup_s3_endpoint?: string | null;
+  backup_s3_bucket?: string | null;
+  backup_s3_prefix?: string;
+  backup_s3_region?: string;
+  backup_s3_access_key?: string | null;
+  has_backup_s3_secret?: boolean;
+  backup_interval_hours?: number;
+  backup_retention?: number;
+}
+
+export interface BackupObject {
+  key: string;
+  size: number;
+  last_modified: string;
+}
+
+export interface RestoreSummary {
+  restored: Record<string, number>;
+  cleared_secrets: string[];
+  app_version?: string | null;
+  created_at?: string | null;
 }
 
 export interface AlertConfig {
@@ -661,7 +683,24 @@ export const api = {
     judge_api_key?: string;
     alerts?: Partial<AlertConfig>;
     alert_webhook_url?: string;
+    backup_enabled?: boolean;
+    backup_s3_endpoint?: string;
+    backup_s3_bucket?: string;
+    backup_s3_prefix?: string;
+    backup_s3_region?: string;
+    backup_s3_access_key?: string;
+    backup_s3_secret?: string;
+    backup_interval_hours?: number;
+    backup_retention?: number;
   }) => j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
+  importBackup: (bundle: unknown) =>
+    j<RestoreSummary>("/api/backup/import", { method: "POST", body: JSON.stringify(bundle) }),
+  runBackup: () => j<{ ok: boolean; key: string }>("/api/backup/run", { method: "POST" }),
+  listS3Backups: () => j<BackupObject[]>("/api/backup/s3"),
+  restoreS3Backup: (key: string) =>
+    j<RestoreSummary>("/api/backup/s3-restore", { method: "POST", body: JSON.stringify({ key }) }),
+  backupStatus: () =>
+    j<{ last_ok_ts?: number | null; last_key?: string | null; last_error?: string | null }>("/api/backup/status"),
   listAlerts: (limit = 50) => j<AlertRecord[]>(`/api/alerts?limit=${limit}`),
   testAlertWebhook: () => j<{ ok: boolean; message: string }>("/api/alerts/test", { method: "POST" }),
   listPhases: () => j<PhaseInfo[]>("/api/cluster/phases"),

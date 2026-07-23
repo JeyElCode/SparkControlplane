@@ -50,6 +50,15 @@ def _settings_out(s) -> SettingsOut:
         has_judge_api_key=bool(s.judge_api_key_enc),
         alerts=merged_config(s.alerts_json),
         has_alert_webhook=bool(s.alert_webhook_url_enc),
+        backup_enabled=s.backup_enabled,
+        backup_s3_endpoint=s.backup_s3_endpoint,
+        backup_s3_bucket=s.backup_s3_bucket,
+        backup_s3_prefix=s.backup_s3_prefix,
+        backup_s3_region=s.backup_s3_region,
+        backup_s3_access_key=s.backup_s3_access_key,
+        has_backup_s3_secret=bool(s.backup_s3_secret_enc),
+        backup_interval_hours=s.backup_interval_hours,
+        backup_retention=s.backup_retention,
     )
 
 
@@ -88,6 +97,26 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.alert_webhook_url_enc = (
             encrypt(payload.alert_webhook_url) if payload.alert_webhook_url else None
         )
+    if payload.backup_enabled is not None:
+        s.backup_enabled = payload.backup_enabled
+    # nullable string fields: "" clears them
+    for field in ("backup_s3_endpoint", "backup_s3_bucket", "backup_s3_access_key"):
+        val = getattr(payload, field)
+        if val is not None:
+            setattr(s, field, val.strip() or None)
+    # non-null string fields keep their value even when set to ""
+    if payload.backup_s3_prefix is not None:
+        s.backup_s3_prefix = payload.backup_s3_prefix.strip()
+    if payload.backup_s3_region is not None and payload.backup_s3_region.strip():
+        s.backup_s3_region = payload.backup_s3_region.strip()
+    if payload.backup_s3_secret is not None:
+        s.backup_s3_secret_enc = (
+            encrypt(payload.backup_s3_secret) if payload.backup_s3_secret else None
+        )
+    if payload.backup_interval_hours is not None:
+        s.backup_interval_hours = max(0.25, payload.backup_interval_hours)
+    if payload.backup_retention is not None:
+        s.backup_retention = max(1, payload.backup_retention)
     await session.commit()
     return _settings_out(s)
 
