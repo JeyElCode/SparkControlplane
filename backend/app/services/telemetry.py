@@ -699,8 +699,16 @@ class TelemetryEngine:
         for s in inst_statuses:
             s.metrics = self._inst_metrics.get(s.instance_id)
         from ..models import TOPO_CLUSTER
+        from ..schemas import ActiveAlert
+        from .alerts import manager as alert_manager
 
+        active_alerts = [
+            ActiveAlert(rule=a["rule"], subject=a["subject"], severity=a["severity"],
+                        message=a["message"], since=a["since"])
+            for a in alert_manager.active()
+        ]
         return StatusSnapshot(
+            active_alerts=active_alerts,
             setup_complete=setting.setup_complete,
             qsfp_ok=self._slow.qsfp_ok,
             ray=self._slow.ray,

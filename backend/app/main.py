@@ -19,7 +19,19 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import get_settings
 from .db import init_db
-from .routers import cluster, evals, instances, jobs, logs, models, nodes, playground, power, status
+from .routers import (
+    alerts,
+    cluster,
+    evals,
+    instances,
+    jobs,
+    logs,
+    models,
+    nodes,
+    playground,
+    power,
+    status,
+)
 from .ssh import pool
 
 logging.basicConfig(
@@ -63,9 +75,11 @@ async def _startup_discover() -> None:
 async def lifespan(app: FastAPI):
     await init_db()
     log.info("Spark Control Plane %s started", __version__)
+    from .services.alerts import manager as alert_manager
     from .services.telemetry import engine as telemetry_engine
 
     telemetry_engine.start()
+    alert_manager.start()
     task = asyncio.create_task(_startup_discover())
     # The mounted MCP sub-app's own lifespan is not run by Starlette's Mount, so
     # drive its streamable-HTTP session manager from here for its whole lifetime.
@@ -76,6 +90,7 @@ async def lifespan(app: FastAPI):
     else:
         yield
     task.cancel()
+    await alert_manager.stop()
     await telemetry_engine.stop()
     await pool.close_all()
 
@@ -90,7 +105,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts):
     app.include_router(r.router)
 
 

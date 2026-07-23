@@ -116,6 +116,39 @@ export interface Settings {
   mcp_path?: string | null;
   mcp_token?: string | null;
   has_mcp_token?: boolean;
+  alerts?: AlertConfig;
+  has_alert_webhook?: boolean;
+}
+
+export interface AlertConfig {
+  node_offline_seconds: number;
+  instance_unhealthy_seconds: number;
+  gpu_temp_c: number;
+  gpu_temp_seconds: number;
+  disk_free_pct: number;
+  disk_seconds: number;
+  kv_cache_pct: number;
+  kv_cache_seconds: number;
+  qsfp_down_seconds: number;
+  webhook_kind: "generic" | "ntfy" | "discord" | "slack";
+}
+
+export interface ActiveAlert {
+  rule: string;
+  subject: string;
+  severity: "warn" | "crit";
+  message: string;
+  since?: number | null;
+}
+
+export interface AlertRecord {
+  id: number;
+  rule: string;
+  subject: string;
+  severity: string;
+  message: string;
+  fired_at: string;
+  resolved_at?: string | null;
 }
 
 export interface Catalog {
@@ -473,6 +506,7 @@ export interface StatusSnapshot {
   nodes: NodeStatus[];
   instances: InstanceRuntimeStatus[];
   overcommit_warnings: string[];
+  active_alerts?: ActiveAlert[];
   generated_at: string;
 }
 
@@ -560,7 +594,11 @@ export const api = {
     judge_base_url?: string;
     judge_model?: string;
     judge_api_key?: string;
+    alerts?: Partial<AlertConfig>;
+    alert_webhook_url?: string;
   }) => j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
+  listAlerts: (limit = 50) => j<AlertRecord[]>(`/api/alerts?limit=${limit}`),
+  testAlertWebhook: () => j<{ ok: boolean; message: string }>("/api/alerts/test", { method: "POST" }),
   listPhases: () => j<PhaseInfo[]>("/api/cluster/phases"),
   runSetup: (phases?: string[]) =>
     j<JobAccepted>("/api/cluster/setup", { method: "POST", body: JSON.stringify({ phases: phases ?? null }) }),

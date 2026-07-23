@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.14.0 — alerts & notifications
+- **Threshold alerting on top of the telemetry engine.** Rules evaluated every
+  ~5s from the caches: node offline, instance running-but-unhealthy, GPU
+  temperature, models-disk low, KV-cache pegged (sustained = overloaded model),
+  and QSFP fabric down. Every rule has a **sustain duration** so blips and
+  reboots don't page, and each fired alert sends a matching **recovery**
+  notification. History persists to a new `alerts` table
+  (`GET /api/alerts`, `GET /api/alerts/active`).
+- **Sinks:** Dashboard banners (crit = red, warn = amber) always on; optional
+  **webhook** — ntfy, Discord, Slack, or generic JSON POST — with the URL
+  stored encrypted (it may embed a token). `POST /api/alerts/test` sends a
+  test notification.
+- **Settings → Alerts card:** thresholds (GPU temp, KV %, disk free %, node
+  offline seconds), webhook type + URL, Send test / Remove webhook. Config is
+  merged over server defaults, unknown keys rejected.
+
 ## v1.13.1 — live-cluster fixes (Ray context, Playground/Evals reachability)
 - **fix(playground+evals): distributed and TLS instances are now reachable.**
   The Playground (and the eval engine's endpoint resolution) still used the
