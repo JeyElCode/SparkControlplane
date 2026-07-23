@@ -154,6 +154,30 @@ def test_ldap_mode_login_with_mocked_directory(tmp_path, monkeypatch):
     config.get_settings.cache_clear()
 
 
+def test_ldap_tls_policy():
+    """ldap3 defaults to CERT_NONE — our config must always be explicit."""
+    import ssl
+
+    from app.services.auth import build_ldap_tls
+
+    assert build_ldap_tls(True, None).validate == ssl.CERT_REQUIRED   # the new default
+    assert build_ldap_tls(False, None).validate == ssl.CERT_NONE      # explicit opt-out
+    import tempfile
+
+    # a CA bundle file is passed through; a missing one raises (fail-closed)
+    with tempfile.NamedTemporaryFile(suffix=".pem") as f:
+        f.write(b"-----BEGIN CERTIFICATE-----\n")
+        f.flush()
+        tls = build_ldap_tls(True, f.name)
+        assert tls.ca_certs_file == f.name
+    from ldap3.core.exceptions import LDAPException
+
+    import pytest as _pytest
+
+    with _pytest.raises(LDAPException):
+        build_ldap_tls(True, "/nonexistent/ca.pem")
+
+
 def test_ldap_escaping():
     from app.services.auth import _ldap_escape_dn, _ldap_escape_filter
 

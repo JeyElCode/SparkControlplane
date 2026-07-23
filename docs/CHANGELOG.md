@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.20.1 — LDAP TLS certificate validation
+- **fix(auth): LDAPS/STARTTLS connections now validate the directory's
+  certificate by default.** The `ldap3` library's own default is `CERT_NONE` —
+  encrypted but unauthenticated, leaving credentials exposed to an active
+  man-in-the-middle. The portal now always passes an explicit TLS policy:
+  `CERT_REQUIRED` against the system trust store (new default), a private CA
+  via `SPARK_LDAP_CA_FILE`, or an explicit opt-out with
+  `SPARK_LDAP_VERIFY_CERT=false` for self-signed lab DCs. Fail-closed
+  throughout: an invalid certificate or a missing CA file blocks logins
+  rather than silently downgrading.
+
 ## v1.20.0 — storage cleanup tools
 - **Per-node storage breakdown** (Models page → Storage → Scan): one batched
   `du`/`df` per node reports every directory in the models dir mapped against

@@ -125,6 +125,21 @@ def _ldap_escape_dn(value: str) -> str:
     return "".join(out)
 
 
+def build_ldap_tls(verify: bool, ca_file: str | None):
+    """ldap3 Tls config for ldaps://STARTTLS. ldap3's own default is CERT_NONE
+    (encrypted but unauthenticated — MITM-able), so we always pass an explicit
+    policy: validate against the system store (or ``ca_file``) unless the
+    operator explicitly opted out."""
+    import ssl
+
+    import ldap3
+
+    return ldap3.Tls(
+        validate=ssl.CERT_REQUIRED if verify else ssl.CERT_NONE,
+        ca_certs_file=ca_file or None,
+    )
+
+
 def _ldap_verify(username: str, password: str) -> str:
     """Blocking LDAP verification (run in a thread). Returns the username."""
     try:
@@ -137,8 +152,16 @@ def _ldap_verify(username: str, password: str) -> str:
     if not settings.ldap_url:
         raise AuthError("Logins are disabled: SPARK_LDAP_URL is not set.")
     use_ssl = settings.ldap_url.lower().startswith("ldaps://")
+    tls = None
+    if use_ssl or settings.ldap_start_tls:
+        try:
+            tls = build_ldap_tls(settings.ldap_verify_cert, settings.ldap_ca_file)
+        except LDAPException as exc:  # e.g. missing/unreadable CA file
+            log.error("LDAP TLS configuration invalid: %s", exc)
+            raise AuthError("Logins are disabled: LDAP TLS configuration is invalid "
+                            "(check SPARK_LDAP_CA_FILE).")
     server = ldap3.Server(settings.ldap_url, use_ssl=use_ssl, get_info=ldap3.NONE,
-                          connect_timeout=5)
+                          connect_timeout=5, tls=tls)
 
     def _conn(user_dn: str | None, pw: str | None) -> "ldap3.Connection":
         c = ldap3.Connection(server, user=user_dn, password=pw, receive_timeout=10,
