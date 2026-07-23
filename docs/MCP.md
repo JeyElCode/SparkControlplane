@@ -68,10 +68,57 @@ Every REST router has matching MCP tools. Long-running actions (anything marked
 _async job_) return a job handle — poll `job_get` / `job_list` for progress,
 exactly like the HTTP API.
 
-### Status
+### Status & telemetry
 | Tool | Description |
 |---|---|
-| `status_get` | Live cluster status snapshot (nodes, GPUs, Ray, instances, warnings). |
+| `status_get` | Live cluster status snapshot (nodes, GPUs, Ray, instances, alerts, warnings). |
+| `node_history` | Per-node telemetry history (CPU %, memory, GPU, QSFP/LAN B/s, disk). |
+| `instance_history` | Per-instance serving history (tokens/s, queue, KV-cache %, TTFT). |
+
+### Power (DESTRUCTIVE — confirm with the operator)
+| Tool | Description |
+|---|---|
+| `power_affected` | Preview which RUNNING instances a node shutdown would take down. |
+| `power_node` | `shutdown` / `reboot` / `wake` (Wake-on-LAN) a node. |
+| `power_batch` | Fleet-wide `shutdown` (workers first) or `wake`. |
+
+### Logs
+| Tool | Description |
+|---|---|
+| `log_units` | Every tailable `spark-*` systemd unit, mapped to its node. |
+| `log_tail` | Last N journal lines for a unit (one-shot). |
+
+### Alerts
+| Tool | Description |
+|---|---|
+| `alert_list` / `alert_active` | Alert history / currently-firing alerts. |
+| `alert_test_webhook` | Send a test notification through the configured webhook. |
+
+### Usage & schedules
+| Tool | Description |
+|---|---|
+| `usage_get` | Tokens/requests/TTFT per model, bucketed by day or hour. |
+| `schedule_list` / `schedule_now` | Live-windows with planner fields / scheduler clock. |
+| `schedule_create` / `schedule_update` / `schedule_delete` | Manage instance live-windows. |
+
+### Backup (restore tools are DESTRUCTIVE)
+| Tool | Description |
+|---|---|
+| `backup_export` / `backup_import` | Config bundle out / restore over live config. |
+| `backup_run_now` / `backup_list_s3` / `backup_restore_s3` / `backup_status` | S3 backup operations. |
+
+### Storage
+| Tool | Description |
+|---|---|
+| `storage_report` | Per-node disk breakdown incl. orphan directories and HF cache size. |
+| `storage_delete_orphan` | DESTRUCTIVE: delete an unreferenced models-dir directory. |
+| `storage_clear_hf_cache` | Clear the HF download cache (models untouched). |
+
+### Nodes & image extras
+| Tool | Description |
+|---|---|
+| `node_interfaces` | Physical NIC enumeration (link, speed, driver, QSFP candidates). |
+| `image_tags` / `image_update` | Registry tag discovery / cluster image upgrade with rolling restart. |
 
 ### Instances
 | Tool | Description |

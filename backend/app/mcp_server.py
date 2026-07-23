@@ -34,14 +34,23 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException
 
 from .db import SessionLocal
+from .routers import alerts as alerts_router
+from .routers import backup as backup_router
 from .routers import cluster as cluster_router
 from .routers import evals as evals_router
 from .routers import instances as instances_router
 from .routers import jobs as jobs_router
+from .routers import logs as logs_router
 from .routers import models as models_router
 from .routers import nodes as nodes_router
 from .routers import playground as playground_router
+from .routers import power as power_router
+from .routers import schedules as schedules_router
+from .routers import storage as storage_router
+from .routers import usage as usage_router
 from .schemas import (
+    ActiveAlert,
+    AlertOut,
     ClusterConfigIn,
     ClusterConfigOut,
     ConnectionTest,
@@ -51,15 +60,19 @@ from .schemas import (
     EvalRunOut,
     EvalRunRequest,
     EvalStarted,
+    InstanceHistory,
     InstanceIn,
     InstanceOut,
     InstanceUpdate,
+    InterfaceInfo,
     JobAccepted,
     JobDetail,
     JobOut,
+    ImageUpdateIn,
     ModelIn,
     ModelOut,
     ModelSuggestion,
+    NodeHistory,
     NodeIn,
     NodeOut,
     NodeUpdate,
@@ -194,11 +207,16 @@ def build_mcp_server() -> "FastMCP":
     mcp = FastMCP(
         "spark-controlplane",
         instructions=(
-            "Control plane for a 2-node DGX Spark vLLM cluster. Tools mirror the "
-            "REST API: manage nodes, models, instances, the cluster lifecycle, "
-            "evaluations, jobs and a chat playground. Long-running actions return "
-            "a job handle — poll job_get/job_list for progress. Read-only state "
-            "is also available as spark:// resources."
+            "Control plane for a DGX Spark vLLM cluster (up to 4 nodes). Tools "
+            "mirror the REST API: nodes (incl. NIC detection), models, instances, "
+            "cluster lifecycle, image updates, evals, jobs, playground, live "
+            "telemetry + history, log tailing, power controls, alerts, usage "
+            "history, instance live-window schedules, config backup/restore, and "
+            "storage cleanup. Long-running actions return a job handle — poll "
+            "job_get/job_list for progress. Tools marked DESTRUCTIVE (power, "
+            "backup restore, orphan deletion, image update) should be confirmed "
+            "with the operator before use. Read-only state is also available as "
+            "spark:// resources."
         ),
         stateless_http=True,
         streamable_http_path="/",
@@ -460,6 +478,202 @@ def build_mcp_server() -> "FastMCP":
     async def playground_chat(payload: PlaygroundRequest) -> PlaygroundResponse:
         """Send a one-shot chat completion to a running instance's OpenAI endpoint."""
         return await _with_session(playground_router.chat, payload=payload)
+
+    # ---------------- telemetry history ---------------- #
+    @mcp.tool()
+    async def node_history(minutes: int = 15) -> list[NodeHistory]:
+        """Per-node telemetry history (CPU %, memory, GPU, QSFP/LAN B/s, disk) for sparklines/trends."""
+        return telemetry.engine.history(minutes=minutes)
+
+    @mcp.tool()
+    async def instance_history(minutes: int = 15) -> list[InstanceHistory]:
+        """Per-instance vLLM serving history (tokens/s, queue depth, KV-cache %, TTFT)."""
+        return telemetry.engine.instance_history(minutes=minutes)
+
+    # ---------------- node interfaces ---------------- #
+    @mcp.tool()
+    async def node_interfaces(node_id: int) -> list[InterfaceInfo]:
+        """Enumerate a node's physical NICs (link state, speed, driver, MAC, QSFP-candidate flag)."""
+        return await _with_session(nodes_router.list_interfaces, node_id=node_id)
+
+    # ---------------- power ---------------- #
+    @mcp.tool()
+    async def power_affected(node_id: int) -> list[str]:
+        """RUNNING instances a shutdown of this node would take down — check BEFORE power_node."""
+        return await _with_session(power_router.get_affected, node_id=node_id)
+
+    @mcp.tool()
+    async def power_node(node_id: int, action: str) -> JobAccepted:
+        """DESTRUCTIVE: power action on a node — 'shutdown' | 'reboot' | 'wake' (Wake-on-LAN).
+        Shutdown/reboot kill any instances on the node; call power_affected first and
+        confirm with the operator before shutting down a node that serves traffic."""
+        return await _with_session(power_router.node_power, node_id=node_id, action=action)
+
+    @mcp.tool()
+    async def power_batch(action: str) -> JobAccepted:
+        """DESTRUCTIVE: fleet-wide 'shutdown' (workers first, then head) or 'wake'.
+        Shutting down the whole fleet stops every model — confirm with the operator first."""
+        return await _no_session(power_router.batch_power, action=action)
+
+    # ---------------- logs ---------------- #
+    @mcp.tool()
+    async def log_units() -> list[logs_router.LogUnit]:
+        """Every tailable systemd unit the portal manages (Ray, vLLM instances, TLS proxies), with its node."""
+        return await _with_session(logs_router.list_units)
+
+    @mcp.tool()
+    async def log_tail(node_id: int, unit: str, lines: int = 100) -> str:
+        """Fetch the last N journal lines for a spark-* unit on a node (one-shot, not a live follow)."""
+        import shlex
+
+        from .models import Node
+        from .ssh import ssh_for_node
+
+        if not logs_router._UNIT_RE.match(unit):
+            raise ValueError("unit must be a spark-* systemd unit (see log_units)")
+        lines = max(1, min(int(lines), 2000))
+        async with SessionLocal() as session:
+            node = await session.get(Node, node_id)
+            if node is None:
+                raise ValueError("Node not found")
+            ssh = await ssh_for_node(session, node)
+        res = await ssh.run(
+            f"journalctl -u {shlex.quote(unit)} -n {lines} --no-pager 2>&1 || true",
+            sudo=True, timeout=30,
+        )
+        return res.stdout
+
+    # ---------------- alerts ---------------- #
+    @mcp.tool()
+    async def alert_list(limit: int = 50) -> list[AlertOut]:
+        """Alert history, newest first (resolved_at null = still active)."""
+        return await _with_session(alerts_router.list_alerts, limit=limit)
+
+    @mcp.tool()
+    async def alert_active() -> list[ActiveAlert]:
+        """Currently-firing alerts (same set as the dashboard banners)."""
+        return await _no_session(alerts_router.active_alerts)
+
+    @mcp.tool()
+    async def alert_test_webhook() -> dict:
+        """Send a test notification through the configured alert webhook."""
+        return await _with_session(alerts_router.test_webhook)
+
+    # ---------------- usage ---------------- #
+    @mcp.tool()
+    async def usage_get(days: int = 30, bucket: str = "day") -> list[usage_router.ModelUsage]:
+        """Persistent serving usage per model (tokens, requests, TTFT), bucketed by 'day' or 'hour'."""
+        return await _with_session(usage_router.get_usage, days=days, bucket=bucket)
+
+    # ---------------- schedules ---------------- #
+    @mcp.tool()
+    async def schedule_list() -> list[schedules_router.ScheduleOut]:
+        """All instance live-windows with planner fields (est GiB/node, node scope)."""
+        return await _with_session(schedules_router.list_schedules)
+
+    @mcp.tool()
+    async def schedule_now() -> dict:
+        """The scheduler's current wall clock (timezone, weekday, minutes)."""
+        return await _no_session(schedules_router.schedules_now)
+
+    @mcp.tool()
+    async def schedule_create(payload: schedules_router.ScheduleIn) -> schedules_router.ScheduleOut:
+        """Add a weekly live-window: the instance starts when it opens, stops when it closes
+        (days 0-6 Mon-first; end <= start wraps past midnight)."""
+        return await _with_session(schedules_router.create_schedule, payload=payload)
+
+    @mcp.tool()
+    async def schedule_update(
+        schedule_id: int, payload: schedules_router.ScheduleUpdate
+    ) -> schedules_router.ScheduleOut:
+        """Update a live-window's days/times/enabled."""
+        return await _with_session(
+            schedules_router.update_schedule, schedule_id=schedule_id, payload=payload
+        )
+
+    @mcp.tool()
+    async def schedule_delete(schedule_id: int) -> dict:
+        """Delete a live-window (the instance becomes fully manual again)."""
+        await _with_session(schedules_router.delete_schedule, schedule_id=schedule_id)
+        return {"ok": True}
+
+    # ---------------- backup ---------------- #
+    @mcp.tool()
+    async def backup_export() -> dict:
+        """The full config bundle (nodes, instances, schedules, models, settings — secrets
+        stay Fernet-encrypted). Same format the S3 backups store."""
+        from .services import backup as backup_svc
+
+        return await backup_svc.build_bundle()
+
+    @mcp.tool()
+    async def backup_import(bundle: dict) -> dict:
+        """DESTRUCTIVE: restore a bundle — replaces ALL config tables (history untouched).
+        Confirm with the operator before restoring over live config."""
+        return await _no_session(backup_router.import_bundle, bundle=bundle)
+
+    @mcp.tool()
+    async def backup_run_now() -> dict:
+        """Build + upload a backup to the configured S3 target immediately."""
+        return await _no_session(backup_router.run_now)
+
+    @mcp.tool()
+    async def backup_list_s3() -> list[dict]:
+        """Backups in the S3 target, newest first."""
+        return await _no_session(backup_router.list_s3_backups)
+
+    @mcp.tool()
+    async def backup_restore_s3(key: str) -> dict:
+        """DESTRUCTIVE: fetch a backup from S3 and restore it (replaces all config).
+        Confirm with the operator first."""
+        return await _no_session(backup_router.restore_s3, payload={"key": key})
+
+    @mcp.tool()
+    async def backup_status() -> dict:
+        """Scheduled-backup runner state (last success, last key, last error)."""
+        return await _no_session(backup_router.backup_status)
+
+    # ---------------- storage ---------------- #
+    @mcp.tool()
+    async def storage_report() -> list[dict]:
+        """Per-node models-disk breakdown: registry model sizes, ORPHAN directories
+        (unreferenced by the registry), HF cache size, disk totals. Live SSH scan."""
+        return await _with_session(storage_router.get_storage)
+
+    @mcp.tool()
+    async def storage_delete_orphan(node_id: int, name: str) -> JobAccepted:
+        """DESTRUCTIVE: delete an orphaned directory in the models dir. Registered model
+        names are refused (use model_delete_files for those). Confirm with the operator."""
+        return await _no_session(
+            storage_router.delete_orphan, payload={"node_id": node_id, "name": name}
+        )
+
+    @mcp.tool()
+    async def storage_clear_hf_cache(node_ids: list[int] | None = None) -> JobAccepted:
+        """Clear the HuggingFace download cache on the given nodes (all when omitted).
+        Cache only — model files are untouched."""
+        payload = {"node_ids": node_ids} if node_ids is not None else {}
+        return await _no_session(storage_router.clear_hf_cache, payload=payload)
+
+    # ---------------- image updates ---------------- #
+    @mcp.tool()
+    async def image_tags(image: str | None = None) -> dict:
+        """Registry tags for the cluster vLLM image (or an explicit image ref), newest first."""
+        return await _with_session(cluster_router.image_tags, image=image)
+
+    @mcp.tool()
+    async def image_update(
+        image: str, restart_ray: bool = True, restart_instances: bool = True
+    ) -> JobAccepted:
+        """DESTRUCTIVE-ish: pull a new vLLM image on every node, persist it, optionally
+        restart Ray and rolling-restart running instances (brief downtime each).
+        Confirm with the operator before restarting serving instances."""
+        return await _no_session(
+            cluster_router.image_update,
+            payload=ImageUpdateIn(
+                image=image, restart_ray=restart_ray, restart_instances=restart_instances
+            ),
+        )
 
     # ------------------------------------------------------------------ #
     # Resources (read-only mirrors of the heavy-read surfaces)
