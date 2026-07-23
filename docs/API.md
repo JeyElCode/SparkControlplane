@@ -203,6 +203,25 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Backup
+
+`app/routers/backup.py` — prefix `/api/backup`. Config snapshot bundles
+(secrets stay Fernet-encrypted — same-`SPARK_SECRET_KEY` restores are
+lossless; a different key clears the affected secrets and reports them).
+
+| Method | Path | Description | Response |
+|---|---|---|---|
+| GET | `/export` | Download the config bundle (JSON attachment). | bundle |
+| POST | `/import` | Replace all config tables with a bundle. | `{restored, cleared_secrets}` |
+| POST | `/run` | Build + upload a backup to the configured S3 target now (prunes to retention). | `{ok, key}` |
+| GET | `/s3` | List backups in the S3 target, newest first. | `[{key, size, last_modified}]` |
+| POST | `/s3-restore` | Fetch a backup from S3 and restore it. | `{restored, cleared_secrets}` |
+| GET | `/status` | Scheduled-backup runner state. | `{last_ok_ts, last_key, last_error}` |
+
+S3 settings (endpoint/bucket/prefix/region/access key/secret, interval,
+retention, enabled) live on the Settings singleton via
+`PATCH /api/cluster/settings`.
+
 ## Schedules
 
 `app/routers/schedules.py` — prefix `/api/schedules`. Weekly live-windows per

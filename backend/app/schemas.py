@@ -378,6 +378,16 @@ class SettingsIn(BaseModel):
     # a write-only webhook URL ("" clears it).
     alerts: dict | None = None
     alert_webhook_url: str | None = None
+    # Scheduled S3 backups ("" clears the string fields; secret is write-only)
+    backup_enabled: bool | None = None
+    backup_s3_endpoint: str | None = None
+    backup_s3_bucket: str | None = None
+    backup_s3_prefix: str | None = None
+    backup_s3_region: str | None = None
+    backup_s3_access_key: str | None = None
+    backup_s3_secret: str | None = None
+    backup_interval_hours: float | None = None
+    backup_retention: int | None = None
 
 
 class SettingsOut(BaseModel):
@@ -389,6 +399,15 @@ class SettingsOut(BaseModel):
     has_judge_api_key: bool = False
     alerts: dict = Field(default_factory=dict)
     has_alert_webhook: bool = False
+    backup_enabled: bool = False
+    backup_s3_endpoint: str | None = None
+    backup_s3_bucket: str | None = None
+    backup_s3_prefix: str = "spark-controlplane/"
+    backup_s3_region: str = "us-east-1"
+    backup_s3_access_key: str | None = None
+    has_backup_s3_secret: bool = False
+    backup_interval_hours: float = 24.0
+    backup_retention: int = 14
 
 
 class ActiveAlert(BaseModel):
