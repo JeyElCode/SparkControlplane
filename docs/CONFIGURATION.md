@@ -42,7 +42,20 @@ In the **Role** column below:
 |---|---|---|---|---|
 | `SPARK_DATA_DIR` | `data_dir` | `/data` | Process | Directory holding the SQLite DB (`spark.sqlite3`) and `secret.key`. Created on start. |
 | `SPARK_SECRET_KEY` | `secret_key` | _none_ → generated | Process | Fernet key (urlsafe base64, 32 bytes) used to encrypt secrets at rest. If unset, a key is generated and persisted to `<data_dir>/secret.key` on first start. See [§2](#2-secret-key-handling). |
-| `SPARK_AUTH_ENABLED` | `auth_enabled` | `false` | Process | Portal login toggle. Deferred for v1 — the auth dependency is wired but a no-op until this is flipped on. |
+| `SPARK_AUTH_MODE` | `auth_mode` | `none` | Process | Portal auth: `none` (open — homelab default), `password`, or `ldap`. **Fail-closed**: any other/misconfigured value requires auth but blocks logins. |
+| `SPARK_AUTH_ENABLED` | `auth_enabled` | `false` | Process | Legacy toggle: `true` + `SPARK_ADMIN_PASSWORD` maps to `password` mode when `SPARK_AUTH_MODE` is unset. |
+| `SPARK_ADMIN_USER` | `admin_user` | `admin` | Process | Username for `password` mode. |
+| `SPARK_ADMIN_PASSWORD` | `admin_password` | _none_ | Process | Password for `password` mode (required for that mode). |
+| `SPARK_AUTH_SESSION_HOURS` | `auth_session_hours` | `24` | Process | Session cookie lifetime. |
+| `SPARK_AUTH_COOKIE_SECURE` | `auth_cookie_secure` | `false` | Process | Set `true` when the portal is served over HTTPS. |
+| `SPARK_METRICS_TOKEN` | `metrics_token` | _none_ | Process | Bearer token allowing Prometheus to scrape `/metrics` while auth is on. |
+| `SPARK_LDAP_URL` | `ldap_url` | _none_ | Process | `ldap://host:389` or `ldaps://host:636` (required for `ldap` mode). |
+| `SPARK_LDAP_USER_DN_TEMPLATE` | `ldap_user_dn_template` | _none_ | Process | Direct-bind DN template, e.g. `uid={username},ou=people,dc=example,dc=com`. |
+| `SPARK_LDAP_BIND_DN` / `SPARK_LDAP_BIND_PASSWORD` | `ldap_bind_dn` / `ldap_bind_password` | _none_ | Process | Service account for search+bind (alternative to the DN template). |
+| `SPARK_LDAP_USER_SEARCH_BASE` | `ldap_user_search_base` | _none_ | Process | Search base for the user lookup. |
+| `SPARK_LDAP_USER_FILTER` | `ldap_user_filter` | `(uid={username})` | Process | User filter; Active Directory: `(sAMAccountName={username})`. |
+| `SPARK_LDAP_GROUP_REQUIRED` | `ldap_group_required` | _none_ | Process | Group DN the user must be a `memberOf` to sign in. |
+| `SPARK_LDAP_START_TLS` | `ldap_start_tls` | `false` | Process | Upgrade a plain `ldap://` connection with STARTTLS before binding. |
 | `SPARK_ADMIN_PASSWORD` | `admin_password` | _none_ | Process | Admin password used when `auth_enabled` is on. No effect while auth is disabled. |
 | `SPARK_HOST` | `host` | `0.0.0.0` | Process | Bind address. (Note: the container `CMD` passes `--host 0.0.0.0` to uvicorn explicitly; this field applies when you run the app yourself without that flag.) |
 | `SPARK_PORT` | `port` | `8080` | Process | Listen port (same caveat as `host`). |

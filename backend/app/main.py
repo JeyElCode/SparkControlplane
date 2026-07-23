@@ -19,8 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .config import get_settings
 from .db import init_db
+from .middleware import AuthMiddleware
 from .routers import (
     alerts,
+    auth,
     cluster,
     evals,
     instances,
@@ -104,8 +106,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outermost: session enforcement for /api + WebSockets (no-op in "none" mode).
+app.add_middleware(AuthMiddleware)
+if settings.effective_auth_mode != "none":
+    log.info("Portal auth is ON (mode=%s)", settings.effective_auth_mode)
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth):
     app.include_router(r.router)
 
 

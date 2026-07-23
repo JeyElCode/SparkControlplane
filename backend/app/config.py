@@ -26,8 +26,40 @@ class Settings(BaseSettings):
     secret_key: str | None = Field(default=None)
     # Portal login is deferred for v1; the dependency hook is wired but a no-op
     # until this is flipped on. Kept here so it is a one-line change later.
-    auth_enabled: bool = Field(default=False)
+    auth_enabled: bool = Field(default=False)  # legacy: true + admin_password => "password" mode
     admin_password: str | None = Field(default=None)
+    # --- Authentication ---------------------------------------------------
+    # "none" (default): open portal, for trusted homelab networks.
+    # "password": single admin credential (SPARK_ADMIN_USER/SPARK_ADMIN_PASSWORD).
+    # "ldap": bind against a directory (see SPARK_LDAP_*).
+    auth_mode: str = Field(default="none")
+    admin_user: str = Field(default="admin")
+    auth_session_hours: float = Field(default=24.0)
+    auth_cookie_secure: bool = Field(default=False)  # set true when served over HTTPS
+    # Bearer token that lets Prometheus scrape /metrics while auth is on.
+    metrics_token: str | None = Field(default=None)
+    # LDAP: either a direct-bind DN template ({username} placeholder), or a
+    # service account + search (bind_dn/bind_password + user_search_base).
+    ldap_url: str | None = Field(default=None)  # ldap://host:389 or ldaps://host:636
+    ldap_user_dn_template: str | None = Field(default=None)  # e.g. uid={username},ou=people,dc=x
+    ldap_bind_dn: str | None = Field(default=None)
+    ldap_bind_password: str | None = Field(default=None)
+    ldap_user_search_base: str | None = Field(default=None)
+    ldap_user_filter: str = Field(default="(uid={username})")  # AD: (sAMAccountName={username})
+    ldap_group_required: str | None = Field(default=None)  # group DN the user must belong to
+    ldap_start_tls: bool = Field(default=False)
+
+    @property
+    def effective_auth_mode(self) -> str:
+        """Resolved mode: explicit auth_mode wins; the legacy auth_enabled flag
+        (with a password set) maps to "password". FAIL-CLOSED: any value other
+        than exactly "none" requires auth — a misconfigured mode (typo, missing
+        LDAP settings) locks logins out rather than silently opening the portal
+        (fix the env and restart to recover)."""
+        mode = (self.auth_mode or "none").strip().lower()
+        if mode == "none" and self.auth_enabled and self.admin_password:
+            mode = "password"
+        return mode
 
     # --- Networking / serving --------------------------------------------
     host: str = Field(default="0.0.0.0")

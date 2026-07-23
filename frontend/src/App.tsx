@@ -3,6 +3,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import { api } from "./lib/api";
 import { usePoll } from "./lib/hooks";
 import { Badge } from "./components/ui";
+import { Login } from "./components/Login";
 import Dashboard from "./pages/Dashboard";
 import Setup from "./pages/Setup";
 import Nodes from "./pages/Nodes";
@@ -66,6 +67,27 @@ function HealthPill() {
 
 export default function App() {
   const meta = usePoll(() => api.health(), 0);
+  const auth = usePoll(() => api.authMe(), 0);
+
+  useEffect(() => {
+    const onUnauthorized = () => auth.reload();
+    window.addEventListener("spark:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("spark:unauthorized", onUnauthorized);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const logout = async () => {
+    await api.logout();
+    auth.reload();
+  };
+
+  if (!auth.data && !auth.error) {
+    return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--bg)" }} />;
+  }
+  if (auth.data?.auth_required && !auth.data.authenticated) {
+    return <Login mode={auth.data.auth_mode} onSuccess={() => auth.reload()} />;
+  }
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -82,7 +104,16 @@ export default function App() {
             {n.label}
           </NavLink>
         ))}
-        <div className="sidebar-foot">v{meta.data?.version ?? "1.0.0"}</div>
+        <div className="sidebar-foot">
+          {auth.data?.auth_required && (
+            <div style={{ marginBottom: 6 }}>
+              <span className="mono">{auth.data.user}</span>
+              {" · "}
+              <a onClick={logout} style={{ cursor: "pointer" }}>sign out</a>
+            </div>
+          )}
+          v{meta.data?.version ?? "1.0.0"}
+        </div>
       </aside>
       <div className="main">
         <header className="topbar">

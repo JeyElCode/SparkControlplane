@@ -58,6 +58,13 @@ export interface NodeHistory {
   points: HistoryPoint[];
 }
 
+export interface AuthMe {
+  auth_mode: string;
+  auth_required: boolean;
+  authenticated: boolean;
+  user?: string | null;
+}
+
 export interface LogUnit {
   node_id: number;
   node_name: string;
@@ -557,6 +564,11 @@ async function j<T>(path: string, opts: RequestInit = {}): Promise<T> {
     } catch {
       /* ignore */
     }
+    // Session expired/missing (but not a failed login attempt): tell the app
+    // shell to swap to the login screen.
+    if (res.status === 401 && !path.startsWith("/api/auth/")) {
+      window.dispatchEvent(new Event("spark:unauthorized"));
+    }
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
@@ -585,6 +597,10 @@ export const api = {
   batchPower: (action: "shutdown" | "wake") =>
     j<JobAccepted>(`/api/power/batch/${action}`, { method: "POST" }),
   listLogUnits: () => j<LogUnit[]>("/api/logs/units"),
+  authMe: () => j<AuthMe>("/api/auth/me"),
+  login: (username: string, password: string) =>
+    j<AuthMe>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  logout: () => j<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   getImageTags: (image?: string) =>
     j<ImageTags>(`/api/cluster/image-tags${image ? `?image=${encodeURIComponent(image)}` : ""}`),
   updateImage: (body: { image: string; restart_ray: boolean; restart_instances: boolean }) =>
