@@ -1,7 +1,7 @@
 # Configuration Reference
 
-This is the complete configuration reference for the Spark Control Plane (v1.0.11),
-the single-container FastAPI + React portal that automates a 2-node NVIDIA DGX Spark
+This is the complete configuration reference for the Spark Control Plane (v1.23.0),
+the single-container FastAPI + React portal that automates a NVIDIA DGX Spark (up to 4-node)
 vLLM cluster.
 
 Configuration comes from three layers:
@@ -13,7 +13,7 @@ Configuration comes from three layers:
    persisted in the database.
 2. **Runtime cluster config** — the singleton `ClusterConfig` row, editable in the
    Settings page via `PATCH /api/cluster/config`.
-3. **Per-node config** — one `Node` row per node (head + worker), captured during
+3. **Per-node config** — one `Node` row per node (head + up to 3 workers), captured during
    setup, with all secrets encrypted at rest.
 
 All persisted state lives under `SPARK_DATA_DIR` (a SQLite database plus the

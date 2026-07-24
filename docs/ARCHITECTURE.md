@@ -4,7 +4,7 @@ Technical reference for engineers working on the Spark Control Plane: a single-c
 web portal (FastAPI + React) that provisions and operates a 2-node NVIDIA DGX Spark vLLM
 cluster entirely over SSH.
 
-- **Version:** 1.0.11
+- **Version:** 1.23.0
 - **Image:** `ghcr.io/jeyelcode/spark-controlplane`
 - **Backend:** Python 3.12, FastAPI, `asyncssh`, SQLAlchemy 2.0 async + `aiosqlite`
 - **Frontend:** React + Vite + TypeScript, served as static assets by the API
