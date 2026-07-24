@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.23.0 — ports are plumbing now
+- **Instance ports auto-assign.** With the /v1 gateway as the entry point,
+  ports stopped being something the operator should think about: leave the
+  Port field empty and the portal allocates the next free one (from 8000,
+  skipping Ray/portal infrastructure ports and TLS ports). Distributed
+  rendezvous master-ports auto-assign too (from 29500, counting only
+  instances that actually bind one).
+- **Explicit ports get real validation.** Choosing a port by hand now checks
+  for collisions against every instance binding the same serving node —
+  including TLS sidecar ports — and returns a clear 409. Two singles pinned
+  to *different* nodes may deliberately share a port. `null` in a PATCH means
+  "keep", never "clear".
+- **Per-instance TLS demoted to "Direct-access TLS (rarely needed)".** With
+  external HTTPS handled by the ingress in front of the portal and the
+  gateway forwarding internally, per-model certificates only matter for
+  clients that bypass the gateway — the collapsed section now says exactly
+  that. (Fully functional and unchanged for existing TLS instances.)
+
 ## v1.22.0 — full MCP parity
 - **28 new MCP tools** close the gap between the MCP server (frozen at the
   pre-v1.6 feature set) and everything since: telemetry + instance history,

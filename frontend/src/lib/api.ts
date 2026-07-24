@@ -417,7 +417,7 @@ export interface InstanceInput {
   model_id: number;
   topology: Topology;
   node_id?: number | null;
-  port: number;
+  port?: number | null; // empty = auto-assign
   tensor_parallel_size?: number | null;
   max_model_len?: number | null;
   gpu_memory_utilization?: number;
@@ -434,7 +434,7 @@ export interface InstanceInput {
   reasoning_parser?: string | null;
   compilation_config?: string | null;
   advanced_args?: string | null;
-  master_port?: number | null;
+  master_port?: number | null; // empty = auto-assign
   extra_args?: string | null;
   vllm_image?: string | null; // per-instance image override (else cluster image)
   api_key?: string | null;

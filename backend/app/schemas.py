@@ -527,7 +527,9 @@ class InstanceIn(BaseModel):
     def _check_name(cls, v: str) -> str:
         return _v_instance_name(v)
     node_id: int | None = None  # required for single
-    port: int = 8000
+    # None = auto-assign the next free port (clients use the /v1 gateway, so
+    # ports are internal plumbing; explicit values are validated for conflicts).
+    port: int | None = None
     tensor_parallel_size: int | None = None  # defaulted from topology
     max_model_len: int | None = None
     gpu_memory_utilization: float = 0.85
@@ -544,10 +546,17 @@ class InstanceIn(BaseModel):
     served_model_names: str | None = None  # space/newline-separated aliases; ≥1 wins
     compilation_config: str | None = None  # JSON string, validated
     advanced_args: str | None = None       # JSON array of {flag, value}
-    master_port: int = 29500               # distributed rendezvous port
+    master_port: int | None = None         # distributed rendezvous port (None = auto)
     extra_args: str | None = None          # legacy raw passthrough
     vllm_image: str | None = None          # per-instance image override (else cluster image)
     api_key: str | None = None
+
+    @field_validator("port", "master_port")
+    @classmethod
+    def _check_port_range(cls, v: int | None) -> int | None:
+        if v is not None and not (1024 <= v <= 65535):
+            raise ValueError("ports must be in 1024-65535 (or omitted for auto-assignment)")
+        return v
     # First-class TLS: terminate HTTPS on tls_port via an on-node nginx sidecar,
     # proxying to vLLM on `port` (plain HTTP, internal). cert/key are write-only PEM.
     tls_enabled: bool = False
