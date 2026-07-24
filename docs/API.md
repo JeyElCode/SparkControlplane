@@ -1,6 +1,6 @@
 # API Reference
 
-REST + WebSocket reference for the Spark Control Plane (v1.0.11). The API is
+REST + WebSocket reference for the Spark Control Plane (v1.23.0). The API is
 served by the FastAPI backend under the `/api` prefix; everything else is the
 built React SPA. All request and response bodies are JSON unless noted.
 
@@ -59,8 +59,7 @@ Defined in `app/main.py` (not a router).
 
 ## Nodes
 
-`app/routers/nodes.py` — prefix `/api/nodes`. Exactly one `head` and one
-`worker` node may exist; creating a second of the same role returns `409`.
+`app/routers/nodes.py` — prefix `/api/nodes`. One `head` and up to 3 `worker` nodes; a second `head` or a 5th node returns `409`.
 
 | Method | Path | Description | Request | Response |
 |---|---|---|---|---|
