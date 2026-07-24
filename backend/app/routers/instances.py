@@ -71,17 +71,38 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         default_tp = nnodes
     else:
         default_tp = 1
+    # Ports: auto-assign unless explicitly chosen; explicit choices are
+    # validated against everything else binding the same serving node.
+    from ..services import ports as ports_svc
+
+    if payload.port is None:
+        port = await ports_svc.allocate_api_port(session)
+    else:
+        port = payload.port
+        conflict = await ports_svc.port_conflict(
+            session, port, payload.topology, payload.node_id
+        )
+        if conflict:
+            raise HTTPException(409, conflict)
+    if payload.master_port is None:
+        master_port = (
+            await ports_svc.allocate_master_port(session)
+            if payload.topology == TOPO_DISTRIBUTED else 29500
+        )
+    else:
+        master_port = payload.master_port
+
     if payload.tls_enabled:
         if not (payload.tls_cert and payload.tls_key):
             raise HTTPException(400, "tls_enabled requires both tls_cert and tls_key (PEM).")
-        if payload.tls_port == payload.port:
+        if payload.tls_port == port:
             raise HTTPException(400, "tls_port must differ from the vLLM port.")
     inst = Instance(
         name=payload.name,
         model_id=payload.model_id,
         topology=payload.topology,
         node_id=payload.node_id if payload.topology == TOPO_SINGLE else None,
-        port=payload.port,
+        port=port,
         tensor_parallel_size=payload.tensor_parallel_size or default_tp,
         max_model_len=payload.max_model_len,
         gpu_memory_utilization=payload.gpu_memory_utilization,
@@ -98,7 +119,7 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         served_model_names=payload.served_model_names,
         compilation_config=payload.compilation_config,
         advanced_args=payload.advanced_args,
-        master_port=payload.master_port,
+        master_port=master_port,
         extra_args=payload.extra_args,
         vllm_image=payload.vllm_image,
         api_key_enc=encrypt(payload.api_key),
@@ -146,9 +167,19 @@ async def update_instance(
             "serve settings only take effect on start.",
         )
     data = payload.model_dump(exclude_unset=True)
+    if "port" in data and data["port"] is not None and data["port"] != inst.port:
+        from ..services import ports as ports_svc
+
+        conflict = await ports_svc.port_conflict(
+            session, data["port"], inst.topology, inst.node_id, exclude_id=inst.id
+        )
+        if conflict:
+            raise HTTPException(409, conflict)
     # Write-only PEM fields map to their encrypted columns (like api_key).
     secret_map = {"tls_cert": "tls_cert_enc", "tls_key": "tls_key_enc"}
     for field, value in data.items():
+        if field in ("port", "master_port") and value is None:
+            continue  # ports are non-nullable; null in a PATCH means "keep"
         if field in secret_map:
             setattr(inst, secret_map[field], encrypt(value))
         else:

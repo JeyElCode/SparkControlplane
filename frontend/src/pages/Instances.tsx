@@ -13,7 +13,7 @@ const DEFAULTS: InstanceInput = {
   model_id: 0,
   topology: "cluster",
   node_id: null,
-  port: 8000,
+  port: undefined,
   max_model_len: 8192,
   gpu_memory_utilization: 0.85,
   max_num_seqs: null,
@@ -29,7 +29,7 @@ const DEFAULTS: InstanceInput = {
   reasoning_parser: null,
   compilation_config: null,
   advanced_args: null,
-  master_port: 29500,
+  master_port: undefined,
   extra_args: null,
   vllm_image: null,
   api_key: null,
@@ -330,13 +330,13 @@ function TlsConfig({
   const on = !!v.tls_enabled;
   return (
     <details className="collapse">
-      <summary>TLS / HTTPS (optional)</summary>
+      <summary>Direct-access TLS (rarely needed)</summary>
       <div className="collapse-body">
         <label className="checkbox">
           <input type="checkbox" checked={on} onChange={(e) => patch({ tls_enabled: e.target.checked })} />
           <span>
             <span className="cb-label">Terminate HTTPS with an nginx sidecar</span>
-            <div className="cb-sub">vLLM stays on its port (internal, loopback); nginx serves TLS on the port below and proxies to it. Cert can be rotated without restarting the model.</div>
+            <div className="cb-sub">Only for clients that connect straight to this instance, bypassing the /v1 gateway — external HTTPS is normally handled by the ingress in front of the portal. When enabled, vLLM binds loopback and an nginx sidecar terminates TLS on the port below (cert rotates without restarting the model).</div>
           </span>
         </label>
         {on && (
@@ -449,11 +449,11 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
               {(nodes.data ?? []).map((n) => <option key={n.id} value={n.id}>{n.name} ({n.role})</option>)}
             </select>
           </Field>
-          <Field label="Port"><input type="number" value={f.port} onChange={(e) => set("port", Number(e.target.value))} /></Field>
+          <Field label="Port" hint="empty = auto — clients use the /v1 gateway"><input type="number" placeholder="auto" value={f.port ?? ""} onChange={(e) => set("port", e.target.value === "" ? undefined : Number(e.target.value))} /></Field>
         </div>
       )}
       {f.topology === "cluster" && (
-        <Field label="Port"><input type="number" value={f.port} onChange={(e) => set("port", Number(e.target.value))} /></Field>
+        <Field label="Port" hint="empty = auto — clients use the /v1 gateway"><input type="number" placeholder="auto" value={f.port ?? ""} onChange={(e) => set("port", e.target.value === "" ? undefined : Number(e.target.value))} /></Field>
       )}
       {f.topology === "distributed" && (
         <>
@@ -462,9 +462,9 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
             Master-addr = the head node's QSFP IP.
           </div>
           <div className="row-2">
-            <Field label="Port" help="API port on the head node."><input type="number" value={f.port} onChange={(e) => set("port", Number(e.target.value))} /></Field>
+            <Field label="Port" help="API port on the head node." hint="empty = auto"><input type="number" placeholder="auto" value={f.port ?? ""} onChange={(e) => set("port", e.target.value === "" ? undefined : Number(e.target.value))} /></Field>
             <Field label="Master port" help="torch.distributed rendezvous port on the head node (--master-port).">
-              <input type="number" value={f.master_port ?? 29500} onChange={(e) => set("master_port", e.target.value ? Number(e.target.value) : null)} />
+              <input type="number" placeholder="auto" value={f.master_port ?? ""} onChange={(e) => set("master_port", e.target.value === "" ? undefined : Number(e.target.value))} />
             </Field>
           </div>
         </>
@@ -627,7 +627,7 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
         Changes apply the next time this instance is started.
       </div>
       <div className="row-2">
-        <Field label="Port"><input type="number" value={f.port} onChange={(e) => set("port", Number(e.target.value))} /></Field>
+        <Field label="Port" hint="empty = auto — clients use the /v1 gateway"><input type="number" placeholder="auto" value={f.port ?? ""} onChange={(e) => set("port", e.target.value === "" ? undefined : Number(e.target.value))} /></Field>
         <Field
           label="GPU memory utilization"
           help="Fraction of GPU memory vLLM may use for weights + KV cache (--gpu-memory-utilization, 0–1). Higher allows longer context and more concurrency but leaves less headroom; ~0.85 is typical."
@@ -666,7 +666,7 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
       </div>
       {inst.topology === "distributed" && (
         <Field label="Master port" help="torch.distributed rendezvous port on the head node (--master-port).">
-          <input type="number" value={f.master_port ?? 29500} onChange={(e) => set("master_port", e.target.value ? Number(e.target.value) : null)} />
+          <input type="number" placeholder="auto" value={f.master_port ?? ""} onChange={(e) => set("master_port", e.target.value === "" ? undefined : Number(e.target.value))} />
         </Field>
       )}
       <label className="checkbox">
