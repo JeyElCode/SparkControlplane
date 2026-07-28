@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.23.1 — security hotfix (upgrade immediately)
+- **Fixed an unauthenticated arbitrary file read in the SPA catch-all
+  (critical).** ASGI delivers the URL path with `%`-escapes decoded and `../`
+  segments intact, so `GET /../../../data/secret.key` escaped the frontend
+  build directory and returned the file — with no session, in any auth mode.
+  In the shipped image layout that exposed the Fernet master key (which
+  decrypts every stored SSH key, sudo password, HF token and instance API key,
+  and can forge session cookies), the SQLite database, and any other file
+  readable by the portal process. The handler now resolves the candidate path
+  and requires containment in the build directory before serving it.
+  Regression tests cover encoded and multi-level traversal.
+- **`/openapi.json`, `/docs`, `/redoc` are no longer served when portal auth is
+  on.** `AuthMiddleware` guards only `/api` and `/metrics`, so the doc routes
+  were handing unauthenticated visitors the full endpoint map. They remain
+  available in `none` mode, where nothing is gated anyway.
+- **Non-ASCII credentials no longer 500 the login endpoint.** `compare_digest`
+  raises `TypeError` on `str` inputs holding non-ASCII, so an admin password or
+  username containing æøå was an unconditional lockout with an opaque error.
+  Comparison is now on UTF-8 bytes (still constant-time).
+
 ## v1.23.0 — ports are plumbing now
 - **Instance ports auto-assign.** With the /v1 gateway as the entry point,
   ports stopped being something the operator should think about: leave the
