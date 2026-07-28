@@ -27,13 +27,26 @@ from sqlalchemy.orm import selectinload
 from ..config import get_settings
 from ..crypto import decrypt
 from ..db import get_node_by_role, get_session
-from ..models import INST_RUNNING, Instance, InstanceSchedule
+from ..models import (
+    INST_ERROR,
+    INST_RUNNING,
+    INST_STARTING,
+    INST_STOPPING,
+    Instance,
+    InstanceSchedule,
+)
 from ..services import status_svc
 from ..services.auth import COOKIE_NAME, parse_session
+from ..services.templates import parse_served_model_names
+from ..schemas import GatewayInfo, GatewayRoute
 
 log = logging.getLogger("spark.gateway")
 
 router = APIRouter(prefix="/v1", tags=["gateway"])
+# Operator-facing view of the same routing table. Lives under /api so the normal
+# portal session guards it (AuthMiddleware) — it is not part of the
+# OpenAI-compatible surface and must never require the gateway bearer.
+admin_router = APIRouter(prefix="/api/gateway", tags=["gateway"])
 
 # httpx client factory — module-level so tests can swap the transport
 def _make_client(verify: bool) -> httpx.AsyncClient:
@@ -69,11 +82,16 @@ async def _get_setting(session: AsyncSession):
 
 
 def _served_names(inst: Instance) -> list[str]:
-    names = []
-    if inst.model is not None:
-        names.append(inst.model.name)
-    if inst.served_model_names:
-        names.extend(n for n in inst.served_model_names.split() if n)
+    """The model ids this instance actually answers to.
+
+    Must mirror what the systemd unit launches: ``--served-model-name`` is built
+    from the aliases and *replaces* the registry name (services/templates.py
+    build_vllm_serve_cmd), so advertising the registry name alongside aliases
+    would route a name vLLM itself 404s.
+    """
+    names = parse_served_model_names(inst.served_model_names)
+    if not names and inst.model is not None:
+        names = [inst.model.name]
     return names
 
 
@@ -112,6 +130,24 @@ async def _resolve(session: AsyncSession, model: str) -> tuple[Instance, str, bo
     )
     for inst in all_insts:
         if model in _served_names(inst):
+            # Distinguish "still loading" from "crashed" from "off right now":
+            # a client that retries a 3-minute model load is doing the right
+            # thing, one retrying a crashed instance is not.
+            if inst.status == INST_STARTING:
+                took = inst.last_load_seconds
+                eta = f" It usually takes about {max(1, took // 60)} min to load." if took else ""
+                raise HTTPException(
+                    503,
+                    f"Model '{model}' is starting — the weights are still loading.{eta}",
+                    headers={"Retry-After": str(max(15, min(took or 30, 300)))},
+                )
+            if inst.status == INST_STOPPING:
+                raise HTTPException(503, f"Model '{model}' is shutting down.")
+            if inst.status == INST_ERROR:
+                why = f" Last error: {inst.last_error}" if inst.last_error else ""
+                raise HTTPException(
+                    503, f"Model '{model}' failed to start and is not serving.{why}"
+                )
             scheds = list(
                 (
                     await session.execute(
@@ -214,3 +250,56 @@ async def completions(request: Request, session: AsyncSession = Depends(get_sess
 @router.post("/embeddings")
 async def embeddings(request: Request, session: AsyncSession = Depends(get_session)):
     return await _proxy("embeddings", request, session)
+
+
+# --- operator-facing routing table ---------------------------------------
+@admin_router.get("/routes", response_model=GatewayInfo)
+async def gateway_routes(session: AsyncSession = Depends(get_session)):
+    """Which model names the gateway accepts right now, and where each goes.
+
+    Answers the daily operator question — "what can clients call?" — which the
+    OpenAI-shaped /v1/models cannot, because it has nowhere to put the instance,
+    node, health, or the portal-vs-vLLM disagreement that means a name is
+    advertised but would 404 upstream.
+    """
+    settings = get_settings()
+    setting = await _get_setting(session)
+    head = await get_node_by_role(session, "head")
+    from ..services.telemetry import engine
+
+    rows = list(
+        (
+            await session.execute(
+                select(Instance).options(
+                    selectinload(Instance.model), selectinload(Instance.node)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    live: list[GatewayRoute] = []
+    unavailable: list[GatewayRoute] = []
+    for inst in rows:
+        probe = engine.instance_runtime(inst.id)
+        node = status_svc.instance_api_node(inst, head)
+        upstream = set(probe.served_models) if probe and probe.served_models else None
+        for name in _served_names(inst):
+            route = GatewayRoute(
+                model_name=name,
+                instance_id=inst.id,
+                instance=inst.name,
+                status=inst.status,
+                node=node.name if node else None,
+                healthy=probe.health_ok if probe else None,
+                confirmed_upstream=(name in upstream) if upstream is not None else None,
+            )
+            (live if inst.status == INST_RUNNING else unavailable).append(route)
+
+    return GatewayInfo(
+        auth_required=settings.effective_auth_mode != "none",
+        token_configured=bool(settings.gateway_token or setting.gateway_token_enc),
+        routes=sorted(live, key=lambda r: r.model_name),
+        unavailable=sorted(unavailable, key=lambda r: r.model_name),
+    )

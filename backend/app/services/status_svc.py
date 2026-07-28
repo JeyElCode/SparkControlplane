@@ -219,13 +219,20 @@ async def _instance_status(
         instance_id=inst.id,
         name=inst.name,
         status=inst.status,
+        node_id=node.id if node else None,
         endpoint=f"{base[0]}/v1" if base else None,
+        started_at=inst.started_at,
+        last_healthy_at=inst.last_healthy_at,
+        last_load_seconds=inst.last_load_seconds,
     )
-    # systemd active state
+    # systemd active state (+ restart count, which is how the reconciler tells
+    # a slow model load apart from a crash loop)
     if node and inst.systemd_unit:
         try:
             ssh = await ssh_for_node(session, node)
-            out.systemd_active = await nodeops.unit_active(ssh, inst.systemd_unit)
+            state, restarts = await nodeops.unit_state(ssh, inst.systemd_unit)
+            out.systemd_active = state == "active"
+            out.n_restarts = restarts
         except Exception:  # noqa: BLE001
             out.systemd_active = None
     # HTTP health (through the TLS proxy when enabled — vLLM is loopback-only then)
@@ -242,6 +249,9 @@ async def _instance_status(
                         data = m.json().get("data", [])
                         if data:
                             out.served_model = data[0].get("id")
+                            out.served_models = [
+                                str(d["id"]) for d in data if d.get("id")
+                            ]
         except Exception:  # noqa: BLE001
             out.health_ok = False
     return out

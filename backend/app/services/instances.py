@@ -38,7 +38,7 @@ from ..models import (
     Node,
 )
 from ..ssh import ssh_for_node
-from . import nodeops, templates
+from . import inst_state, nodeops, templates
 from .jobs import JobHandle
 from .paths import hf_cache_host_path, model_container_path, models_host_dir
 from .parsers import tool_parser_for
@@ -210,6 +210,16 @@ async def rotate_tls_cert(
 
 
 async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
+    # Claim the instance for the duration of the job: the status observer stays
+    # out of the way while we own the row, and a second start is refused.
+    inst_state.register(instance_id, "start", handle.job_id)
+    try:
+        return await _start_instance(session, handle, instance_id)
+    finally:
+        inst_state.release(instance_id)
+
+
+async def _start_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
     inst = await load_instance(session, instance_id)
     if inst is None:
         raise RuntimeError("Instance not found.")
@@ -228,6 +238,11 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
 
     inst.status = INST_STARTING
     inst.last_error = None
+    # Durable anchor for the start deadline: a portal restart mid-load must not
+    # lose it, or the reconciler would have no way to tell a 10-minute load from
+    # one that started yesterday and never came up.
+    inst.started_at = inst_state.utcnow()
+    inst.last_healthy_at = None
     await session.commit()
 
     try:
@@ -277,7 +292,10 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
             )
 
         inst.systemd_unit = unit_name
-        inst.status = INST_RUNNING
+        # Deliberately still `starting`: the unit is installed, but vLLM has not
+        # loaded the model yet. Claiming RUNNING here is what let the gateway
+        # route external traffic to an instance that might never come up (#45).
+        # The health wait below promotes it; failing that, reconcile.py does.
         await session.commit()
         api_node = await _instance_node(session, inst)
         # Optional TLS reverse proxy (nginx sidecar) on the API-serving node. It
@@ -304,13 +322,25 @@ async def start_instance(session: AsyncSession, handle: JobHandle, instance_id: 
             handle, ssh, unit_name, health_url, verify=not inst.tls_enabled
         )
         if healthy:
-            await handle.log(f"✅ '{inst.name}' is serving — /health is green.")
+            now = inst_state.utcnow()
+            inst.status = INST_RUNNING
+            inst.last_healthy_at = now
+            # Via epoch(): after a commit SQLAlchemy may reload started_at as a
+            # naive datetime, and subtracting that from an aware one raises.
+            started = inst_state.epoch(inst.started_at)
+            if started is not None:
+                inst.last_load_seconds = max(0, int(inst_state.epoch(now) - started))
+            await session.commit()
+            took = f" (took {inst.last_load_seconds // 60}m{inst.last_load_seconds % 60:02d}s)" if inst.last_load_seconds else ""
+            await handle.log(f"✅ '{inst.name}' is serving — /health is green.{took}")
         else:
             await handle.log(
                 f"'{inst.name}' did not report healthy within the wait window. It may still be "
                 f"loading (large models), or it failed to start — check the vLLM output above and "
-                f"the Status page. The systemd unit will keep retrying.",
-                "error",
+                f"the Status page. It stays 'starting' and the portal keeps watching: it will "
+                f"flip to running the moment /health goes green, or to error if the unit dies, "
+                f"crash-loops, or never comes up.",
+                "warn",
             )
         return f"Instance '{inst.name}' started" + ("" if healthy else " (health not yet confirmed)")
     except Exception as exc:
@@ -442,6 +472,14 @@ async def _stream_startup_logs(
 
 
 async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
+    inst_state.register(instance_id, "stop", handle.job_id)
+    try:
+        return await _stop_instance(session, handle, instance_id)
+    finally:
+        inst_state.release(instance_id)
+
+
+async def _stop_instance(session: AsyncSession, handle: JobHandle, instance_id: int) -> str:
     inst = await load_instance(session, instance_id)
     if inst is None:
         raise RuntimeError("Instance not found.")
@@ -466,6 +504,7 @@ async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: i
                 log_cb=handle.ssh_log_cb(),
             )
         inst.status = INST_STOPPED
+        inst.started_at = None
         await session.commit()
         return f"Instance '{inst.name}' stopped"
     node = await _instance_node(session, inst)
@@ -478,6 +517,7 @@ async def stop_instance(session: AsyncSession, handle: JobHandle, instance_id: i
         )
     await nodeops.systemctl(ssh, "stop", unit_name, log_cb=handle.ssh_log_cb())
     inst.status = INST_STOPPED
+    inst.started_at = None
     await session.commit()
     return f"Instance '{inst.name}' stopped"
 

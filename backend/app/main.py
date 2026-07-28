@@ -89,8 +89,11 @@ async def lifespan(app: FastAPI):
     from .services.usage import collector as usage_collector
 
     from .services.backup import runner as backup_runner
+    from .services.reconcile import reconciler as status_reconciler
 
     telemetry_engine.start()
+    # Reads the telemetry caches, so it starts after the engine and stops first.
+    status_reconciler.start()
     alert_manager.start()
     usage_collector.start()
     instance_scheduler.start()
@@ -109,6 +112,7 @@ async def lifespan(app: FastAPI):
     await instance_scheduler.stop()
     await usage_collector.stop()
     await alert_manager.stop()
+    await status_reconciler.stop()
     await telemetry_engine.stop()
     await pool.close_all()
 
@@ -141,6 +145,9 @@ if settings.effective_auth_mode != "none":
 
 for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage, gateway):
     app.include_router(r.router)
+# The loop only picks up attributes named `router`; the gateway also exposes an
+# operator-facing /api view guarded by the normal portal session.
+app.include_router(gateway.admin_router)
 
 
 @app.get("/api/health")

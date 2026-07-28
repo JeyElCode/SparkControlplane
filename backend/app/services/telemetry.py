@@ -735,6 +735,20 @@ class TelemetryEngine:
             log.warning("GPU XID on %s: xid=%s %s", node.name, e.xid, e.message[:120])
 
     # --- read side -------------------------------------------------------
+    def slow_cache(self) -> SlowCache | None:
+        """The last completed slow tick, or None if none has landed yet.
+
+        The status reconciler reads instance probes from here instead of
+        opening its own SSH sessions.
+        """
+        return self._slow if self._slow.ts else None
+
+    def instance_runtime(self, instance_id: int):
+        """The last slow-tick probe for one instance, or None."""
+        return next(
+            (s for s in self._slow.instances if s.instance_id == instance_id), None
+        )
+
     def node_reachable(self, node_id: int) -> bool | None:
         """Last sampled reachability, or None if never sampled."""
         s = self._samples.get(node_id)
@@ -786,8 +800,14 @@ class TelemetryEngine:
         )
         # slow-cached instance statuses + fresh fast-cached vLLM metrics
         inst_statuses = [s.model_copy() for s in self._slow.instances]
+        # The probes are up to one slow tick old, and the reconciler may have
+        # changed a status since — overlay the rows we just read so a single
+        # response can't contradict itself (badge says running, warnings don't).
+        fresh_status = {i.id: i.status for i in instances}
         for s in inst_statuses:
             s.metrics = self._inst_metrics.get(s.instance_id)
+            if s.instance_id in fresh_status:
+                s.status = fresh_status[s.instance_id]
         from ..models import TOPO_CLUSTER
         from ..schemas import ActiveAlert
         from .alerts import manager as alert_manager

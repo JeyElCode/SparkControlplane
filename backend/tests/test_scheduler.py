@@ -222,3 +222,58 @@ def test_failed_action_is_retried_then_gives_up(client, monkeypatch):
     fake_now[0] += sched_mod.RETRY_SECONDS + 1
     assert asyncio.run(sch.tick()) == []
     assert iid not in sch._pending
+
+
+def test_a_start_that_never_came_up_is_retried_once_reconciled(client, monkeypatch):
+    """The other half of #45: before status reconciliation a failed start was
+    recorded as `running`, so `reached` was true and the scheduler never
+    retried — the model simply never came up and nothing noticed.
+
+    Now a start that fails sits at `starting` (the scheduler waits, because a
+    load legitimately takes minutes) and only becomes retryable once the
+    observer has demoted it to `error`.
+    """
+    import asyncio
+
+    import app.db as db
+    from sqlalchemy import update as sa_update
+
+    from app.models import INST_ERROR, INST_STARTING, Instance
+    from app.services import scheduler as sched_mod
+    from app.services.scheduler import Scheduler
+
+    iid = _seed_instance(name="slowstart", status=INST_STOPPED)
+    client.post("/api/schedules", json={
+        "instance_id": iid, "days": [0, 1, 2, 3, 4, 5, 6],
+        "start_time": "00:00", "end_time": "23:59",  # effectively always open
+    })
+
+    class FakeJobs:
+        async def start(self, *a, **kw):
+            return 1
+
+    monkeypatch.setattr(sched_mod, "jobs", FakeJobs())
+    fake_now = [1000.0]
+    monkeypatch.setattr(sched_mod.time, "time", lambda: fake_now[0])
+
+    async def set_status(value):
+        async with db.SessionLocal() as s:
+            await s.execute(
+                sa_update(Instance).where(Instance.id == iid).values(status=value)
+            )
+            await s.commit()
+
+    sch = Scheduler()
+    assert asyncio.run(sch.tick()) == [(iid, "start")]  # boot reconcile starts it
+
+    # Loading: minutes may pass. The scheduler must NOT fire a second start —
+    # two concurrent starts would fight over the same systemd unit.
+    asyncio.run(set_status(INST_STARTING))
+    for _ in range(3):
+        fake_now[0] += sched_mod.RETRY_SECONDS + 1
+        assert asyncio.run(sch.tick()) == [], "started a second job while still loading"
+
+    # The observer decides it never came up and demotes it — now retry.
+    asyncio.run(set_status(INST_ERROR))
+    fake_now[0] += sched_mod.RETRY_SECONDS + 1
+    assert asyncio.run(sch.tick()) == [(iid, "start")]

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal
-from ..models import INST_RUNNING, TOPO_SINGLE, Instance, Node
+from ..models import INST_ACTIVE_STATES, TOPO_SINGLE, Instance, Node
 from ..ssh import ssh_for_node
 from .jobs import JobHandle
 
@@ -83,9 +83,13 @@ async def capture_mac(session: AsyncSession, node: Node) -> str | None:
 
 
 async def affected_instances(session: AsyncSession, node: Node) -> list[str]:
-    """Names of RUNNING instances that shutting this node down would kill:
-    everything multi-node, plus singles pinned to it."""
-    res = await session.execute(select(Instance).where(Instance.status == INST_RUNNING))
+    """Names of instances that shutting this node down would kill: everything
+    multi-node, plus singles pinned to it. Includes instances that are still
+    starting — a shutdown mid-load destroys a multi-minute model load just as
+    surely as it kills a serving one."""
+    res = await session.execute(
+        select(Instance).where(Instance.status.in_(INST_ACTIVE_STATES))
+    )
     out = []
     for inst in res.scalars():
         if inst.topology != TOPO_SINGLE or inst.node_id == node.id:

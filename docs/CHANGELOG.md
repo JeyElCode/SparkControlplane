@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.24.0 — instance status tells the truth
+- **Status is now reconciled against the nodes, every ~10s.** A start no longer
+  reports `running` the instant the systemd unit is installed — that happened
+  *before* vLLM had loaded a single weight, so a model that OOM'd at load or
+  crashed after hours of serving stayed `running` forever. The consequences
+  were real: the `/v1` gateway kept routing external traffic to a dead
+  upstream, and the scheduler considered the start "reached" so it never
+  retried. Now the start job installs the unit and leaves the instance
+  `starting`; a background observer promotes it to `running` only on proof (a
+  200 from `/health`), and demotes a dead one to `error`.
+- **Telling a slow load from a dead one** is the hard part, since a large FP8
+  model legitimately takes many minutes. Four independent signals rather than
+  one timeout: a systemd unit that stays down (45s), a **crash loop** —
+  restarts climbing while the instance has never once been healthy, which is
+  what catches an out-of-memory at load in ~40s instead of half an hour — a
+  never-healthy deadline (30 min), and health lost after serving (2 min). An
+  unreachable node never demotes anything: if we can't see the node, the broken
+  thing might be our own network.
+- **The gateway now says which it is.** A model still loading returns 503 with
+  `Retry-After` and, once we've seen a successful load, how long that took; a
+  crashed one returns 503 quoting the actual error instead of inviting a
+  pointless retry. Instance cards show elapsed load time next to `starting`, so
+  a long load reads as progress rather than a hang.
+- **New API gateway panel** on the Instances page: the model names clients can
+  actually call right now, which instance and node each one routes to, and a
+  **Copy client cfg** that finally emits something usable — the portal's own
+  origin plus the model name (and a bearer-token note when portal auth is on).
+  The old button emitted `Base URL: :8001/v1` for cluster/distributed
+  instances, which is not a URL, and pointed at instance ports the gateway
+  exists to hide. `GET /api/gateway/routes` + MCP `gateway_routes` expose the
+  same table.
+- **Fixed: the gateway advertised a model name vLLM would reject.** When an
+  instance has aliases, `--served-model-name` *replaces* the registry name, but
+  the gateway listed and routed the registry name anyway — so calling it got a
+  confusing 404 from vLLM itself. The routing table now mirrors exactly what
+  the unit launches, and the panel flags any name the instance doesn't confirm.
+- **Fixed: pooled SSH connections outlived their transport.** After an sshd
+  restart, network flap, or node reboot, the cached connection was reused
+  forever and every command to that node failed until the *portal* was
+  restarted — telemetry reported the node permanently unreachable even once it
+  had recovered. Connections are now liveness-checked before reuse and dropped
+  on transport failure. A command *timeout* deliberately keeps the connection
+  (a slow script is not a broken link), and a non-zero exit status never
+  evicts.
+- Also: a shutdown's "instances this will kill" warning and fleet image updates
+  now include instances that are still loading (they occupy the GPU too);
+  starting/failed instances raise the right alerts instead of falling silent;
+  `POST /api/instances/{id}/reconcile` (and MCP `instance_reconcile`) re-probes
+  on demand; a second start on an instance already starting is refused with 409
+  rather than two jobs fighting over one unit.
+- Upgrade-in-place: three nullable columns are added to `instances`
+  automatically. Existing rows keep their status untouched — the observer
+  decides from live evidence. New tuning knobs: `SPARK_RECONCILE_ENABLED`,
+  `SPARK_RECONCILE_TICK_SECONDS`, `SPARK_RECONCILE_START_DEADLINE_SECONDS`,
+  `SPARK_RECONCILE_UNHEALTHY_SECONDS`, `SPARK_RECONCILE_UNIT_DEAD_SECONDS`,
+  `SPARK_RECONCILE_CRASHLOOP_RESTARTS`.
+
 ## v1.23.1 — security hotfix (upgrade immediately)
 - **Fixed an unauthenticated arbitrary file read in the SPA catch-all
   (critical).** ASGI delivers the URL path with `%`-escapes decoded and `../`

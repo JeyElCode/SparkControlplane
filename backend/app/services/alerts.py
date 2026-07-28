@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from .. import db as _db
 from ..crypto import decrypt
-from ..models import INST_RUNNING, Alert
+from ..models import INST_ERROR, INST_RUNNING, INST_STARTING, Alert
 from .telemetry import engine as telemetry
 
 log = logging.getLogger("spark.alerts")
@@ -30,6 +30,9 @@ log = logging.getLogger("spark.alerts")
 DEFAULTS: dict = {
     "node_offline_seconds": 60,
     "instance_unhealthy_seconds": 120,
+    # A start that has not gone healthy in this long is worth surfacing —
+    # generous, since a large FP8 model legitimately takes many minutes.
+    "instance_starting_seconds": 900,
     "gpu_temp_c": 85,
     "gpu_temp_seconds": 120,
     "disk_free_pct": 10,
@@ -130,13 +133,34 @@ def gather_facts(cfg: dict) -> list[Fact]:
         ))
 
     for st in telemetry._slow.instances:
-        if st.status != INST_RUNNING:
+        if st.status == INST_STARTING:
+            # A long load is normal; only warn once it has clearly overrun.
+            elapsed = (
+                time.time() - st.started_at.timestamp() if st.started_at else 0.0
+            )
+            facts.append(Fact(
+                "instance_stuck_starting", st.name,
+                elapsed >= cfg["instance_starting_seconds"], 0.0, "warn",
+                f"Instance {st.name} has been starting for "
+                f"{int(elapsed // 60)} minutes without becoming healthy.",
+            ))
             continue
+        if st.status not in (INST_RUNNING, INST_ERROR):
+            continue
+        # The reconciler demotes a dead instance to error, so the unhealthy fact
+        # must survive that transition — otherwise the alert would "resolve"
+        # itself at the exact moment things got worse. Same rule name either
+        # way, so alert history stays continuous.
         facts.append(Fact(
-            "instance_unhealthy", st.name, st.health_ok is False,
+            "instance_unhealthy", st.name,
+            st.status == INST_ERROR or st.health_ok is False,
             cfg["instance_unhealthy_seconds"], "crit",
-            f"Instance {st.name} is running but /health is failing.",
+            f"Instance {st.name} failed and is not serving."
+            if st.status == INST_ERROR
+            else f"Instance {st.name} is running but /health is failing.",
         ))
+        if st.status == INST_ERROR:
+            continue
         m = telemetry._inst_metrics.get(st.instance_id)
         kv = m.kv_cache_pct if m else None
         facts.append(Fact(

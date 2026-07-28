@@ -22,6 +22,8 @@ export default function Playground() {
     }
   }, [instances.data, instanceId]);
 
+  const selected = (instances.data ?? []).find((i) => i.id === instanceId);
+
   const send = async () => {
     if (!instanceId) return;
     setBusy(true);
@@ -56,6 +58,13 @@ export default function Playground() {
               <select value={instanceId} onChange={(e) => setInstanceId(Number(e.target.value))}>
                 {list.map((i) => <option key={i.id} value={i.id}>{i.name} — {i.status}</option>)}
               </select>
+              {selected && selected.status !== "running" && (
+                <div className="hint">
+                  {selected.status === "starting"
+                    ? "This model is still loading — it can't answer yet."
+                    : `This instance is ${selected.status} — start it before sending.`}
+                </div>
+              )}
             </Field>
             <Field label="System prompt (optional)"><textarea value={system} onChange={(e) => setSystem(e.target.value)} style={{ minHeight: 50 }} /></Field>
             <Field label="Prompt"><textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} style={{ minHeight: 90 }} /></Field>

@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, InstanceInput, Instance, Topology } from "../lib/api";
 import { usePoll } from "../lib/hooks";
-import { statusKind } from "../lib/format";
+import { clientSnippet, gatewayBaseUrl, gatewayModelName } from "../lib/gateway";
+import { loadProgress, statusKind } from "../lib/format";
 import { Badge, EmptyState, Field, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { LiveLogPanel } from "../components/LiveLogPanel";
@@ -691,6 +692,7 @@ const EDITABLE_STATUSES = ["stopped", "error"];
 
 export default function Instances() {
   const instances = usePoll(() => api.listInstances(), 8000);
+  const gw = usePoll(() => api.gatewayRoutes(), 10000);
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Instance | null>(null);
@@ -712,9 +714,11 @@ export default function Instances() {
   };
 
   const copyClient = (i: Instance) => {
-    const model = splitAliases(i.served_model_names)[0] ?? `/models/${i.model_name}`;
-    const text = `Base URL: ${i.node_role ? "http://<node-ip>" : ""}:${i.port}/v1\nModel: ${model}`;
-    navigator.clipboard?.writeText(text);
+    // Clients go through the portal's /v1 gateway, not the instance port — the
+    // origin is whatever the browser is on, which also works behind the ingress.
+    // (The old version emitted ":8001/v1" for cluster/distributed instances,
+    // whose node_role is null, and never mentioned the gateway or the token.)
+    navigator.clipboard?.writeText(clientSnippet(gatewayModelName(i), gw.data));
     toast("Client config copied", "success");
   };
 
@@ -728,6 +732,74 @@ export default function Instances() {
         <button className="btn btn-primary" onClick={() => setCreating(true)}>+ New instance</button>
       </div>
 
+      {(gw.data?.routes.length ?? 0) > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>API gateway</h2>
+              <p className="muted">
+                One endpoint for every model. Clients send the model name below —
+                they never need instance ports or node addresses.
+              </p>
+            </div>
+            <button
+              className="btn btn-sm"
+              onClick={() => {
+                navigator.clipboard?.writeText(gatewayBaseUrl());
+                toast("Gateway URL copied", "success");
+              }}
+            >
+              Copy base URL
+            </button>
+          </div>
+          <div className="mono" style={{ marginBottom: 10 }}>{gatewayBaseUrl()}</div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Model name</th><th>Serves from</th><th>Node</th><th /></tr>
+              </thead>
+              <tbody>
+                {gw.data!.routes.map((r) => (
+                  <tr key={r.model_name}>
+                    <td className="mono">
+                      {r.model_name}
+                      {r.confirmed_upstream === false && (
+                        <Badge kind="amber">not served upstream</Badge>
+                      )}
+                    </td>
+                    <td>{r.instance}</td>
+                    <td>{r.node ?? "—"}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(clientSnippet(r.model_name, gw.data));
+                          toast("Client config copied", "success");
+                        }}
+                      >
+                        Copy client cfg
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {gw.data!.auth_required && !gw.data!.token_configured && (
+            <div className="banner banner-warn mt">
+              ⚠ Portal auth is on but no gateway token is set — external clients
+              can't authenticate. Set one in <Link to="/settings">Settings → API gateway</Link>.
+            </div>
+          )}
+          {(gw.data?.unavailable.length ?? 0) > 0 && (
+            <p className="muted mt">
+              Not servable right now:{" "}
+              {gw.data!.unavailable.map((r) => `${r.model_name} (${r.status})`).join(", ")}
+            </p>
+          )}
+        </div>
+      )}
+
       {(instances.data ?? []).length === 0 ? (
         <div className="card"><EmptyState icon="▶" title="No instances yet">Create one once a model is downloaded and synced. See <Link to="/models">Models</Link>.</EmptyState></div>
       ) : (
@@ -738,7 +810,13 @@ export default function Instances() {
             return (
               <div key={i.id} className="card">
                 <div className="card-head">
-                  <div className="flex"><strong>{i.name}</strong><Badge kind={statusKind(i.status)}>{i.status}</Badge></div>
+                  <div className="flex">
+                    <strong>{i.name}</strong>
+                    <Badge kind={statusKind(i.status)}>{i.status}</Badge>
+                    {i.status === "starting" && (
+                      <span className="badge-note">{loadProgress(i.started_at, i.last_load_seconds)}</span>
+                    )}
+                  </div>
                   <Badge kind="blue" dot={false}>{topoLabel(i)}</Badge>
                 </div>
                 <dl className="kv">

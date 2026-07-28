@@ -93,9 +93,33 @@ async def remove_systemd_unit(
     await daemon_reload(ssh, log_cb=log_cb)
 
 
+async def unit_state(ssh: SSHClient, unit_name: str) -> tuple[str, int | None]:
+    """(ActiveState, NRestarts) for a unit, in one round trip.
+
+    ``NRestarts`` is what distinguishes a slow model load from a crash loop: a
+    unit with ``Restart=on-failure`` reports ``active`` for most of every poll
+    interval while it churns, so ActiveState alone would call an OOM-at-load
+    "still loading" until the start deadline expires. It is None on systemd
+    versions that don't report the property.
+    """
+    res = await ssh.run(
+        f"systemctl show -p ActiveState -p NRestarts {shlex.quote(unit_name)}", sudo=True
+    )
+    fields: dict[str, str] = {}
+    for line in res.stdout.splitlines():
+        key, _, value = line.partition("=")
+        fields[key.strip()] = value.strip()
+    restarts: int | None
+    try:
+        restarts = int(fields["NRestarts"])
+    except (KeyError, ValueError):
+        restarts = None
+    return fields.get("ActiveState", "unknown"), restarts
+
+
 async def unit_active(ssh: SSHClient, unit_name: str) -> bool:
-    res = await ssh.run(f"systemctl is-active {shlex.quote(unit_name)}", sudo=True)
-    return res.stdout.strip() == "active"
+    state, _ = await unit_state(ssh, unit_name)
+    return state == "active"
 
 
 async def unit_exists(ssh: SSHClient, unit_name: str) -> bool:

@@ -657,6 +657,9 @@ class InstanceOut(BaseModel):
     systemd_unit: str | None
     status: str
     last_error: str | None
+    started_at: datetime | None = None
+    last_healthy_at: datetime | None = None
+    last_load_seconds: int | None = None
 
     @classmethod
     def of(cls, inst: m.Instance) -> "InstanceOut":
@@ -697,6 +700,9 @@ class InstanceOut(BaseModel):
             systemd_unit=inst.systemd_unit,
             status=inst.status,
             last_error=inst.last_error,
+            started_at=inst.started_at,
+            last_healthy_at=inst.last_healthy_at,
+            last_load_seconds=inst.last_load_seconds,
         )
 
 
@@ -844,12 +850,47 @@ class InstanceRuntimeStatus(BaseModel):
     instance_id: int
     name: str
     status: str
+    node_id: int | None = None  # the API-serving node (head for cluster/distributed)
     systemd_active: bool | None = None
     health_ok: bool | None = None
+    # systemd restart count — a climbing value while never healthy is a crash
+    # loop rather than a slow model load.
+    n_restarts: int | None = None
     served_model: str | None = None
+    # Every id the instance's own /v1/models reports — lets the portal detect
+    # advertising a name vLLM would 404.
+    served_models: list[str] = Field(default_factory=list)
     endpoint: str | None = None
     detail: str | None = None
     metrics: InstanceMetrics | None = None
+    started_at: datetime | None = None
+    last_healthy_at: datetime | None = None
+    last_load_seconds: int | None = None
+
+
+class GatewayRoute(BaseModel):
+    """One model id the gateway will accept, and where it goes."""
+
+    model_name: str            # what a client puts in the "model" field
+    instance_id: int
+    instance: str
+    status: str
+    node: str | None = None    # the API-serving node (head for multi-node)
+    healthy: bool | None = None
+    # True when the instance's own /v1/models confirms it serves this id. False
+    # means the portal would route it but vLLM would 404 — a real misconfig.
+    confirmed_upstream: bool | None = None
+
+
+class GatewayInfo(BaseModel):
+    """Everything the UI needs to hand someone a working client config."""
+
+    base_path: str = "/v1"     # joined to the portal origin by the browser
+    auth_required: bool        # portal auth on -> clients need a bearer token
+    token_configured: bool
+    routes: list[GatewayRoute] = []
+    # Names that exist but are not servable right now, with why.
+    unavailable: list[GatewayRoute] = []
 
 
 class StatusSnapshot(BaseModel):
