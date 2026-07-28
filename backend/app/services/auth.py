@@ -94,8 +94,13 @@ async def verify_login(username: str, password: str) -> str:
         # treat it as a successful anonymous bind.
         raise AuthError("Username and password are required.")
     if mode == "password":
-        ok_user = hmac.compare_digest(username, settings.admin_user)
-        ok_pass = hmac.compare_digest(password, settings.admin_password or "")
+        # Compare as UTF-8 bytes: compare_digest raises TypeError on str inputs
+        # holding non-ASCII, which would 500 instead of 401 and lock out any
+        # admin whose password contains æøå.
+        ok_user = hmac.compare_digest(username.encode("utf-8"), settings.admin_user.encode("utf-8"))
+        ok_pass = hmac.compare_digest(
+            password.encode("utf-8"), (settings.admin_password or "").encode("utf-8")
+        )
         if not (settings.admin_password and ok_user and ok_pass):
             raise AuthError("Invalid username or password.")
         return settings.admin_user

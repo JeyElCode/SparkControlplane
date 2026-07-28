@@ -113,7 +113,19 @@ async def lifespan(app: FastAPI):
     await pool.close_all()
 
 
-app = FastAPI(title="Spark Control Plane", version=__version__, lifespan=lifespan)
+app = FastAPI(
+    title="Spark Control Plane",
+    version=__version__,
+    lifespan=lifespan,
+    # AuthMiddleware only guards /api and /metrics, so the default doc routes
+    # would hand an unauthenticated visitor the full endpoint map. Keep them
+    # when the portal is open anyway; drop them once auth is on.
+    **(
+        {"docs_url": None, "redoc_url": None, "openapi_url": None}
+        if settings.effective_auth_mode != "none"
+        else {}
+    ),
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -196,13 +208,21 @@ if (_frontend_dir / "index.html").is_file():
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
 
+    _frontend_root = _frontend_dir.resolve()
+
     @app.get("/{full_path:path}")
     async def spa(full_path: str):
         if full_path.startswith("api"):
             raise HTTPException(404, "Not found")
-        candidate = _frontend_dir / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(str(candidate))
-        return FileResponse(str(_frontend_dir / "index.html"))
+        index = _frontend_root / "index.html"
+        if full_path:
+            # ASGI hands us the URL path with %-escapes decoded and dot segments
+            # intact, so "/../../../data/secret.key" arrives verbatim. Resolve
+            # and require containment in the build dir before serving anything —
+            # otherwise this is an unauthenticated arbitrary file read.
+            candidate = (_frontend_root / full_path).resolve()
+            if candidate.is_relative_to(_frontend_root) and candidate.is_file():
+                return FileResponse(str(candidate))
+        return FileResponse(str(index))
 else:
     log.warning("Frontend build not found at %s; serving API only.", _frontend_dir)
