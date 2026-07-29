@@ -29,6 +29,7 @@ export default function SettingsPage() {
 
   const [gwToken, setGwToken] = useState("");
   const keys = usePoll(() => api.listApiKeys(), 10000);
+  const sessionInfo = usePoll(() => api.sessionStatus(), 0);
   const [newKeyLabel, setNewKeyLabel] = useState("");
   const [newKeyConc, setNewKeyConc] = useState("");
   const [newKeyRpm, setNewKeyRpm] = useState("");
@@ -589,6 +590,60 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          <div className="card">
+            <h2>Sessions</h2>
+            <p className="faint" style={{ fontSize: 13, marginTop: -6 }}>
+              Portal sessions are encrypted cookies, so signing out has to invalidate
+              them server-side — otherwise a copied cookie keeps working until it
+              expires. Ending sessions takes effect on the next request and survives a
+              restart.
+            </p>
+            {sessionInfo.data && (
+              <dl className="kv">
+                <dt>Secure cookie</dt>
+                <dd>
+                  {sessionInfo.data.cookie_secure_mode}
+                  {sessionInfo.data.cookie_secure_mode === "auto" &&
+                    ` → ${sessionInfo.data.cookie_secure_effective ? "Secure" : "not Secure"} for this request`}
+                </dd>
+                {sessionInfo.data.revoked_session_count > 0 && (
+                  <><dt>Revoked sessions</dt><dd>{sessionInfo.data.revoked_session_count}</dd></>
+                )}
+                {sessionInfo.data.users.length > 0 && (
+                  <><dt>Users signed out</dt>
+                    <dd>{sessionInfo.data.users.map((u) => u.username).join(", ")}</dd></>
+                )}
+              </dl>
+            )}
+            <div className="btn-row mt">
+              <button className="btn" onClick={async () => {
+                if (!confirm("Sign out all of your sessions? This signs you out here too.")) return;
+                const r = await api.revokeSessions({});
+                toast(r.detail, "success");
+                setTimeout(() => window.location.reload(), 1200);
+              }}>Sign out all my sessions</button>
+              <button className="btn" onClick={async () => {
+                const who = prompt("Sign out every session for which user?");
+                if (!who?.trim()) return;
+                const r = await api.revokeSessions({ username: who.trim() });
+                toast(r.detail, "success");
+                sessionInfo.reload();
+              }}>Sign out a user…</button>
+              <button className="btn btn-danger" onClick={async () => {
+                if (!confirm("Sign EVERYONE out of the portal, including yourself?")) return;
+                const r = await api.revokeSessions({ everyone: true });
+                toast(r.detail, "success");
+                setTimeout(() => window.location.reload(), 1200);
+              }}>Sign out everyone</button>
+            </div>
+            <p className="badge-note mt">
+              Ending a session here does not disable the account in your directory —
+              with SSO the portal never re-asks your provider, so a disabled account
+              keeps access until someone presses one of these buttons or the session
+              cap expires.
+            </p>
+          </div>
 
           <div className="card">
             <h2>Security</h2>

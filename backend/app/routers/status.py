@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal, get_session
+from ..services import auth as auth_svc
 from ..schemas import InstanceHistory, NodeHistory, StatusSnapshot
 from ..services.telemetry import engine
 
@@ -36,6 +37,10 @@ async def status_ws(ws: WebSocket):
     interval = float(ws.query_params.get("interval", "3"))
     try:
         while True:
+            # Re-check every tick: this loop outlives the handshake by hours.
+            if not auth_svc.ws_session_valid(ws):
+                await ws.close(code=4401)
+                return
             async with SessionLocal() as session:
                 snap = await engine.compose_snapshot(session)
             await ws.send_text(snap.model_dump_json())

@@ -1,6 +1,6 @@
 # API Reference
 
-REST + WebSocket reference for the Spark Control Plane (v1.27.0). The API is
+REST + WebSocket reference for the Spark Control Plane (v1.28.0). The API is
 served by the FastAPI backend under the `/api` prefix; everything else is the
 built React SPA. All request and response bodies are JSON unless noted.
 
@@ -609,3 +609,27 @@ provenance, not the field.
 
 **Built-ins** are refreshed from the image on every start and cannot be edited
 or deleted (`409`); duplicate one into a profile of your own instead.
+
+
+---
+
+## Sessions
+
+`app/routers/sessions.py` — prefix `/api/sessions`. Portal sessions are
+encrypted cookies, so ending one has to invalidate it server-side; deleting the
+cookie is only a request to a cooperating browser.
+
+| Method | Path | Description | Request | Response |
+|---|---|---|---|---|
+| GET | `` | Who has been signed out, and how the Secure flag resolves for this request. | — | `RevocationStatus` |
+| POST | `/revoke` | End sessions: no username = your own, a username = that user's, `everyone: true` = all. | `RevokeIn` | `RevokeResult` |
+
+Revocations take effect on the next request and survive a restart. They are
+deliberately **excluded from the backup bundle** — a restore replaces tables
+wholesale, so including them would let an old bundle resurrect a revoked
+session.
+
+> Ending a session here does **not** disable the account in your directory.
+> With SSO the portal never re-asks your provider after sign-in, so a disabled
+> account keeps access until someone revokes it here or the session cap
+> expires.

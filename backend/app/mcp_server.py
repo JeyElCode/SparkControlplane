@@ -40,6 +40,7 @@ from .routers import cluster as cluster_router
 from .routers import evals as evals_router
 from .routers import gateway as gateway_router
 from .routers import profiles as profiles_router
+from .routers import sessions as sessions_router
 from .routers import instances as instances_router
 from .routers import jobs as jobs_router
 from .routers import logs as logs_router
@@ -68,6 +69,9 @@ from .schemas import (
     ApiKeyUpdate,
     GatewayInfo,
     GatewayTraffic,
+    RevocationStatus,
+    RevokeIn,
+    RevokeResult,
     ServeProfileExport,
     ServeProfileIn,
     ServeProfileOut,
@@ -273,6 +277,34 @@ def build_mcp_server() -> "FastMCP":
         routes, and whether a bearer token is required. Use this to hand a
         client a working config."""
         return await _with_session(gateway_router.gateway_routes)
+
+    @mcp.tool()
+    async def session_revoke(username: str | None = None, everyone: bool = False) -> RevokeResult:
+        """DESTRUCTIVE: end portal sessions. No username = the caller's own;
+        a username = every session for that user (offboarding, leaked cookie);
+        everyone = the panic button. Takes effect on the next request and
+        survives a restart. Does NOT disable the account in your directory."""
+        from fastapi import Request as _Request
+
+        class _Req:
+            cookies: dict = {}
+
+        return await _no_session(
+            sessions_router.revoke,
+            payload=RevokeIn(username=username, everyone=everyone),
+            request=_Req(),
+        )
+
+    @mcp.tool()
+    async def session_status() -> RevocationStatus:
+        """Which users have been signed out, and how the session cookie's
+        Secure flag is resolving."""
+        class _Req:
+            cookies: dict = {}
+            url = type("U", (), {"scheme": "https"})()
+            headers: dict = {}
+
+        return await _no_session(sessions_router.revocation_status, request=_Req())
 
     # ---------------- serve profiles ----------------
     @mcp.tool()

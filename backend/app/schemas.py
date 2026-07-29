@@ -459,6 +459,32 @@ class ModelSuggestion(BaseModel):
 
 
 # --- Serve profiles ------------------------------------------------------
+class RevokedUser(BaseModel):
+    username: str
+    not_before: float
+
+
+class RevocationStatus(BaseModel):
+    loaded: bool
+    global_not_before: float | None = None
+    users: list[RevokedUser] = []
+    revoked_session_count: int = 0
+    cookie_secure_mode: str = "auto"
+    cookie_secure_effective: bool = False
+
+
+class RevokeIn(BaseModel):
+    username: str | None = None   # omitted = the caller's own sessions
+    everyone: bool = False
+    reason: str | None = Field(default=None, max_length=128)
+
+
+class RevokeResult(BaseModel):
+    subject: str
+    not_before: float
+    detail: str
+
+
 class ServeProfileIn(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     description: str | None = None

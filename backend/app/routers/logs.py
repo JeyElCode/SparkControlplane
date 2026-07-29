@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 from ..db import SessionLocal, get_session
 from ..models import Instance, Node
 from ..services import templates
+from ..services import auth as auth_svc
 from ..ssh import ssh_for_node
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
@@ -145,6 +146,10 @@ async def logs_ws(ws: WebSocket):
             await ws.send_text(await queue.get())
 
     pump_task = asyncio.create_task(pump())
+    # This stream follows journalctl for up to an hour, and its main loop below
+    # blocks on ws.receive(), so it would otherwise keep feeding a revoked
+    # session until the client disconnected.
+    watchdog = asyncio.create_task(auth_svc.ws_revocation_watchdog(ws))
     try:
         while True:
             msg = await ws.receive()  # detects client disconnect
@@ -155,7 +160,7 @@ async def logs_ws(ws: WebSocket):
     except Exception:  # noqa: BLE001 - transport gone
         pass
     finally:
-        for t in (pump_task, tail):
+        for t in (pump_task, tail, watchdog):
             if not t.done():
                 t.cancel()
                 try:
