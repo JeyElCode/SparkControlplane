@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 
 import httpx
 import pytest
@@ -147,7 +146,6 @@ def test_import_with_wrong_key_clears_secrets(client):
 
 
 def test_s3_backup_run_list_restore_and_retention(client, monkeypatch):
-    from app.services import backup as backup_svc
 
     _seed(client)
     r = client.patch("/api/cluster/settings", json={

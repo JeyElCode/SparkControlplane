@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, Model, NodeStorage } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { fmtBytes, statusKind } from "../lib/format";
-import { Badge, EmptyState, HelpTip, Meter, Modal, Spinner } from "../components/ui";
+import { Badge, EmptyState, HelpTip, Meter, Modal, Spinner, LoadError } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
@@ -147,6 +147,8 @@ export default function Models() {
           <p>Download to the head node, then auto-sync to the worker with checksum verification.</p>
         </div>
       </div>
+
+      <LoadError error={models.error} what="models" />
 
       <div className="card mb">
         <h2>Add a model</h2>

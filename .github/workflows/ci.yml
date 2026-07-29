@@ -30,8 +30,9 @@ jobs:
           python-version: "3.12"
       - working-directory: backend
         run: |
-          pip install .
-          SPARK_DATA_DIR=/tmp/spark python -c "import app.main; print('backend import OK')"
+          pip install .[dev]
+          ruff check app tests
+          SPARK_DATA_DIR=/tmp/spark pytest -q
 
   docker-build:
     runs-on: ubuntu-latest
@@ -42,6 +43,6 @@ jobs:
         with:
           context: .
           push: false
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

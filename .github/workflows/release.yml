@@ -10,7 +10,33 @@ permissions:
   packages: write
 
 jobs:
+  verify:
+    # A tag must not publish an image unless the suite that guards this
+    # software's behaviour on real hardware has actually run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - working-directory: backend
+        run: |
+          pip install .[dev]
+          ruff check app tests
+          SPARK_DATA_DIR=/tmp/spark pytest -q
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
   build-and-push:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,7 +62,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern=v{{version}}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v7

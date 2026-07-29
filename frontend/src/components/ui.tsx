@@ -91,3 +91,22 @@ export function Meter({ value, max }: { value: number; max: number }) {
     </div>
   );
 }
+
+
+/** Renders a failed poll instead of letting it look like "nothing is here".
+ *
+ * `usePoll` exposes an `error`, and pages that ignored it showed their empty
+ * state on a dropped connection or an expired session — telling the operator
+ * there are no instances when the truth is that the portal could not be
+ * reached. */
+export function LoadError({ error, what }: { error?: string; what: string }) {
+  if (!error) return null;
+  return (
+    <div className="banner banner-warn" style={{ marginBottom: 12 }}>
+      ⚠ Could not load {what}: {error}
+      <div className="badge-note" style={{ marginTop: 4 }}>
+        This is a problem reaching the portal, not a statement about your cluster.
+      </div>
+    </div>
+  );
+}

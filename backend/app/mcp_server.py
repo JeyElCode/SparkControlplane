@@ -284,7 +284,6 @@ def build_mcp_server() -> "FastMCP":
         a username = every session for that user (offboarding, leaked cookie);
         everyone = the panic button. Takes effect on the next request and
         survives a restart. Does NOT disable the account in your directory."""
-        from fastapi import Request as _Request
 
         class _Req:
             cookies: dict = {}

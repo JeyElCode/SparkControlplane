@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.models import INST_ERROR, INST_RUNNING, INST_STARTING, INST_STOPPED
-from app.services.scheduler import decide, desired_state, parse_days, window_active
+from app.services.scheduler import decide, parse_days, window_active
 
 
 def _dt(weekday: int, hhmm: str) -> datetime:

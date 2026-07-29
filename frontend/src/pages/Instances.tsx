@@ -4,7 +4,7 @@ import { api, InstanceInput, Instance, Topology } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { clientSnippet, gatewayBaseUrl, gatewayModelName } from "../lib/gateway";
 import { loadProgress, statusKind } from "../lib/format";
-import { Badge, EmptyState, Field, Modal, Spinner } from "../components/ui";
+import { Badge, EmptyState, Field, Modal, Spinner, LoadError } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { LiveLogPanel } from "../components/LiveLogPanel";
 import { useToast } from "../components/Toast";
@@ -767,6 +767,8 @@ export default function Instances() {
         </div>
         <button className="btn btn-primary" onClick={() => setCreating(true)}>+ New instance</button>
       </div>
+
+      <LoadError error={instances.error} what="instances" />
 
       {(gw.data?.routes.length ?? 0) > 0 && (
         <div className="card">
