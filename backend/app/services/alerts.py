@@ -163,10 +163,16 @@ def gather_facts(cfg: dict) -> list[Fact]:
             continue
         m = telemetry._inst_metrics.get(st.instance_id)
         kv = m.kv_cache_pct if m else None
+        # The message is built eagerly, so it must survive kv being None — an
+        # instance that is running but not yet scraped (every portal restart,
+        # every fresh start). Formatting None here raised TypeError out of
+        # gather_facts and killed the WHOLE alert tick, silently disabling every
+        # rule until the first scrape landed.
+        kv_text = f"{kv:.0f}%" if kv is not None else "unknown"
         facts.append(Fact(
             "kv_cache_full", st.name,
             kv is not None and kv >= cfg["kv_cache_pct"], cfg["kv_cache_seconds"], "warn",
-            f"Instance {st.name} KV cache is at {kv:.0f}% — likely overloaded "
+            f"Instance {st.name} KV cache is at {kv_text} — likely overloaded "
             f"(requests will queue).",
         ))
     return facts

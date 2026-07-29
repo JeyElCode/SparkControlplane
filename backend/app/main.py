@@ -90,7 +90,18 @@ async def lifespan(app: FastAPI):
 
     from .services.backup import runner as backup_runner
     from .services.reconcile import reconciler as status_reconciler
+    from .services.gwstats import gw_collector
+    from .services import apikeys
 
+    # Load the gateway key -> principal map before serving: verification is a
+    # dict lookup on every request, never a DB round trip.
+    try:
+        n_keys = await apikeys.refresh_cache()
+        if n_keys:
+            log.info("loaded %d gateway API key(s)", n_keys)
+    except Exception:  # noqa: BLE001 - never block startup on this
+        log.exception("could not load gateway API keys")
+    gw_collector.start()
     telemetry_engine.start()
     # Reads the telemetry caches, so it starts after the engine and stops first.
     status_reconciler.start()
@@ -108,6 +119,7 @@ async def lifespan(app: FastAPI):
     else:
         yield
     task.cancel()
+    await gw_collector.stop()
     await backup_runner.stop()
     await instance_scheduler.stop()
     await usage_collector.stop()

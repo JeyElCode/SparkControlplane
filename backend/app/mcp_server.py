@@ -63,7 +63,10 @@ from .schemas import (
     EvalStarted,
     InstanceHistory,
     InstanceIn,
+    ApiKeyOut,
+    ApiKeyUpdate,
     GatewayInfo,
+    GatewayTraffic,
     InstanceOut,
     InstanceUpdate,
     InterfaceInfo,
@@ -266,6 +269,29 @@ def build_mcp_server() -> "FastMCP":
         routes, and whether a bearer token is required. Use this to hand a
         client a working config."""
         return await _with_session(gateway_router.gateway_routes)
+
+    @mcp.tool()
+    async def gateway_traffic() -> GatewayTraffic:
+        """Per-client gateway traffic since the portal started: who is calling
+        which model, error/rejection counts, latency, and what is in flight
+        right now. Sees requests the gateway rejected, which vLLM's own
+        counters cannot."""
+        return await _no_session(gateway_router.gateway_traffic)
+
+    @mcp.tool()
+    async def gateway_key_list() -> list[ApiKeyOut]:
+        """List per-client gateway API keys (never the secrets)."""
+        return await _with_session(gateway_router.list_api_keys)
+
+    @mcp.tool()
+    async def gateway_key_revoke(key_id: int) -> ApiKeyOut:
+        """DESTRUCTIVE: revoke a gateway API key. The client using it stops
+        working on its very next request."""
+        return await _with_session(
+            gateway_router.update_api_key,
+            key_id=key_id,
+            payload=ApiKeyUpdate(enabled=False),
+        )
 
     @mcp.tool()
     async def instance_reconcile(instance_id: int) -> InstanceOut:

@@ -13,6 +13,7 @@ import hmac
 from http import cookies as http_cookies
 
 from .config import get_settings
+from .services import apikeys
 from .services.auth import COOKIE_NAME, parse_session
 
 _OPEN_PREFIXES = ("/api/auth/", "/mcp")
@@ -57,7 +58,11 @@ class AuthMiddleware:
         if path == "/metrics":
             token = settings.metrics_token
             supplied = _bearer(scope)
-            if token and supplied and hmac.compare_digest(supplied, token):
+            # Bytes, latin-1-recovered: see services/apikeys.wire_bytes. As str
+            # this raised TypeError (HTTP 500) for a non-ASCII bearer.
+            if token and supplied and hmac.compare_digest(
+                apikeys.wire_bytes(supplied), token.encode("utf-8")
+            ):
                 return await self.app(scope, receive, send)
             if _session_user(scope):  # a logged-in browser may look too
                 return await self.app(scope, receive, send)

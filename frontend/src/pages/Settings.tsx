@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { AlertConfig, api, ClusterConfig, ImageTags } from "../lib/api";
+import { AlertConfig, api, ApiKey, ApiKeyCreated, ClusterConfig, ImageTags } from "../lib/api";
 import { usePoll } from "../lib/hooks";
+import { timeAgo } from "../lib/format";
 import { Badge, Field, Modal, Spinner } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
@@ -27,6 +28,11 @@ export default function SettingsPage() {
   const [alertBusy, setAlertBusy] = useState(false);
 
   const [gwToken, setGwToken] = useState("");
+  const keys = usePoll(() => api.listApiKeys(), 10000);
+  const [newKeyLabel, setNewKeyLabel] = useState("");
+  const [newKeyConc, setNewKeyConc] = useState("");
+  const [newKeyRpm, setNewKeyRpm] = useState("");
+  const [issued, setIssued] = useState<ApiKeyCreated | null>(null);
 
   const saveGwToken = async () => {
     await api.updateSettings({ gateway_token: gwToken });
@@ -315,6 +321,74 @@ export default function SettingsPage() {
   -H 'Authorization: Bearer <token>' -H 'Content-Type: application/json' \\
   -d '{"model": "<served name>", "messages": [{"role": "user", "content": "hi"}]}'`}
             </div>
+
+            <h3 className="mt">Per-client keys</h3>
+            <p className="faint" style={{ marginTop: -4 }}>
+              Give each client its own key so one can be revoked without disturbing
+              the others — and so traffic can be attributed to it. The shared token
+              above keeps working for clients already configured with it.
+            </p>
+            <div className="row-2">
+              <Field label="Label"><input value={newKeyLabel} placeholder="e.g. grafana, team-a"
+                onChange={(e) => setNewKeyLabel(e.target.value)} /></Field>
+              <div className="row-2">
+                <Field label="Max concurrent" hint="blank = unlimited">
+                  <input type="number" min={0} value={newKeyConc} placeholder="∞"
+                    onChange={(e) => setNewKeyConc(e.target.value)} /></Field>
+                <Field label="Max req/min" hint="blank = unlimited">
+                  <input type="number" min={0} value={newKeyRpm} placeholder="∞"
+                    onChange={(e) => setNewKeyRpm(e.target.value)} /></Field>
+              </div>
+            </div>
+            <button className="btn btn-primary" disabled={!newKeyLabel.trim()}
+              onClick={async () => {
+                try {
+                  const created = await api.createApiKey({
+                    label: newKeyLabel.trim(),
+                    max_concurrent: newKeyConc ? Number(newKeyConc) : null,
+                    max_rpm: newKeyRpm ? Number(newKeyRpm) : null,
+                  });
+                  setIssued(created);
+                  setNewKeyLabel(""); setNewKeyConc(""); setNewKeyRpm("");
+                  keys.reload();
+                } catch (e: any) { toast(e.message, "error"); }
+              }}>Create key</button>
+
+            {(keys.data ?? []).length > 0 && (
+              <div className="table-wrap mt">
+                <table>
+                  <thead><tr>
+                    <th>Label</th><th>Key</th><th>Limits</th><th>In flight</th>
+                    <th>Last used</th><th />
+                  </tr></thead>
+                  <tbody>
+                    {(keys.data ?? []).map((k: ApiKey) => (
+                      <tr key={k.id} style={{ opacity: k.enabled ? 1 : 0.5 }}>
+                        <td>{k.label}{!k.enabled && <Badge kind="gray">revoked</Badge>}</td>
+                        <td className="mono">{k.prefix}…</td>
+                        <td className="faint">
+                          {k.max_concurrent ? `${k.max_concurrent} concurrent` : "unlimited"}
+                          {k.max_rpm ? ` · ${k.max_rpm}/min` : ""}
+                        </td>
+                        <td>{k.in_flight || "—"}</td>
+                        <td className="faint">{k.last_used_at ? timeAgo(k.last_used_at) : "never"}</td>
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button className="btn btn-sm" onClick={async () => {
+                            await api.updateApiKey(k.id, { enabled: !k.enabled });
+                            keys.reload();
+                          }}>{k.enabled ? "Revoke" : "Re-enable"}</button>
+                          <button className="btn btn-sm btn-danger" onClick={async () => {
+                            if (!confirm(`Delete key "${k.label}"? Any client using it stops working immediately.`)) return;
+                            await api.deleteApiKey(k.id);
+                            keys.reload();
+                          }}>Delete</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           <div className="card">
@@ -521,12 +595,42 @@ export default function SettingsPage() {
             <p className="faint" style={{ fontSize: 13 }}>
               SSH passwords, private keys, sudo passwords and the HuggingFace token are encrypted at rest with a Fernet key
               (from <span className="tag">SPARK_SECRET_KEY</span> or generated to <span className="tag">/data/secret.key</span>).
-              Back up that key — without it, stored secrets can't be decrypted. Portal login is not enabled in this build; run it
-              only on a trusted network.
+              Back up that key — without it, stored secrets can't be decrypted. Portal login is set with
+              <span className="tag">SPARK_AUTH_MODE</span> (none / password / ldap); with <span className="tag">none</span> the
+              portal is open, so run that only on a trusted network.
             </p>
           </div>
         </div>
       </div>
+
+      {issued && (
+        <Modal title="Copy this key now" onClose={() => setIssued(null)}>
+          <p>
+            This is the only time <strong>{issued.label}</strong>'s key is shown.
+            It is stored as a hash and cannot be retrieved again — if it is lost,
+            delete the key and issue a new one.
+          </p>
+          <div className="mono" style={{
+            padding: 12, background: "var(--bg-elev-2)", borderRadius: 6,
+            wordBreak: "break-all", userSelect: "all",
+          }}>{issued.token}</div>
+          <div className="btn-row mt">
+            <button className="btn btn-primary" onClick={() => {
+              navigator.clipboard?.writeText(issued.token);
+              toast("Key copied", "success");
+            }}>Copy key</button>
+            <button className="btn" onClick={() => {
+              navigator.clipboard?.writeText(
+                `Base URL: ${window.location.origin}/v1\nModel: <served name>\n` +
+                `Auth: Authorization: Bearer ${issued.token}`,
+              );
+              toast("Client config copied", "success");
+            }}>Copy full client config</button>
+            <button className="btn btn-ghost" onClick={() => setIssued(null)}>Done</button>
+          </div>
+        </Modal>
+      )}
     </div>
+
   );
 }

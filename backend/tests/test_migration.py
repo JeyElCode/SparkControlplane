@@ -201,3 +201,39 @@ async def test_instances_gain_lifecycle_columns(app_db):
     con = sqlite3.connect(tmp_path / "spark.sqlite3")
     assert con.execute("SELECT COUNT(*) FROM instances").fetchone()[0] == 1
     con.close()
+
+
+# --- v1.25.0: gateway API keys + traffic rollups ---------------------------
+async def test_gateway_tables_are_created_on_an_existing_db(app_db):
+    """api_keys and gateway_samples are new TABLES (not columns), so they arrive
+    via create_all. A live DB must gain them without touching existing rows."""
+    db, tmp_path = app_db
+    con = sqlite3.connect(tmp_path / "spark.sqlite3")
+    con.executescript(OLD_SCHEMA)
+    con.execute(
+        "INSERT INTO models VALUES (1, 'org/m', 'm', 'present', '2026-01-01', '2026-01-01')"
+    )
+    con.commit()
+    con.close()
+
+    await db.init_db()
+
+    con = sqlite3.connect(tmp_path / "spark.sqlite3")
+    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"api_keys", "gateway_samples"} <= tables
+    # the pre-existing row is untouched
+    assert con.execute("SELECT repo_id FROM models").fetchone()[0] == "org/m"
+    # and the key table is usable + uniquely indexed on the digest
+    con.execute(
+        "INSERT INTO api_keys (label, prefix, token_sha256, enabled, created_at, updated_at) "
+        "VALUES ('a', 'sk-spark-1', 'deadbeef', 1, '2026-01-01', '2026-01-01')"
+    )
+    try:
+        con.execute(
+            "INSERT INTO api_keys (label, prefix, token_sha256, enabled, created_at, updated_at) "
+            "VALUES ('b', 'sk-spark-2', 'deadbeef', 1, '2026-01-01', '2026-01-01')"
+        )
+        raise AssertionError("duplicate token digest must be rejected")
+    except sqlite3.IntegrityError:
+        pass
+    con.close()

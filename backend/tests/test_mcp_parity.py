@@ -19,6 +19,7 @@ EXPECTED_NEW = [
     "storage_report", "storage_delete_orphan", "storage_clear_hf_cache",
     "image_tags", "image_update",
     "instance_reconcile", "gateway_routes",
+    "gateway_traffic", "gateway_key_list", "gateway_key_revoke",
 ]
 
 
@@ -63,6 +64,8 @@ def test_read_tools_execute(mcp_server):
             ("schedule_list", {}),
             ("usage_get", {}),
             ("gateway_routes", {}),
+            ("gateway_traffic", {}),
+            ("gateway_key_list", {}),
         ]:
             out[name] = await mcp_server.call_tool(name, args)
         return out

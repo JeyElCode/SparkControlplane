@@ -1,5 +1,64 @@
 # Changelog
 
+## v1.25.0 — the gateway grows up: keys, attribution, limits
+- **Per-client API keys.** Every consumer used to hold the same bearer token,
+  so offboarding one client or containing one leak meant rotating for everyone
+  at once — a coordinated outage — and attribution was structurally impossible
+  because nothing in the request identified the caller. Issue a key per client
+  in Settings → API gateway; revoking one takes effect on its very next
+  request. The token is shown exactly once and stored only as a SHA-256 digest.
+  **The shared token keeps working**, so clients already configured with it are
+  untouched by the upgrade.
+  - Why SHA-256 and not bcrypt: the secret is 256 bits of CSPRNG output, not a
+    human-chosen password, so a KDF work factor is a rounding error against an
+    already-infeasible search — while a per-record salt would destroy the O(1)
+    lookup this needs on *every* request. It is also strictly better than what
+    it replaces: the shared token is stored reversibly, and travels inside every
+    backup bundle.
+- **Gateway traffic is visible at last.** The gateway recorded nothing — not a
+  counter, not a log line — so every gateway-level outcome was invisible: a bad
+  token (401), an unknown model (404), an unreachable (502) or still-loading
+  (503) instance left no trace anywhere, and the operator found out when someone
+  complained. Usage → Gateway traffic now shows per-client request counts,
+  errors, rejections, average latency and time-to-first-byte, plus a recent-
+  requests view for "what happened at 14:32". Exported to Prometheus as
+  `spark_gateway_*`, labelled by client and model.
+  - No per-request row ever reaches SQLite. Requests fold into in-memory
+    counters; a background task flushes 5-minute *aggregates* to a new
+    `gateway_samples` table. For a streamed response the record only completes
+    when the generator closes — while the client may already be disconnecting —
+    and awaiting a SQLite writer there, in contention with the telemetry loops
+    and the reconciler, is the worst possible place to block.
+- **Per-client limits, so one runaway client can't starve the rest.** The
+  `kv_cache_full` alert could already *detect* saturation but offered no lever.
+  Concurrency is the primary limit rather than requests/min: with continuous
+  batching the contended resource is KV-cache blocks held by in-flight
+  sequences, and a client's concurrent request count *is* its share of exactly
+  that. It is scoped per (client, instance) — KV cache is per-instance, so a
+  client using two models isn't hurting either one. Requests/min is available as
+  a secondary guard. Over the cap returns 429 with `Retry-After` and says which
+  limit was hit.
+  - **Everything defaults to unlimited**: an upgrade must never start throttling
+    traffic that worked yesterday. The operator's own portal/Playground session
+    is exempt unless `SPARK_GATEWAY_LIMIT_SESSION=true`.
+- **Fixed: a non-ASCII bearer token was unusable.** Header values arrive
+  latin-1-decoded, so comparing them as `str` raised `TypeError` (an HTTP 500)
+  on `/v1` and `/metrics` — and the obvious fix, re-encoding as UTF-8, silently
+  turns that into a permanent 401 because it produces four bytes where the
+  client sent two. The wire bytes are now recovered properly, so a gateway or
+  metrics token containing `æøå` both fails closed when wrong *and* works when
+  right.
+- **Fixed: a running instance with no metrics yet crashed the whole alert
+  tick.** Formatting a null KV-cache percentage raised `TypeError` out of
+  `gather_facts`, which aborted the entire evaluation — silently disabling
+  *every* alert rule until the first scrape landed, on every portal restart.
+- New: `GET /api/gateway/traffic`, `GET|POST|PATCH|DELETE /api/gateway/keys`,
+  MCP `gateway_traffic` / `gateway_key_list` / `gateway_key_revoke`. New env:
+  `SPARK_GATEWAY_MAX_CONCURRENT`, `SPARK_GATEWAY_MAX_RPM`,
+  `SPARK_GATEWAY_LIMIT_SESSION`, `SPARK_GATEWAY_ROLLUP_SECONDS`. Two new tables
+  (`api_keys`, `gateway_samples`) are created automatically; no existing row is
+  touched.
+
 ## v1.24.0 — instance status tells the truth
 - **Status is now reconciled against the nodes, every ~10s.** A start no longer
   reports `running` the instant the systemd unit is installed — that happened

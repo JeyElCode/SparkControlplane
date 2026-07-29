@@ -112,3 +112,26 @@ def test_alert_api_and_settings_roundtrip(client):
     assert client.patch("/api/cluster/settings", json={"alerts": {"bogus": 1}}).status_code == 422
     r = client.patch("/api/cluster/settings", json={"alert_webhook_url": ""})
     assert r.json()["has_alert_webhook"] is False
+
+
+def test_gather_facts_survives_an_unscraped_running_instance():
+    """A running instance with no metrics yet (every portal restart, every
+    fresh start) must not blow up fact gathering. Formatting `kv_cache_pct`
+    when it is None raised TypeError out of gather_facts, which killed the
+    entire alert tick — every rule silently stopped until the first scrape.
+    """
+    from app.schemas import InstanceRuntimeStatus
+    from app.services.alerts import DEFAULTS, gather_facts
+    from app.services.telemetry import SlowCache, engine
+
+    engine._slow = SlowCache(ts=1.0, instances=[
+        InstanceRuntimeStatus(instance_id=1, name="lag", status="running", health_ok=True),
+    ])
+    engine._inst_metrics.clear()  # not scraped yet
+    try:
+        facts = gather_facts(dict(DEFAULTS))
+    finally:
+        engine._slow = SlowCache()
+    kv = [f for f in facts if f.rule == "kv_cache_full"]
+    assert kv and kv[0].active is False
+    assert "unknown" in kv[0].message

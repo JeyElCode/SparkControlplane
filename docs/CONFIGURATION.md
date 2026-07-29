@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This is the complete configuration reference for the Spark Control Plane (v1.24.0),
+This is the complete configuration reference for the Spark Control Plane (v1.25.0),
 the single-container FastAPI + React portal that automates a NVIDIA DGX Spark (up to 4-node)
 vLLM cluster.
 
@@ -89,6 +89,10 @@ In the **Role** column below:
 | `SPARK_RECONCILE_UNHEALTHY_SECONDS` | `reconcile_unhealthy_seconds` | `120` | Runtime fixed | How long a previously-healthy instance must fail `/health` before demotion, so one missed scrape doesn't flap it. |
 | `SPARK_RECONCILE_UNIT_DEAD_SECONDS` | `reconcile_unit_dead_seconds` | `45` | Runtime fixed | How long the systemd unit must read inactive/failed before demotion (must exceed the unit's `RestartSec`). |
 | `SPARK_RECONCILE_CRASHLOOP_RESTARTS` | `reconcile_crashloop_restarts` | `3` | Runtime fixed | Restarts observed while never once healthy before the instance is called a crash loop — the signal that catches an out-of-memory at model load. |
+| `SPARK_GATEWAY_MAX_CONCURRENT` | `gateway_max_concurrent` | `0` | Runtime fixed | Default cap on concurrent in-flight `/v1` requests per client, per instance. `0` = unlimited (the default — an upgrade must not start throttling working traffic). Overridable per API key. Concurrency, not RPM, is the meaningful limit: with continuous batching a client's in-flight count is its share of the KV cache. |
+| `SPARK_GATEWAY_MAX_RPM` | `gateway_max_rpm` | `0` | Runtime fixed | Default requests-per-minute cap per client. `0` = unlimited. A secondary guard against connect storms. |
+| `SPARK_GATEWAY_LIMIT_SESSION` | `gateway_limit_session` | `false` | Runtime fixed | Apply the limits to the operator's own logged-in portal session (Playground, evals). Off by default — locking yourself out of your own portal while chasing a runaway client is the wrong failure mode. |
+| `SPARK_GATEWAY_ROLLUP_SECONDS` | `gateway_rollup_seconds` | `300` | Runtime fixed | How often in-memory gateway counters are flushed to the `gateway_samples` table. Rows are aggregates per (client, model); no per-request row is ever written. Retention follows `SPARK_USAGE_RETENTION_DAYS`. |
 | `SPARK_SCHEDULE_TZ` | `schedule_tz` | _system_ | Runtime fixed | IANA timezone schedule times are interpreted in (e.g. `Europe/Oslo`). |
 | `SPARK_SCHEDULE_RETRY_SECONDS` | — | `120` | Process | Backoff before re-issuing a scheduled start/stop whose job failed (max 5 attempts). |
 | `SPARK_NODE_INSTALL_DIR` | `node_install_dir` | `/opt/spark-controlplane` | Runtime fixed | Where helper scripts + systemd units are installed **on the nodes**. |

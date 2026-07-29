@@ -266,6 +266,63 @@ class Instance(Base):
     node: Mapped[Node | None] = relationship()
 
 
+class ApiKey(Base):
+    """A per-client credential for the /v1 gateway.
+
+    The token is shown exactly once, at creation, and only its SHA-256 digest is
+    stored. A password KDF (bcrypt/scrypt) would be the wrong tool: the secret is
+    256 bits of CSPRNG output, not a human-chosen password, so a work factor buys
+    a rounding error against an already-infeasible search — while a per-record
+    salt would destroy the O(1) ``digest -> row`` lookup this needs on *every*
+    gateway request.
+
+    ``prefix`` is generated separately from the secret and stored in the clear,
+    so logs, metrics labels and the UI can name a key without ever touching
+    secret material.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    label: Mapped[str] = mapped_column(String(64))
+    prefix: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    token_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Per-key overrides; NULL = use the global default (which may itself be
+    # unlimited). Set to 0 to mean "explicitly unlimited" for a trusted client.
+    max_concurrent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+class GatewaySample(Base):
+    """A 5-minute rollup of gateway traffic for one (client, model) pair.
+
+    Deliberately an aggregate, never a row per request: the gateway's hot path
+    must not contend for the same SQLite writer as the UI polls, the telemetry
+    loops and the reconciler — least of all from inside a streaming response's
+    cleanup, while the client may already be disconnecting.
+    """
+
+    __tablename__ = "gateway_samples"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, index=True)  # window end
+    client: Mapped[str] = mapped_column(String(64), index=True)  # key label
+    model: Mapped[str] = mapped_column(String(128))
+    requests: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[int] = mapped_column(Integer, default=0)      # non-2xx
+    rejected: Mapped[int] = mapped_column(Integer, default=0)    # 401/429 at the gate
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # Sum of durations, so an average survives aggregation across windows.
+    duration_ms_total: Mapped[int] = mapped_column(Integer, default=0)
+    ttfb_ms_total: Mapped[int] = mapped_column(Integer, default=0)
+    ttfb_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class InstanceSchedule(Base):
     """A weekly live-window for an instance: on the listed weekdays the
     scheduler starts the instance at ``start_time`` and stops it at

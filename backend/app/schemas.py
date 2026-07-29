@@ -893,6 +893,83 @@ class GatewayInfo(BaseModel):
     unavailable: list[GatewayRoute] = []
 
 
+# --- Gateway API keys + traffic ------------------------------------------
+class ApiKeyIn(BaseModel):
+    label: str = Field(min_length=1, max_length=64)
+    # 0 / null = unlimited (the default). Per-key overrides of the global caps.
+    max_concurrent: int | None = Field(default=None, ge=0, le=1000)
+    max_rpm: int | None = Field(default=None, ge=0, le=100000)
+
+
+class ApiKeyUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=64)
+    enabled: bool | None = None
+    max_concurrent: int | None = Field(default=None, ge=0, le=1000)
+    max_rpm: int | None = Field(default=None, ge=0, le=100000)
+
+
+class ApiKeyOut(BaseModel):
+    """A key as listed. The token itself is never included — it exists in
+    exactly one response, the 201 from create."""
+
+    id: int
+    label: str
+    prefix: str
+    enabled: bool
+    max_concurrent: int | None = None
+    max_rpm: int | None = None
+    last_used_at: datetime | None = None
+    created_at: datetime
+    in_flight: int = 0  # live, from the limiter
+
+    @classmethod
+    def of(cls, row: m.ApiKey, in_flight: int = 0) -> "ApiKeyOut":
+        return cls(
+            id=row.id, label=row.label, prefix=row.prefix, enabled=row.enabled,
+            max_concurrent=row.max_concurrent, max_rpm=row.max_rpm,
+            last_used_at=row.last_used_at, created_at=row.created_at,
+            in_flight=in_flight,
+        )
+
+
+class ApiKeyCreated(ApiKeyOut):
+    """The one and only time the caller sees the token."""
+
+    token: str
+
+
+class GatewayRequestOut(BaseModel):
+    ts: float
+    client: str
+    model: str
+    instance: str | None = None
+    status: int
+    duration_ms: int
+    ttfb_ms: int | None = None
+    streamed: bool = False
+    error: str | None = None
+
+
+class GatewayTrafficRow(BaseModel):
+    client: str
+    model: str
+    requests: int
+    errors: int
+    rejected: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    avg_ms: float | None = None
+    avg_ttfb_ms: float | None = None
+
+
+class GatewayTraffic(BaseModel):
+    """Live attribution: who is calling what, and how it is going."""
+
+    since_start: list[GatewayTrafficRow] = []
+    recent: list[GatewayRequestOut] = []
+    in_flight: dict[str, int] = {}
+
+
 class StatusSnapshot(BaseModel):
     setup_complete: bool
     qsfp_ok: bool | None = None

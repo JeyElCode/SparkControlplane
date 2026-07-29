@@ -159,6 +159,19 @@ class Settings(BaseSettings):
     # times are interpreted in (empty = the container/system timezone).
     schedule_tick_seconds: float = Field(default=60.0)
     schedule_tz: str = Field(default="")
+    # --- Gateway limits + observability ----------------------------------
+    # Default per-client caps, overridable per API key. 0 = unlimited, which is
+    # the DEFAULT: an upgrade must never start throttling traffic that was
+    # working yesterday. Concurrency is per (client, instance) — KV cache is
+    # per-instance, so a client using two models isn't hurting either one.
+    gateway_max_concurrent: int = Field(default=0)
+    gateway_max_rpm: int = Field(default=0)
+    # The operator's own Playground/session traffic is exempt by default; it is
+    # interactive, low-volume, and locking yourself out of your own portal while
+    # debugging a runaway client is the wrong failure mode.
+    gateway_limit_session: bool = Field(default=False)
+    # How often in-memory gateway aggregates are flushed to gateway_samples.
+    gateway_rollup_seconds: float = Field(default=300.0)
     ssh_connect_timeout: int = Field(default=15)
     # --- Instance status reconciliation (services/reconcile.py) -----------
     # The observer that corrects `Instance.status` against what the nodes
