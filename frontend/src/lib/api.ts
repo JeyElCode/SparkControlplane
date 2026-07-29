@@ -92,6 +92,8 @@ export interface ScheduleEntry {
 
 export interface AuthMe {
   auth_mode: string;
+  login_url?: string | null;
+  config_error?: string | null;
   auth_required: boolean;
   authenticated: boolean;
   user?: string | null;
@@ -772,7 +774,7 @@ export const api = {
   authMe: () => j<AuthMe>("/api/auth/me"),
   login: (username: string, password: string) =>
     j<AuthMe>("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
-  logout: () => j<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  logout: () => j<{ ok: boolean; redirect?: string | null }>("/api/auth/logout", { method: "POST" }),
   getImageTags: (image?: string) =>
     j<ImageTags>(`/api/cluster/image-tags${image ? `?image=${encodeURIComponent(image)}` : ""}`),
   updateImage: (body: { image: string; restart_ray: boolean; restart_instances: boolean }) =>

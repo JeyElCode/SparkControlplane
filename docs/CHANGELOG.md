@@ -1,5 +1,61 @@
 # Changelog
 
+## v1.27.0 — single sign-on (OIDC)
+- **`SPARK_AUTH_MODE=oidc`**: authorization code + PKCE against Entra ID,
+  Keycloak or Okta. The portal never sees a password — MFA and conditional
+  access are enforced by your identity provider — and it deliberately keeps
+  **no** access or refresh token: it needs an authenticated identity, not
+  delegated API access, and a token it never holds is one it can never leak.
+  The login page in this mode has no username or password fields at all.
+- **Authorization is mandatory, not optional.** `SPARK_OIDC_GROUP_REQUIRED` must
+  be set or the mode refuses to serve. This is the LDAP lesson applied: an
+  optional group check means the default deployment authenticates an entire
+  directory into a portal that SSHes to DGX nodes as root. **App roles are the
+  recommended default** over group GUIDs — the values are strings you choose,
+  and they avoid Entra's *groups overage*, where a user in ~200+ groups gets no
+  `groups` claim at all and would be silently denied while testing looked fine.
+  That case now fails closed with an actionable message rather than a shrug.
+- Controls worth naming, because each is a hole in a naive implementation:
+  - **Discovery endpoints are pinned to the issuer's own origin.** Otherwise a
+    hostile discovery response relocates `token_endpoint` and receives both the
+    authorization code and the client secret.
+  - **Redirects are never followed** on discovery, JWKS or token exchange — a
+    302 from the pinned host would walk straight back off-origin.
+  - **Signing keys come only from the discovered JWKS.** A `jku`, `x5u` or
+    embedded `jwk` header is ignored; a token never chooses its own verifier.
+  - **Only asymmetric algorithms**, rejected at config-parse time so the
+    alg-confusion attack isn't expressible in the first place.
+  - **`redirect_uri` comes from config, never the request** — behind an ingress
+    the Host header is attacker-controllable.
+  - **`azp`, not `strict_aud`**, guards against a token minted for a sibling
+    application: a single-element `aud` array is legal and is what Entra emits,
+    so `strict_aud` would reject spec-compliant providers.
+  - **A stale key set has a hard ceiling.** Serving cached keys across a blip is
+    right; serving them forever means a key the provider *revoked* stays trusted
+    for the length of an outage.
+  - state, nonce and the PKCE verifier live in a short-lived encrypted cookie,
+    and `state` is compared *before* any network call — so a forged callback
+    never costs a round trip or burns a real authorization code.
+- **Sessions now carry a purpose tag and the mode that minted them.** Two
+  consequences, both fixes to existing behaviour: one Fernet key encrypts
+  sessions, stored SSH passwords and now the login transaction, and without a
+  tag any blob decrypting to the right shape was a candidate session; and
+  turning SSO on no longer leaves password-mode cookies valid, which would have
+  been exactly the downgrade SSO exists to end.
+- **Fixed: every tampered session cookie logged an ERROR.** Cookies are user
+  input, not an operational fault — and in oidc mode the *unauthenticated*
+  callback decrypts attacker-supplied cookies, so this was a log-flooding
+  vector. Also fixed: a session token with trailing bytes after its base64
+  padding was accepted, because Python's decoder silently discards them.
+- **What SSO does *not* give you, stated plainly:** the portal never re-asks the
+  provider after sign-in, so disabling an account in Entra does not immediately
+  lock it out of the portal. A disabled account keeps working until its cookie
+  expires — which is why oidc mode caps sessions at 8h rather than the 24h
+  default, and why that cap *is* the offboarding guarantee. Sign-out does end
+  the provider's session, but only for a user who clicks it.
+- `pyjwt[crypto]` is now a declared dependency. It was already present via the
+  MCP SDK, but depending on a transitive pin is how this silently breaks.
+
 ## v1.26.1 — profile import: allowlist, not denylist
 - **Fixed: the v1.26.0 import filter was bypassable.** Profile import kept
   `advanced_args` and filtered a denylist of ten dangerous flags. A review
