@@ -108,6 +108,14 @@ async def lifespan(app: FastAPI):
     # unloaded revocation list would ALLOW everything — silently un-revoking
     # every revoked session. A portal that cannot read this must refuse to
     # start, loudly, rather than serve with the safety off.
+    # Before anything else can create jobs: whatever the DB still calls live
+    # cannot be, because this process's task registry is empty.
+    from .services.jobs import jobs as job_mgr
+
+    try:
+        await job_mgr.reconcile_orphans()
+    except Exception:  # noqa: BLE001 - tidying history must never block startup
+        log.exception("could not reconcile interrupted jobs")
     n_revocations = await sessions.load()
     if n_revocations:
         log.info("loaded %d session revocation rule(s)", n_revocations)
