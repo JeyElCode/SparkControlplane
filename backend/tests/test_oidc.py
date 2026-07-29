@@ -4,7 +4,7 @@ Almost every test here is a *negative* one. A working happy path proves very
 little about an auth flow — the value is in what it refuses, so each control
 gets a token or a request crafted specifically to defeat it.
 
-The provider is `tests/oidc_fixture.FakeIdP`: a real RSA key, a real JWKS, and
+The provider is `tests/oidc_fixture.py`: a real RSA key, a real JWKS, and
 the ability to mint tokens no correct library would produce.
 """
 
@@ -16,7 +16,11 @@ import httpx
 import pytest
 
 from app.config import Settings
-from tests.oidc_fixture import FakeIdP
+# Plain module import, not `tests.oidc_fixture`: pytest puts the test directory
+# on sys.path, but whether `backend/` is importable as a package root depends on
+# how the project was installed — which is exactly why this passed locally and
+# failed in CI.
+from oidc_fixture import FakeIdP
 
 CLIENT_ID = "spark-portal"
 
