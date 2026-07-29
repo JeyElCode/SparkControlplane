@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.30.0 — the portal does the arithmetic
+
+A control plane that asks the same questions as the command line has not earned
+its place. Creating an instance meant answering nine vLLM flags whose right
+values depend on arithmetic nobody should have to do by hand — whether the
+weights fit one box, what fraction of unified memory to hand vLLM, and how much
+context the KV cache has room for once the weights are in. Get one wrong and the
+failure arrives ten minutes into a weight load, as an allocator error that names
+none of it.
+
+**None of this removes a setting.** Every field is still there, still editable,
+and the advanced surface is untouched. What is gone is the *requirement to
+decide*.
+
+- **Quick launch.** A downloaded model now has a **Run** button on the Models
+  page. It works out topology, memory fraction, context length and concurrency
+  from the model's shape and what your nodes actually have free, shows you the
+  reasoning, and starts it. One decision — which model — instead of nine.
+- **"Work it out for me" in the create form**, for anyone who starts there. It
+  fills the same fields and honours a topology you have already chosen, so it
+  plans *around* your decision rather than replacing it.
+- **Every derived value carries its reasoning.** Not a tooltip — a sentence
+  naming the numbers it came from: *"This model spends 320 KiB of KV cache per
+  token (80 layers × 8 KV heads × 128 dims). 53 GiB is left after the weights,
+  so at 8 concurrent requests 16k tokens each fits with room to spare."* A
+  recommendation you cannot audit is one you can neither trust nor learn from,
+  and the first time it is wrong for your hardware the explanation is what lets
+  you fix it.
+- **It plans against live state, not defaults.** Memory already held by running
+  *and starting* instances is subtracted first — the window in which someone
+  launches a second model is exactly the ten minutes the first spends loading.
+  With two nodes and two small models it spreads them rather than stacking; with
+  one node it tells you the second will not fit and why.
+- **It refuses to over-promise.** When the plan cannot honestly recommend
+  starting the model, `feasible` is false, the one-click path is disabled, and
+  the warning says which number is the problem and what to do about it. Where a
+  fact is missing — a gated repo, an air-gapped portal, no `config.json` — it
+  says *"context length is unverified"* and leaves the value to vLLM instead of
+  inventing one.
+- **Model geometry (layers, KV heads, head dimension, trained context) is read
+  from the repo's `config.json`** and cached on the model row. Fetched lazily on
+  first plan, not at registration: adding a model stays a local operation that
+  works without internet access.
+- `POST /api/instances/plan` and the `instance_plan` MCP tool expose the same
+  planner. The response is a valid create body — add a name and a model id and
+  post it back — so an agent can stop guessing at `gpu_memory_utilization` too.
+
+One fix found while building it:
+
+- **`gpu_memory_utilization` was completely unvalidated.** Any float was
+  accepted, including `0`, which vLLM refuses to start on, and `0.99`, which
+  dies in the allocator. Now bounded to 0.1–0.95 at the API boundary, where it
+  costs a second instead of ten minutes.
+
 ## v1.29.0 — things that have to be true before anyone else runs this
 - **CI now runs the tests.** The backend job was `pip install .` and an import
   check: 227 tests, including the upgrade-in-place simulations and the security

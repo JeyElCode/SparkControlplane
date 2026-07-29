@@ -1,9 +1,11 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, Model, NodeStorage } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { fmtBytes, statusKind } from "../lib/format";
 import { Badge, EmptyState, HelpTip, Meter, Modal, Spinner, LoadError } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
+import { QuickLaunch } from "../components/QuickLaunch";
 import { useToast } from "../components/Toast";
 
 export default function Models() {
@@ -22,6 +24,8 @@ export default function Models() {
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
   const [storage, setStorage] = useState<NodeStorage[] | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
+  const [launch, setLaunch] = useState<Model | null>(null);
+  const nav = useNavigate();
 
   const scanStorage = async () => {
     setStorageBusy(true);
@@ -258,6 +262,19 @@ export default function Models() {
                           <button className="btn btn-sm btn-danger" onClick={() => stop(m)} title="Stop the transfer and clear stale locks (partial files are kept)">Stop</button>
                         ) : (
                           <>
+                            {/* The point of the whole page: a downloaded model is
+                                one click from serving. Only offered once the
+                                weights are somewhere — a plan for a model that
+                                isn't on disk yet is a plan for a failed start. */}
+                            {m.node_states.some((s) => s.present) && (
+                              <button
+                                className="btn btn-sm btn-primary"
+                                onClick={() => setLaunch(m)}
+                                title="Work out how to run this on your cluster, then start it"
+                              >
+                                Run
+                              </button>
+                            )}
                             <button className="btn btn-sm" onClick={() => startJob(api.downloadModel(m.id, true), `Download ${m.name}`)}>Download</button>
                             <button className="btn btn-sm" onClick={() => startJob(api.syncModel(m.id), `Sync ${m.name}`)}>Sync</button>
                             <button className="btn btn-sm btn-danger" onClick={() => del(m)}>Delete</button>
@@ -345,6 +362,20 @@ export default function Models() {
         <Modal title={job.label} wide onClose={() => { setJob(null); models.reload(); setStorage(null); }}>
           <JobLogPanel jobId={job.id} title={job.label} onDone={() => models.reload()} />
         </Modal>
+      )}
+
+      {launch && (
+        <QuickLaunch
+          model={launch}
+          onClose={() => setLaunch(null)}
+          onLaunched={() => nav("/instances")}
+          // "Customize" is the escape hatch that keeps this from being a
+          // simplification that costs anything: the derived settings go
+          // straight into the full form, every field editable.
+          onCustomize={(plan) =>
+            nav("/instances", { state: { plan, modelId: launch.id } })
+          }
+        />
       )}
     </div>
   );

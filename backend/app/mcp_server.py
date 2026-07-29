@@ -78,6 +78,8 @@ from .schemas import (
     InstanceOut,
     InstanceUpdate,
     InterfaceInfo,
+    PlanIn,
+    PlanOut,
     JobAccepted,
     JobDetail,
     JobOut,
@@ -253,6 +255,19 @@ def build_mcp_server() -> "FastMCP":
     async def instance_get(instance_id: int) -> InstanceOut:
         """Get a single instance by id."""
         return await _with_session(instances_router.get_instance, instance_id=instance_id)
+
+    @mcp.tool()
+    async def instance_plan(payload: PlanIn) -> PlanOut:
+        """Derive serve settings for a model from the live cluster, with reasoning.
+
+        Creates nothing. Returns a body you can pass straight to instance_create
+        after adding `name` and `model_id`, plus per-field explanations and any
+        warnings. Call this before instance_create rather than guessing at
+        topology, gpu_memory_utilization or max_model_len: it accounts for what
+        running instances already hold and for the model's KV-cache geometry.
+        Check `feasible` — false means the model does not fit as configured.
+        """
+        return await _with_session(instances_router.plan_instance, payload=payload)
 
     @mcp.tool()
     async def instance_create(payload: InstanceIn) -> InstanceOut:

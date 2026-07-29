@@ -371,6 +371,25 @@ export interface Model {
   node_states: ModelNodeState[];
   created_at: string;
   active_job_id?: number | null;
+  /** Trained context window from config.json; null when it couldn't be read. */
+  context_len?: number | null;
+}
+
+/** One derived setting and the sentence explaining where the number came from. */
+export interface PlanReason {
+  field: string;
+  label: string;
+  value: unknown;
+  why: string;
+}
+
+export interface Plan {
+  name: string;
+  settings: Partial<InstanceInput> & { tensor_parallel_size?: number };
+  reasons: PlanReason[];
+  warnings: string[];
+  feasible: boolean;
+  summary: string;
 }
 
 export type Topology = "cluster" | "single" | "distributed";
@@ -859,6 +878,13 @@ export const api = {
   listInstances: () => j<Instance[]>("/api/instances"),
   createInstance: (i: InstanceInput) =>
     j<Instance>("/api/instances", { method: "POST", body: JSON.stringify(i) }),
+  /** Ask the backend to derive serve settings for a model. Creates nothing. */
+  planInstance: (body: {
+    model_id: number;
+    topology?: Topology | null;
+    node_id?: number | null;
+    max_num_seqs?: number | null;
+  }) => j<Plan>("/api/instances/plan", { method: "POST", body: JSON.stringify(body) }),
   updateInstance: (id: number, i: Partial<InstanceInput>) =>
     j<Instance>(`/api/instances/${id}`, { method: "PATCH", body: JSON.stringify(i) }),
   startInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/start`, { method: "POST" }),

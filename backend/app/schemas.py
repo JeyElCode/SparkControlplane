@@ -593,6 +593,9 @@ class ModelOut(BaseModel):
     node_states: list[ModelNodeStateOut]
     created_at: datetime
     active_job_id: int | None = None  # a running download/sync/delete job, if any
+    # Geometry from config.json; null when it could not be read. Surfaced so the
+    # UI can say "context length unverified" rather than silently guessing.
+    context_len: int | None = None
 
     @classmethod
     def of(cls, model: m.ModelRegistry) -> "ModelOut":
@@ -614,7 +617,41 @@ class ModelOut(BaseModel):
             notes=model.notes,
             node_states=states,
             created_at=model.created_at,
+            context_len=model.context_len,
         )
+
+
+# --- Serve planning ------------------------------------------------------
+class PlanIn(BaseModel):
+    model_id: int
+    # Overrides let the planner answer "what if" without the operator having to
+    # abandon a choice they have already made — pin a topology and the rest of
+    # the arithmetic re-derives around it.
+    topology: Literal["cluster", "single", "distributed"] | None = None
+    node_id: int | None = None
+    max_num_seqs: int | None = Field(default=None, ge=1, le=1024)
+
+
+class PlanReason(BaseModel):
+    field: str
+    label: str
+    value: object
+    why: str
+
+
+class PlanOut(BaseModel):
+    """A complete, startable configuration plus the reasoning behind it.
+
+    ``settings`` is exactly the shape the create form holds, so the UI can
+    apply it wholesale and leave every field editable.
+    """
+
+    name: str
+    settings: dict
+    reasons: list[PlanReason]
+    warnings: list[str]
+    feasible: bool
+    summary: str
 
 
 # --- Instances -----------------------------------------------------------
@@ -633,7 +670,11 @@ class InstanceIn(BaseModel):
     port: int | None = None
     tensor_parallel_size: int | None = None  # defaulted from topology
     max_model_len: int | None = None
-    gpu_memory_utilization: float = 0.85
+    # Bounded because both ends are unusable rather than merely unwise: vLLM
+    # refuses to start at 0, and above ~0.95 the load dies in the allocator
+    # with an error that names none of this. Rejecting it here costs a second;
+    # finding out costs the ten minutes it takes to load weights.
+    gpu_memory_utilization: float = Field(default=0.85, ge=0.1, le=0.95)
     max_num_seqs: int | None = None
     max_num_batched_tokens: int | None = None
     dtype: str | None = None
@@ -687,7 +728,7 @@ class TlsReloadIn(BaseModel):
 class InstanceUpdate(BaseModel):
     port: int | None = None
     max_model_len: int | None = None
-    gpu_memory_utilization: float | None = None
+    gpu_memory_utilization: float | None = Field(default=None, ge=0.1, le=0.95)
     max_num_seqs: int | None = None
     max_num_batched_tokens: int | None = None
     dtype: str | None = None

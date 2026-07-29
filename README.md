@@ -41,6 +41,14 @@ It ships as a single container published to
     the registry always mirrors what's on disk.
   - One **Delete** that removes the files from all nodes (via `sudo`, so
     root-owned download files are handled) and the registry entry.
+- **The portal does the arithmetic** — pick a model and press **Run**. Topology,
+  `--gpu-memory-utilization`, `--max-model-len` and `--max-num-seqs` are derived
+  from the model's KV-cache geometry and what your nodes actually have free
+  (memory held by running *and starting* instances included), and every derived
+  value is shown with the sentence explaining where the number came from. When
+  it does not fit, it says which number is the problem instead of failing ten
+  minutes into a weight load. Nothing is hidden: every field stays editable and
+  the advanced surface is untouched.
 - **Flexible multi-model serving** — each instance is either:
   - `cluster` topology: `vllm serve` inside the Ray head container, **TP across
     all nodes** (2-4, for big models), or
@@ -153,8 +161,13 @@ Open <http://localhost:8080>.
    (or run phases one at a time) and watch the live logs.
 3. **Models** → add a model and **Download** (it auto-syncs to the worker over
    QSFP). Already have models on disk? Hit **Scan nodes**.
-4. **Instances** → create an instance (cluster or single-node) and **Start** —
-   the live vLLM startup output streams until the model is serving.
+4. **Run it** — the button next to a downloaded model. The portal works out
+   topology, memory fraction, context length and concurrency from the model's
+   shape and what your nodes have free, shows you the reasoning behind each
+   number, and starts it. **Customize** opens the full form with those values
+   filled in if you want to change any of them.
+   *(Or go to **Instances** → **New instance** and build one by hand; the
+   **Work it out for me** button fills in the same derived values there.)*
 5. **Dashboard** / **Playground** → confirm health and chat with the model.
 
 See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the detailed runbook.

@@ -17,12 +17,104 @@ from ..models import (
     ModelRegistry,
     Node,
 )
-from ..schemas import InstanceIn, InstanceOut, InstanceUpdate, JobAccepted, TlsReloadIn
+from ..schemas import (
+    InstanceIn,
+    InstanceOut,
+    InstanceUpdate,
+    JobAccepted,
+    PlanIn,
+    PlanOut,
+    PlanReason,
+    TlsReloadIn,
+)
 from ..services import inst_state
 from ..services import instances as inst_svc
+from ..services import plan as plan_svc
 from ..services.jobs import jobs
 
 router = APIRouter(prefix="/api/instances", tags=["instances"])
+
+
+@router.post("/plan", response_model=PlanOut)
+async def plan_instance(payload: PlanIn, session: AsyncSession = Depends(get_session)):
+    """Derive a complete serve configuration for a model, with its reasoning.
+
+    Read-only: it creates nothing. The response is the same field set the create
+    form holds, so the UI applies it and leaves everything editable — the plan
+    removes the requirement to decide, not the ability to.
+    """
+    from ..config import get_settings
+    from ..services.models_svc import capture_shape, load_model
+    from ..services.telemetry import engine
+
+    model = await inst_svc_model(session, payload.model_id)
+    settings = get_settings()
+
+    # Fetch the model's geometry the first time anyone plans with it, then
+    # cache it on the row. Doing it here rather than at registration keeps
+    # `add model` a local operation that works air-gapped.
+    if model.num_layers is None:
+        await capture_shape(session, model)
+
+    nodes = list((await session.execute(select(Node))).scalars().all())
+    instances = list((await session.execute(select(Instance))).scalars().all())
+    committed = plan_svc.committed_gib_by_node(instances, nodes, settings.node_memory_gib)
+
+    full = await load_model(session, model.id)
+    present_ids = tuple(s.node_id for s in (full.node_states if full else []) if s.present)
+
+    node_facts = tuple(
+        plan_svc.NodeFacts(
+            node_id=n.id,
+            name=n.name,
+            role=n.role,
+            # None means "never sampled" — treat as reachable rather than
+            # planning around a node the operator can see is fine.
+            reachable=engine.node_reachable(n.id) is not False,
+            has_qsfp=bool(n.qsfp_ip),
+            committed_gib=committed.get(n.id, 0.0),
+        )
+        for n in nodes
+    )
+
+    result = plan_svc.plan_instance(
+        plan_svc.ModelFacts(
+            repo_id=model.repo_id,
+            name=model.name,
+            size_bytes=model.size_bytes,
+            tool_parser=model.tool_parser,
+            context_len=model.context_len,
+            num_layers=model.num_layers,
+            num_kv_heads=model.num_kv_heads,
+            head_dim=model.head_dim,
+            torch_dtype=model.torch_dtype,
+            present_node_ids=present_ids,
+        ),
+        plan_svc.ClusterFacts(
+            nodes=node_facts,
+            node_memory_gib=float(settings.node_memory_gib),
+        ),
+        force_topology=payload.topology,
+        force_node_id=payload.node_id,
+        max_num_seqs=payload.max_num_seqs,
+    )
+
+    taken = {i.name for i in instances}
+    return PlanOut(
+        name=plan_svc.suggest_name(model.name, taken),
+        settings=result.settings,
+        reasons=[PlanReason(**r.__dict__) for r in result.reasons],
+        warnings=result.warnings,
+        feasible=result.feasible,
+        summary=result.summary,
+    )
+
+
+async def inst_svc_model(session: AsyncSession, model_id: int) -> ModelRegistry:
+    model = await session.get(ModelRegistry, model_id)
+    if model is None:
+        raise HTTPException(404, "Model not found")
+    return model
 
 
 @router.get("", response_model=list[InstanceOut])
