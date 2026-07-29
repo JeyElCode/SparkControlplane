@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.28.1 — jobs stop being stranded by a restart
+- **Fixed: a portal restart left in-flight jobs recorded as `running` forever.**
+  A job exists only as a task in one process, so every image rollout — which
+  under GitOps is routine — orphaned whatever was running: a spinner in the UI
+  that never resolved, and an in-memory `is_running()` that disagreed with the
+  database. Startup now resolves them, which is safe by construction because
+  the task registry is empty at that point: anything the database still calls
+  live cannot be.
+- **The summary is honest about what it doesn't know.** It says the portal
+  stopped tracking the job and that work already sent to the nodes may have
+  continued — rather than claiming the operation failed, which would be a guess.
+  For an interrupted instance start, v1.24's status reconciliation independently
+  reports whether the model actually came up.
+- **A lost status write is now loud rather than silent.** Job bookkeeping must
+  never crash a running job, so a failed write is swallowed — but that treated a
+  dropped log line and a dropped *terminal status* identically, and the latter
+  leaves a finished job reading as still running with no restart to explain it.
+  Status transitions now retry for longer and log at ERROR when they are lost.
+- Internal: `services/jobs.py` now binds the database sessionmaker late, like
+  every other service. Binding it at import pinned the module to whichever
+  engine existed at import time; production never noticed, but it made the
+  module untestable with the standard fixture and was a trap either way.
+
 ## v1.28.0 — sessions you can actually end
 - **Signing out now revokes.** Before this, `logout` only deleted the cookie —
   which is a *request* to a cooperating browser. A copy taken beforehand kept

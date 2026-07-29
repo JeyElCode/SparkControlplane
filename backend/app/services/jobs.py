@@ -21,10 +21,17 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
-from ..db import SessionLocal
+# Late-bound (``_db.SessionLocal``), like telemetry/usage/scheduler/sessions:
+# binding the sessionmaker at import time pins this module to whichever engine
+# existed then, which makes it write to a stale database whenever app.db is
+# reloaded. Production never reloads it, so the only symptom was that this
+# module could not be tested with the standard fixture — but the inconsistency
+# is a trap either way.
+from .. import db as _db
 from ..models import (
     JOB_CANCELLED,
     JOB_ERROR,
+    JOB_PENDING,
     JOB_RUNNING,
     JOB_SUCCESS,
     Job,
@@ -78,7 +85,7 @@ class JobManager:
     async def create(
         self, type_: str, title: str, node_id: int | None = None, target: str | None = None
     ) -> int:
-        async with SessionLocal() as s:
+        async with _db.SessionLocal() as s:
             job = Job(type=type_, title=title, node_id=node_id, target=target)
             s.add(job)
             await s.commit()
@@ -127,14 +134,68 @@ class JobManager:
         task.cancel()
         return True
 
+    async def reconcile_orphans(self) -> int:
+        """Fail any job the database still calls live but nothing is running.
+
+        A job only exists as an asyncio task in this process, so a portal
+        restart — which under GitOps happens on every image bump and config
+        nudge — leaves its row claiming `running` forever while nothing is
+        driving it. The UI shows a spinner that never resolves, and
+        `is_running()` (in-memory) disagrees with the row.
+
+        Safe by construction at startup: the task registry is empty, so
+        anything the database calls live is by definition orphaned. It is
+        deliberately honest about what it does and does not know — the work may
+        well have completed on the node, but the portal stopped tracking it, so
+        the summary says that rather than claiming the operation failed.
+        """
+        from sqlalchemy import select, update
+
+        swept = 0
+        async with _db.SessionLocal() as s:
+            rows = list(
+                (
+                    await s.execute(
+                        select(Job.id).where(Job.status.in_((JOB_RUNNING, JOB_PENDING)))
+                    )
+                ).scalars().all()
+            )
+            orphans = [jid for jid in rows if jid not in self._tasks]
+            if orphans:
+                await s.execute(
+                    update(Job).where(Job.id.in_(orphans)).values(
+                        status=JOB_ERROR,
+                        exit_code=None,
+                        finished_at=_now(),
+                        summary=(
+                            "Interrupted by a portal restart — the portal stopped "
+                            "tracking this job. Any work already sent to the nodes may "
+                            "have continued; check the Instances and Models pages for "
+                            "the current state."
+                        ),
+                    )
+                )
+                await s.commit()
+                swept = len(orphans)
+        if swept:
+            log.warning("marked %d job(s) as interrupted by a portal restart", swept)
+        return swept
+
     # --- persistence helpers --------------------------------------------
-    async def _db_write(self, op) -> bool:
+    async def _db_write(self, op, *, critical: bool = False) -> bool:
         """Run ``op(session)`` then commit, retrying on a transient SQLite lock.
-        Persisting a log line or status update must NEVER crash the running job,
-        so a final failure is swallowed (the write is dropped, not raised)."""
-        for attempt in range(8):
+
+        Bookkeeping must never crash a running job, so a final failure is
+        swallowed rather than raised. But not all writes are equal: dropping a
+        log line loses a line, while dropping a *terminal status* leaves a
+        finished job recorded as still running — the same symptom as a lost
+        restart, with no restart to explain it. Critical writes retry for
+        longer and complain at ERROR so it is visible rather than inferred.
+        """
+        attempts = 20 if critical else 8
+        for attempt in range(attempts):
             try:
-                async with SessionLocal() as s:
+                async with _db.SessionLocal() as s:
                     await op(s)
                     await s.commit()
                 return True
@@ -142,11 +203,19 @@ class JobManager:
                 if "locked" not in str(exc).lower():
                     log.warning("job db error (dropped): %s", exc)
                     return False
-                await asyncio.sleep(0.15 * (attempt + 1))
+                await asyncio.sleep(min(1.0, 0.15 * (attempt + 1)))
             except Exception as exc:  # noqa: BLE001 - never let bookkeeping crash a job
                 log.warning("job db write dropped: %s", exc)
                 return False
-        log.warning("job db write dropped after retries (database busy)")
+        if critical:
+            # The job is over but the row will keep claiming otherwise until
+            # the next restart's reconcile sweeps it up.
+            log.error(
+                "job status write LOST after %d attempts (database busy) — a finished "
+                "job will read as still running until the next restart", attempts
+            )
+        else:
+            log.warning("job db write dropped after retries (database busy)")
         return False
 
     async def _set_status(self, job_id: int, status: str, started: bool = False) -> None:
@@ -157,7 +226,7 @@ class JobManager:
                 if started:
                     job.started_at = _now()
 
-        await self._db_write(op)
+        await self._db_write(op, critical=True)
 
     async def _set_progress(self, job_id: int, progress: float | None) -> None:
         async def op(s):
@@ -182,7 +251,7 @@ class JobManager:
             if job.status == JOB_SUCCESS and job.progress is None:
                 job.progress = 1.0
 
-        await self._db_write(op)
+        await self._db_write(op, critical=True)
         await self._publish(
             job_id,
             {"type": "status", "status": status, "exit_code": exit_code, "summary": summary},
@@ -234,7 +303,7 @@ class JobManager:
 
     @staticmethod
     async def latest_seq(job_id: int) -> int:
-        async with SessionLocal() as s:
+        async with _db.SessionLocal() as s:
             res = await s.execute(
                 select(func.max(JobLog.seq)).where(JobLog.job_id == job_id)
             )
