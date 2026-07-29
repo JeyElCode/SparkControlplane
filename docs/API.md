@@ -1,6 +1,6 @@
 # API Reference
 
-REST + WebSocket reference for the Spark Control Plane (v1.25.0). The API is
+REST + WebSocket reference for the Spark Control Plane (v1.26.0). The API is
 served by the FastAPI backend under the `/api` prefix; everything else is the
 built React SPA. All request and response bodies are JSON unless noted.
 
@@ -563,3 +563,45 @@ global default, which is unlimited).
 
 **Limits.** Over a cap returns `429` with `Retry-After` and a message naming the
 limit. Concurrency is counted per (client, instance).
+
+
+---
+
+## Serve profiles
+
+`app/routers/profiles.py` — prefix `/api/profiles`. Named, reusable sets of vLLM
+serve settings, so a model's working flags are a thing you apply rather than
+rediscover.
+
+| Method | Path | Description | Request | Response |
+|---|---|---|---|---|
+| GET | `` | List profiles (built-ins first). | — | `ServeProfileOut[]` |
+| POST | `` | Create a profile. | `ServeProfileIn` | `201` `ServeProfileOut` |
+| POST | `/from-instance/{id}` | Capture a live instance's serve settings. | `ServeProfileIn` (name/description) | `201` `ServeProfileOut` |
+| PATCH | `/{id}` | Edit. `409` for built-ins. | `ServeProfileUpdate` | `ServeProfileOut` |
+| DELETE | `/{id}` | Delete. `409` for built-ins. | — | `204` |
+| GET | `/export` | User profiles as one shareable document. | — | `ServeProfileExport` |
+| POST | `/import` | Import a shared document. | `ServeProfileExport` | `ServeProfileImportResult` |
+
+**`ServeProfileIn`** — `name`, `description?`, `repo_id?`, `settings` (a map of
+`InstanceIn` serve-field names). Only serve settings are accepted: `name`,
+`port`, `node_id`, `api_key` and TLS material are per-instance facts and are
+rejected with `422`.
+
+**Import is untrusted input.** Settings feed the vLLM command line and from
+there a `docker run` on the nodes with `--gpus all` and the models directory
+mounted, so import:
+
+- drops `vllm_image` and `extra_args` entirely,
+- strips `--served-model-name` (gateway-routing hijack), `--model`,
+  `--tokenizer`, `--api-key`, `--host`, `--port`, `--trust-remote-code`,
+  `--load-format`, `--config-format`, `--download-dir` from `advanced_args`,
+- refuses to enable `trust_remote_code`,
+- validates everything else through `InstanceIn`.
+
+Removed fields come back in `dropped_fields` rather than disappearing silently.
+None of this restricts profiles you author locally — the difference is
+provenance, not the field.
+
+**Built-ins** are refreshed from the image on every start and cannot be edited
+or deleted (`409`); duplicate one into a profile of your own instead.

@@ -138,6 +138,8 @@ async def init_db() -> None:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
         await conn.run_sync(_migrate_nodes_drop_role_unique)
 
+    await _seed_builtin_profiles()
+
     async with SessionLocal() as session:
         cfg = await session.get(ClusterConfig, 1)
         if cfg is None:
@@ -198,3 +200,42 @@ async def get_worker_nodes(session: AsyncSession) -> list:
         select(Node).where(Node.role == "worker").order_by(Node.id)
     )
     return list(res.scalars())
+
+
+async def _seed_builtin_profiles() -> None:
+    """Install/refresh the profiles that ship with the image.
+
+    Built-ins are refreshed on every start rather than only created: they are
+    part of the image, so an upgrade that improves one should deliver it. That
+    is exactly why they cannot be edited in place — a user edit would be
+    silently overwritten here. "Duplicate, then edit" keeps both truthful.
+    """
+    import json as _json
+
+    from sqlalchemy import select as _select
+
+    from .models import ServeProfile
+    from .services.profiles import BUILTIN_PROFILES
+
+    async with SessionLocal() as session:
+        existing = {
+            r.name: r
+            for r in (
+                await session.execute(
+                    _select(ServeProfile).where(ServeProfile.builtin.is_(True))
+                )
+            ).scalars().all()
+        }
+        for spec in BUILTIN_PROFILES:
+            body = _json.dumps(spec["settings"])
+            row = existing.get(spec["name"])
+            if row is None:
+                session.add(ServeProfile(
+                    name=spec["name"], description=spec.get("description"),
+                    repo_id=spec.get("repo_id"), settings_json=body, builtin=True,
+                ))
+            else:
+                row.description = spec.get("description")
+                row.repo_id = spec.get("repo_id")
+                row.settings_json = body
+        await session.commit()

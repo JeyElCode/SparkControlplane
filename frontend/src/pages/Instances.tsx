@@ -378,6 +378,8 @@ function TlsConfig({
 function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const models = usePoll(() => api.listModels(), 0);
   const nodes = usePoll(() => api.listNodes(), 0);
+  const profiles = usePoll(() => api.listProfiles(), 0);
+  const [appliedProfile, setAppliedProfile] = useState<string | null>(null);
   const { toast } = useToast();
   const [f, setF] = useState<InstanceInput>(DEFAULTS);
   const [busy, setBusy] = useState(false);
@@ -425,6 +427,37 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
       }
     >
       <div className="row-2">
+        {(profiles.data ?? []).length > 0 && (
+          <Field
+            label="Start from a profile"
+            hint="Known-good serve settings. Everything stays editable below — a profile is a starting point, not a lock."
+          >
+            <select
+              value=""
+              onChange={(e) => {
+                const p = (profiles.data ?? []).find((x) => String(x.id) === e.target.value);
+                if (!p) return;
+                // Only the serve settings; name/model/node stay whatever the
+                // operator has already chosen.
+                patch(p.settings as Partial<InstanceInput>);
+                setAppliedProfile(p.name);
+                toast(`Applied "${p.name}"`, "success");
+              }}
+            >
+              <option value="">— none —</option>
+              {(profiles.data ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}{p.builtin ? " (built-in)" : ""}{p.repo_id ? ` — ${p.repo_id}` : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        {appliedProfile && (
+          <div className="banner" style={{ marginBottom: 12 }}>
+            Settings from <strong>{appliedProfile}</strong> applied — review them below before creating.
+          </div>
+        )}
         <Field label="Name"><input value={f.name} placeholder="main" onChange={(e) => set("name", e.target.value)} /></Field>
         <Field label="Model">
           <select value={f.model_id} onChange={(e) => set("model_id", Number(e.target.value))}>
@@ -693,6 +726,9 @@ const EDITABLE_STATUSES = ["stopped", "error"];
 export default function Instances() {
   const instances = usePoll(() => api.listInstances(), 8000);
   const gw = usePoll(() => api.gatewayRoutes(), 10000);
+  const profiles = usePoll(() => api.listProfiles(), 0);
+  const [saveProfileFor, setSaveProfileFor] = useState<Instance | null>(null);
+  const [profileName, setProfileName] = useState("");
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Instance | null>(null);
@@ -842,6 +878,8 @@ export default function Instances() {
                     <button className="btn btn-sm" onClick={() => setEditing(i)} title="Edit serve settings (applies on next start)">Edit</button>
                   )}
                   <button className="btn btn-sm" onClick={() => copyClient(i)}>Copy client cfg</button>
+                  <button className="btn btn-sm" title="Save these serve settings as a reusable profile"
+                          onClick={() => setSaveProfileFor(i)}>Save as profile</button>
                   <button className="btn btn-sm" onClick={() => setLogsFor(i.name)} title="Live journalctl tail">Logs</button>
                   <button className="btn btn-sm btn-danger" onClick={() => del(i)}>Delete</button>
                 </div>
@@ -849,6 +887,98 @@ export default function Instances() {
             );
           })}
         </div>
+      )}
+
+      {(profiles.data ?? []).length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Serve profiles</h2>
+              <p className="muted">
+                Known-good vLLM settings you can apply when creating an instance,
+                so a model's flags stop being something you rediscover.
+              </p>
+            </div>
+            <div className="btn-row">
+              <button className="btn btn-sm" onClick={async () => {
+                const doc = await api.exportProfiles();
+                navigator.clipboard?.writeText(JSON.stringify(doc, null, 2));
+                toast(`Copied ${doc.profiles.length} profile(s) as JSON`, "success");
+              }}>Export</button>
+              <button className="btn btn-sm" onClick={async () => {
+                const raw = prompt("Paste a serve-profile JSON document:");
+                if (!raw) return;
+                try {
+                  const res = await api.importProfiles(JSON.parse(raw));
+                  const bits = [`${res.imported.length} imported`];
+                  if (res.skipped.length) bits.push(`${res.skipped.length} already existed`);
+                  if (res.dropped_fields.length) {
+                    bits.push(`dropped ${res.dropped_fields.join(", ")} (an imported profile can't choose the container image or raw flags)`);
+                  }
+                  toast(bits.join(" · "), res.imported.length ? "success" : "error");
+                  profiles.reload();
+                } catch (e: any) { toast(`Import failed: ${e.message}`, "error"); }
+              }}>Import</button>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>For</th><th>Settings</th><th /></tr></thead>
+              <tbody>
+                {(profiles.data ?? []).map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      {p.name}{p.builtin && <Badge kind="blue">built-in</Badge>}
+                      {p.description && <div className="badge-note">{p.description}</div>}
+                    </td>
+                    <td className="mono faint">{p.repo_id ?? "any model"}</td>
+                    <td className="mono badge-note">
+                      {Object.entries(p.settings).slice(0, 4).map(([k, v]) => `${k}=${v}`).join(" · ")}
+                      {Object.keys(p.settings).length > 4 ? ` +${Object.keys(p.settings).length - 4}` : ""}
+                    </td>
+                    <td style={{ textAlign: "right" }}>
+                      {!p.builtin && (
+                        <button className="btn btn-sm btn-danger" onClick={async () => {
+                          if (!confirm(`Delete profile "${p.name}"?`)) return;
+                          await api.deleteProfile(p.id);
+                          profiles.reload();
+                        }}>Delete</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {saveProfileFor && (
+        <Modal title={`Save "${saveProfileFor.name}" as a profile`} onClose={() => { setSaveProfileFor(null); setProfileName(""); }}>
+          <p className="faint">
+            Captures the serve settings only — context length, memory fraction,
+            batch limits, parsers. Not the name, port, node or API key.
+          </p>
+          <Field label="Profile name">
+            <input autoFocus value={profileName} placeholder={`${saveProfileFor.name}-settings`}
+                   onChange={(e) => setProfileName(e.target.value)} />
+          </Field>
+          <div className="btn-row">
+            <button className="btn btn-primary" disabled={!profileName.trim()}
+              onClick={async () => {
+                try {
+                  await api.profileFromInstance(saveProfileFor.id, {
+                    name: profileName.trim(),
+                    description: `Captured from instance "${saveProfileFor.name}"`,
+                    repo_id: saveProfileFor.model_repo_id || null,
+                  });
+                  toast("Profile saved", "success");
+                  setSaveProfileFor(null); setProfileName(""); profiles.reload();
+                } catch (e: any) { toast(e.message, "error"); }
+              }}>Save profile</button>
+            <button className="btn btn-ghost" onClick={() => { setSaveProfileFor(null); setProfileName(""); }}>Cancel</button>
+          </div>
+        </Modal>
       )}
 
       {creating && <CreateForm onClose={() => setCreating(false)} onCreated={() => instances.reload()} />}

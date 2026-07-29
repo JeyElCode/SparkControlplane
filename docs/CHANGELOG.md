@@ -1,5 +1,49 @@
 # Changelog
 
+## v1.26.0 — serve profiles: stop rediscovering a model's flags
+- **Known-good vLLM settings, saved under a name.** Getting a large model to
+  serve is a dozen interacting flags — context length, GPU memory fraction,
+  batch limits, the right reasoning and tool parsers — and one wrong value is an
+  out-of-memory ten minutes into a weight load. Until now that knowledge lived
+  in shell history or a stranger's README: the model catalogue could tell you a
+  repo's size and tool parser, but nothing about *how to serve it*.
+  - **Start from a profile** when creating an instance: it prefills the serve
+    settings and everything stays editable. A profile is a starting point, not
+    a lock.
+  - **Save as profile** on any instance captures the configuration you just got
+    working — serve settings only, never the name, port, node, API key or TLS
+    material, which are per-instance facts and would make a profile
+    unshareable at best.
+  - **Export / Import** as a JSON document, so a working configuration can be
+    committed, gisted, or handed to whoever is standing up their own pair.
+  - Profiles ride along in the config backup bundle.
+- **Three built-ins ship with the image**, led by `laguna-fp8-dual` — the
+  poolside/Laguna-S-2.1-FP8 configuration that actually served on a Spark pair
+  (TP=2 distributed, `gpu_memory_utilization 0.72`, `max_model_len 131072`,
+  `max_num_seqs 8`, `max_num_batched_tokens 2048`, `poolside_v1` parsers). The
+  other two are deliberately generic starting points rather than invented
+  numbers. Built-ins refresh from the image on every start, so they can't be
+  edited in place — duplicate one and edit the copy, and an upgrade can never
+  silently overwrite your work.
+- **An imported profile may describe how to serve a model, never what code to
+  run.** Instances launch with `--gpus all`, `--network host` and the models
+  directory mounted, so an imported profile that could pick the container image
+  would be remote code execution as root on a DGX. Import therefore drops
+  `vllm_image` and the raw `extra_args` passthrough, strips
+  `--served-model-name` (which would let a shared file hijack gateway routing by
+  claiming another model's name) along with `--model`, `--api-key`, `--host`,
+  `--load-format` and friends from `advanced_args`, and refuses to silently
+  enable `trust_remote_code`. Everything removed is reported back rather than
+  dropped in silence — and all of it remains settable by hand on your own
+  profiles, where you are the author. Settings are validated through the same
+  schema a hand-typed instance faces, so a profile can't smuggle a value the API
+  would have rejected.
+- New: `GET|POST /api/profiles`, `POST /api/profiles/from-instance/{id}`,
+  `PATCH|DELETE /api/profiles/{id}`, `GET /api/profiles/export`,
+  `POST /api/profiles/import`; MCP `profile_list` / `profile_create` /
+  `profile_from_instance` / `profile_export`. One new table (`serve_profiles`),
+  created automatically; no existing row is touched.
+
 ## v1.25.0 — the gateway grows up: keys, attribution, limits
 - **Per-client API keys.** Every consumer used to hold the same bearer token,
   so offboarding one client or containing one leak meant rotating for everyone

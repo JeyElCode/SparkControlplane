@@ -20,6 +20,7 @@ EXPECTED_NEW = [
     "image_tags", "image_update",
     "instance_reconcile", "gateway_routes",
     "gateway_traffic", "gateway_key_list", "gateway_key_revoke",
+    "profile_list", "profile_create", "profile_from_instance", "profile_export",
 ]
 
 
@@ -66,6 +67,8 @@ def test_read_tools_execute(mcp_server):
             ("gateway_routes", {}),
             ("gateway_traffic", {}),
             ("gateway_key_list", {}),
+            ("profile_list", {}),
+            ("profile_export", {}),
         ]:
             out[name] = await mcp_server.call_tool(name, args)
         return out

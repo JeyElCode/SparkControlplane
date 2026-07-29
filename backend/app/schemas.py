@@ -458,6 +458,80 @@ class ModelSuggestion(BaseModel):
     note: str | None = None
 
 
+# --- Serve profiles ------------------------------------------------------
+class ServeProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str | None = None
+    repo_id: str | None = None
+    # InstanceIn serve-field names -> values. Validated against InstanceIn
+    # itself, so a profile can never smuggle a value a hand-typed instance
+    # would have been refused.
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str) -> str:
+        return _v_instance_name(v)
+
+    @field_validator("repo_id")
+    @classmethod
+    def _check_repo(cls, v: str | None) -> str | None:
+        return _v_repo_id(v) if v else v
+
+
+class ServeProfileUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    description: str | None = None
+    repo_id: str | None = None
+    settings: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: str | None) -> str | None:
+        return _v_instance_name(v) if v else v
+
+
+class ServeProfileOut(BaseModel):
+    id: int
+    name: str
+    description: str | None = None
+    repo_id: str | None = None
+    settings: dict[str, Any] = {}
+    builtin: bool = False
+    created_at: datetime
+
+    @classmethod
+    def of(cls, row: m.ServeProfile, settings: dict) -> "ServeProfileOut":
+        return cls(
+            id=row.id, name=row.name, description=row.description,
+            repo_id=row.repo_id, settings=settings, builtin=row.builtin,
+            created_at=row.created_at,
+        )
+
+
+class ServeProfileExport(BaseModel):
+    """The shareable document. Self-describing so an importer can tell what it
+    is looking at, and versioned so the shape can change later."""
+
+    kind: str = "spark-controlplane-serve-profiles"
+    version: int = 1
+    profiles: list[ServeProfileIn] = []
+
+
+class ServeProfileImportResult(BaseModel):
+    imported: list[str] = []
+    skipped: list[str] = []       # name already taken
+    # Fields removed because an imported profile may not choose what runs on the
+    # nodes (vllm_image, extra_args) or was not a serve setting at all.
+    dropped_fields: list[str] = []
+
+
+class ProfileApply(BaseModel):
+    """Merge a profile into an instance-creation payload, client-side."""
+
+    profile_id: int
+
+
 class ModelNodeStateOut(BaseModel):
     node_id: int
     node_role: str
