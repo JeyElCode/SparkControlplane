@@ -81,7 +81,7 @@ class FakeIdP:
     def id_token(
         self,
         *,
-        aud: str,
+        aud,
         sub: str = "user-guid-1",
         nonce: str | None = None,
         claims: dict | None = None,

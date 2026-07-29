@@ -9,6 +9,8 @@ secrets you care about.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
 
@@ -61,12 +63,50 @@ def encrypt(plaintext: str | None) -> str | None:
     return _get_fernet().encrypt(plaintext.encode()).decode()
 
 
-def decrypt(token: str | None) -> str | None:
-    """Decrypt a secret produced by :func:`encrypt`. ``None`` passes through."""
+def decrypt(token: str | None, *, ttl: int | None = None) -> str | None:
+    """Decrypt a secret produced by :func:`encrypt`. ``None`` passes through.
+
+    ``ttl`` (seconds) additionally rejects a token older than that, using the
+    timestamp Fernet already embeds — cheaper and harder to get wrong than a
+    second expiry field in the payload.
+    """
     if not token:
         return None
     try:
-        return _get_fernet().decrypt(token.encode()).decode()
+        return _get_fernet().decrypt(token.encode(), ttl=ttl).decode()
     except InvalidToken:
         log.error("Failed to decrypt a stored secret (wrong/rotated key?).")
         raise
+
+
+def _is_canonical_b64(token: str) -> bool:
+    """Reject a token that is not the *exact* base64 of its own bytes.
+
+    Python's base64 decoder silently discards anything after the ``=`` padding,
+    so ``valid_token + "junk"`` decrypts to the same plaintext. That is not an
+    auth bypass — an attacker appending junk already holds a valid token — but a
+    credential with more than one accepted spelling is a wart worth removing,
+    and it defeats naive equality checks elsewhere.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(token.encode())
+    except (ValueError, binascii.Error):
+        return False
+    return base64.urlsafe_b64encode(raw).decode() == token
+
+
+def decrypt_cookie(token: str | None, *, ttl: int | None = None) -> str | None:
+    """Decrypt attacker-supplied input (a cookie), returning None on failure.
+
+    Separate from :func:`decrypt` for two reasons. A tampered cookie is not an
+    operational problem, so it must not log at ERROR — and the OIDC callback is
+    an *unauthenticated* endpoint, so a raising, logging decrypt there hands
+    anyone a way to fill the log. And "wrong/rotated key?" is simply the wrong
+    diagnosis for a value the user's browser supplied.
+    """
+    if not token or not _is_canonical_b64(token):
+        return None
+    try:
+        return _get_fernet().decrypt(token.encode(), ttl=ttl).decode()
+    except Exception:  # noqa: BLE001 - garbage/tampered/expired: all just "no"
+        return None

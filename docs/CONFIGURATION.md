@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This is the complete configuration reference for the Spark Control Plane (v1.26.0),
+This is the complete configuration reference for the Spark Control Plane (v1.27.0),
 the single-container FastAPI + React portal that automates a NVIDIA DGX Spark (up to 4-node)
 vLLM cluster.
 
@@ -59,6 +59,29 @@ In the **Role** column below:
 | `SPARK_LDAP_START_TLS` | `ldap_start_tls` | `false` | Process | Upgrade a plain `ldap://` connection with STARTTLS before binding. |
 | `SPARK_LDAP_VERIFY_CERT` | `ldap_verify_cert` | `true` | Process | Validate the directory server's TLS certificate (ldaps:// and STARTTLS). Fail-closed: an invalid cert blocks logins. Disable only for self-signed lab DCs. |
 | `SPARK_LDAP_CA_FILE` | `ldap_ca_file` | _none_ | Process | PEM CA bundle for validating the directory's certificate (enterprise/private CAs). |
+| `SPARK_OIDC_ISSUER` | `oidc_issuer` | _none_ | Process | OpenID issuer URL (required for `oidc` mode). Entra: `https://login.microsoftonline.com/<tenant-guid>/v2.0`. **Use your tenant GUID, not `common`** — `common` returns a templated issuer that cannot be validated without also pinning `tid`. |
+| `SPARK_OIDC_CLIENT_ID` / `SPARK_OIDC_CLIENT_SECRET` | — | _none_ | Process | The app registration's credentials. |
+| `SPARK_OIDC_REDIRECT_URL` | `oidc_redirect_url` | _none_ | Process | Must equal the URI registered with the provider, byte for byte, e.g. `https://spark.example/api/auth/oidc/callback`. Taken from config and **never derived from the request** — behind an ingress the Host header is attacker-controllable, and a request-derived redirect URI is how authorization codes get delivered to someone else. |
+| `SPARK_OIDC_GROUP_REQUIRED` | `oidc_group_required` | _none_ | Process | **Required.** The role/group a user must hold. Unlike LDAP's optional equivalent, oidc mode refuses to start without it — an optional check means authenticating an entire directory into a portal that SSHes to DGX nodes. |
+| `SPARK_OIDC_GROUPS_CLAIM` | `oidc_groups_claim` | `roles` | Process | Which claim carries authorization. **App roles are recommended over group GUIDs**: values are strings you choose, assignment is per-application, and they avoid Entra's *groups overage* — above ~200 memberships Entra omits `groups` entirely, which would deny exactly your longest-tenured accounts while working fine in testing. |
+| `SPARK_OIDC_SCOPES` | `oidc_scopes` | `openid profile email` | Process | Requested scopes. |
+| `SPARK_OIDC_USERNAME_CLAIM` | `oidc_username_claim` | `preferred_username email sub` | Process | Claims tried in order for the display name. |
+| `SPARK_OIDC_ALGORITHMS` | `oidc_algorithms` | `RS256` | Process | ID-token signature algorithms. **HMAC algorithms and `none` are rejected at startup** so the alg-confusion attack (the provider's public key used as a shared secret) is not expressible. |
+| `SPARK_OIDC_CLOCK_SKEW_SECONDS` | `oidc_clock_skew_seconds` | `60` | Process | Leeway on `exp`/`iat`/`nbf`; capped at 300 — a generous skew allowance extends the life of every expired token by the same amount. |
+| `SPARK_OIDC_JWKS_TTL_SECONDS` | `oidc_jwks_ttl_seconds` | `3600` | Process | Signing-key cache lifetime. |
+| `SPARK_OIDC_JWKS_MAX_STALE_SECONDS` | `oidc_jwks_max_stale_seconds` | `86400` | Process | Ceiling on serving cached keys while the provider is unreachable. Serving stale across a blip is right; serving it forever means a key the provider **revoked** stays trusted for the length of the outage. |
+| `SPARK_OIDC_MAX_SESSION_HOURS` | `oidc_max_session_hours` | `8` | Process | Session ceiling in oidc mode. This **is** the offboarding guarantee — see the note below. |
+| `SPARK_OIDC_POST_LOGOUT_REDIRECT_URL` | `oidc_post_logout_redirect_url` | _none_ | Process | Where the provider returns the browser after a single sign-out. |
+
+> **What SSO does and does not give you.** The portal deliberately holds no
+> access or refresh token — it authenticates a human, it does not call the
+> provider's APIs — so it never asks the provider anything again after sign-in.
+> When an account is disabled in Entra, **the portal does not find out.** The
+> honest guarantee is that a disabled account keeps working until its existing
+> cookie expires, which is why oidc mode caps the session at 8h rather than the
+> 24h default. Set `SPARK_OIDC_MAX_SESSION_HOURS` lower if your offboarding SLA
+> is tighter. Sign-out does end the provider's session (`end_session_endpoint`),
+> but only for a user who clicks it.
 | `SPARK_ADMIN_PASSWORD` | `admin_password` | _none_ | Process | Admin password used when `auth_enabled` is on. No effect while auth is disabled. |
 | `SPARK_HOST` | `host` | `0.0.0.0` | Process | Bind address. (Note: the container `CMD` passes `--host 0.0.0.0` to uvicorn explicitly; this field applies when you run the app yourself without that flag.) |
 | `SPARK_PORT` | `port` | `8080` | Process | Listen port (same caveat as `host`). |

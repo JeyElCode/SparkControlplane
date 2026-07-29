@@ -1,6 +1,6 @@
 # API Reference
 
-REST + WebSocket reference for the Spark Control Plane (v1.26.0). The API is
+REST + WebSocket reference for the Spark Control Plane (v1.27.0). The API is
 served by the FastAPI backend under the `/api` prefix; everything else is the
 built React SPA. All request and response bodies are JSON unless noted.
 

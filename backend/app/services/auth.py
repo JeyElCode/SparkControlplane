@@ -19,7 +19,7 @@ import logging
 import time
 
 from ..config import get_settings
-from ..crypto import decrypt, encrypt
+from ..crypto import decrypt_cookie, encrypt
 
 log = logging.getLogger("spark.auth")
 
@@ -36,10 +36,39 @@ class AuthError(Exception):
 
 
 # --- sessions -------------------------------------------------------------
-def create_session(user: str) -> str:
+# The Fernet key is shared with everything else this app encrypts — stored SSH
+# passwords, private keys, and (in oidc mode) the short-lived login transaction
+# cookie. Without a purpose tag, `parse_session` accepts ANY blob that decrypts
+# to JSON with a username and a future exp, which makes every other ciphertext a
+# candidate session. `t` is that tag; `m` binds the session to the auth mode
+# that minted it, so switching to SSO cannot be defeated by a cookie issued
+# under the old, weaker mode.
+SESSION_TYPE = "session"
+SESSION_VERSION = 2
+
+
+def create_session(user: str, *, mode: str | None = None) -> str:
     settings = get_settings()
-    exp = time.time() + settings.auth_session_hours * 3600
-    return encrypt(json.dumps({"u": user, "exp": exp}))
+    exp = time.time() + session_seconds()
+    return encrypt(json.dumps({
+        "t": SESSION_TYPE,
+        "v": SESSION_VERSION,
+        "m": mode or settings.effective_auth_mode,
+        "u": user,
+        "exp": exp,
+    }))
+
+
+def session_seconds() -> float:
+    """Session lifetime. In oidc mode this is capped, because it *is* the
+    offboarding guarantee: the portal holds no refresh token and never asks the
+    provider anything again, so a disabled account keeps working until its
+    cookie expires."""
+    settings = get_settings()
+    hours = settings.auth_session_hours
+    if settings.effective_auth_mode == "oidc":
+        hours = min(hours, settings.oidc_max_session_hours)
+    return hours * 3600
 
 
 def parse_session(token: str | None) -> str | None:
@@ -47,18 +76,36 @@ def parse_session(token: str | None) -> str | None:
     attacker-controlled input — any decrypt/parse failure is just "no session"."""
     if not token:
         return None
-    try:
-        raw = decrypt(token)
-    except Exception:  # noqa: BLE001 - tampered/garbage token
-        return None
+    # decrypt_cookie, not decrypt: a tampered cookie is user input, not an
+    # operational fault, so it must not log at ERROR — and in oidc mode the
+    # unauthenticated callback decrypts attacker-supplied cookies, which would
+    # otherwise hand anyone a way to fill the log.
+    raw = decrypt_cookie(token)
     if not raw:
         return None
     try:
         data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
         if float(data.get("exp", 0)) < time.time():
             return None
         user = data.get("u")
-        return user if isinstance(user, str) and user else None
+        if not (isinstance(user, str) and user):
+            return None
+        # v1 tokens (pre-1.27) carry no type/mode. Accept them ONLY while the
+        # mode they were minted under is still the one in force — otherwise
+        # enabling SSO would leave every password-mode cookie valid, which is
+        # precisely the downgrade SSO is meant to end. They age out within one
+        # session lifetime.
+        mode = get_settings().effective_auth_mode
+        if "t" in data or "v" in data:
+            if data.get("t") != SESSION_TYPE:
+                return None
+            if data.get("m") and data["m"] != mode:
+                return None
+        elif mode == "oidc":
+            return None
+        return user
     except (ValueError, TypeError):
         return None
 

@@ -81,15 +81,25 @@ export default function App() {
   }, []);
 
   const logout = async () => {
-    await api.logout();
-    auth.reload();
+    const r = await api.logout();
+    // In SSO mode, end the provider's session too — otherwise "sign out" leaves
+    // the IdP happy to sign you straight back in without a prompt.
+    if (r.redirect) window.location.href = r.redirect;
+    else auth.reload();
   };
 
   if (!auth.data && !auth.error) {
     return <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--bg)" }} />;
   }
   if (auth.data?.auth_required && !auth.data.authenticated) {
-    return <Login mode={auth.data.auth_mode} onSuccess={() => auth.reload()} />;
+    return (
+      <Login
+        mode={auth.data.auth_mode}
+        loginUrl={auth.data.login_url}
+        configError={auth.data.config_error}
+        onSuccess={() => auth.reload()}
+      />
+    );
   }
 
   return (

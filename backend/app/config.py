@@ -7,6 +7,7 @@ e.g. ``SPARK_DATA_DIR=/var/lib/spark``.
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from typing import Annotated
 
@@ -56,6 +57,104 @@ class Settings(BaseSettings):
     # point ldap_ca_file at your enterprise CA bundle instead.
     ldap_verify_cert: bool = Field(default=True)
     ldap_ca_file: str | None = Field(default=None)
+
+    # --- OIDC / SSO (auth_mode="oidc") -----------------------------------
+    # Authorization code + PKCE against an OpenID provider (Entra ID, Keycloak,
+    # Okta). The portal never sees a password, and MFA / conditional access are
+    # enforced upstream.
+    #
+    # Use your TENANT issuer, not Entra's `common` endpoint: `common` returns a
+    # templated issuer that can only be validated by also pinning `tid`, and a
+    # half-validated issuer is worse than none.
+    oidc_issuer: str | None = Field(default=None)
+    oidc_client_id: str | None = Field(default=None)
+    oidc_client_secret: str | None = Field(default=None)
+    # The redirect URI is taken from CONFIG, never derived from the request:
+    # behind an ingress the Host header is attacker-controllable, and a
+    # request-derived redirect_uri is how authorization codes get delivered to
+    # someone else. Must match what is registered with the IdP, byte for byte.
+    oidc_redirect_url: str | None = Field(default=None)
+    oidc_post_logout_redirect_url: str | None = Field(default=None)
+    oidc_scopes: str = Field(default="openid profile email")
+    # Which claim carries authorization, and the value a user must hold. Entra
+    # APP ROLES (`roles`) are the recommended default over group GUIDs: the
+    # values are strings you choose, assignment is per-application rather than
+    # tenant-wide, and they are immune to the groups-overage problem where Entra
+    # omits `groups` entirely for users in ~200+ groups — which would deny
+    # exactly the longest-tenured accounts while working fine in testing.
+    oidc_groups_claim: str = Field(default="roles")
+    # REQUIRED in oidc mode. The LDAP lesson (#52): an optional group check
+    # means the default deployment authenticates an entire directory into a
+    # portal that SSHes to DGX nodes as root.
+    oidc_group_required: str | None = Field(default=None)
+    # Claim to use as the display username, first match wins.
+    oidc_username_claim: str = Field(default="preferred_username email sub")
+    # Signature algorithms. HS* and "none" are rejected at parse time so the
+    # config surface cannot express the alg-confusion mistake at all.
+    oidc_algorithms: str = Field(default="RS256")
+    oidc_clock_skew_seconds: int = Field(default=60)
+    oidc_jwks_ttl_seconds: int = Field(default=3600)
+    # Hard ceiling on serving a stale JWKS when the IdP is unreachable. Serving
+    # stale across a blip is right; serving it forever means a key the IdP
+    # rotated out — or revoked after a compromise — stays trusted for as long as
+    # the outage lasts.
+    oidc_jwks_max_stale_seconds: int = Field(default=86400)
+    oidc_http_timeout_seconds: float = Field(default=10.0)
+    # Session lifetime ceiling in oidc mode. This IS the offboarding guarantee:
+    # the portal holds no refresh token and never re-asks the provider, so a
+    # disabled account keeps full control until its cookie expires.
+    oidc_max_session_hours: float = Field(default=8.0)
+
+    @field_validator("oidc_algorithms")
+    @classmethod
+    def _check_oidc_algs(cls, v: str) -> str:
+        allowed = {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512",
+                   "ES256", "ES384", "ES512"}
+        algs = [a.strip().upper() for a in re.split(r"[,\s]+", v or "") if a.strip()]
+        if not algs:
+            raise ValueError("SPARK_OIDC_ALGORITHMS must list at least one algorithm")
+        bad = [a for a in algs if a not in allowed]
+        if bad:
+            raise ValueError(
+                f"unsupported ID-token algorithm(s): {', '.join(bad)}. Only asymmetric "
+                f"algorithms are allowed — an HMAC algorithm here enables the "
+                f"alg-confusion attack where the IdP's PUBLIC key is used as the "
+                f"shared secret."
+            )
+        return " ".join(algs)
+
+    @field_validator("oidc_clock_skew_seconds")
+    @classmethod
+    def _cap_skew(cls, v: int) -> int:
+        # A generous skew allowance is a config-shaped vulnerability: it extends
+        # the life of every expired token by the same amount.
+        if not (0 <= v <= 300):
+            raise ValueError("SPARK_OIDC_CLOCK_SKEW_SECONDS must be 0-300")
+        return v
+
+    @property
+    def oidc_config_error(self) -> str | None:
+        """Why oidc mode cannot serve, or None when it is usable. Fail-closed:
+        a misconfigured mode blocks logins rather than falling back to
+        something weaker."""
+        if self.effective_auth_mode != "oidc":
+            return None
+        missing = [
+            name for name, value in (
+                ("SPARK_OIDC_ISSUER", self.oidc_issuer),
+                ("SPARK_OIDC_CLIENT_ID", self.oidc_client_id),
+                ("SPARK_OIDC_CLIENT_SECRET", self.oidc_client_secret),
+                ("SPARK_OIDC_REDIRECT_URL", self.oidc_redirect_url),
+                ("SPARK_OIDC_GROUP_REQUIRED", self.oidc_group_required),
+            ) if not value
+        ]
+        if missing:
+            return f"OIDC is not configured: set {', '.join(missing)}."
+        if not str(self.oidc_issuer).startswith("https://"):
+            return "SPARK_OIDC_ISSUER must be an https:// URL."
+        if not str(self.oidc_redirect_url).startswith(("https://", "http://localhost")):
+            return "SPARK_OIDC_REDIRECT_URL must be https:// (or http://localhost for dev)."
+        return None
 
     @property
     def effective_auth_mode(self) -> str:
