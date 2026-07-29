@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.29.0 — things that have to be true before anyone else runs this
+- **CI now runs the tests.** The backend job was `pip install .` and an import
+  check: 227 tests, including the upgrade-in-place simulations and the security
+  regressions, had never run on a pull request, and `ruff` was a declared dev
+  dependency that was never invoked. Both now run on every PR, the release
+  workflow will not publish unless they pass, and CI builds `linux/arm64` too —
+  previously the architecture that actually runs on a Spark was published
+  without ever being built in CI. Eight pre-existing lint errors fixed to make
+  the gate green.
+- **SSH host keys are pinned, trust-on-first-use.** `known_hosts=None` meant
+  every connection accepted whatever key the host offered — on first contact and
+  forever after — and the next thing sent over that connection is the sudo
+  password. Anyone able to intercept the LAN path to a node could take root on
+  it. The first successful connect now records the key and every connect after
+  is verified against it; a mismatch refuses to connect and says so, naming both
+  explanations (a rebuild, or an interception) and the recovery action. Nodes
+  show whether they are pinned, and "Forget host key" is the deliberate
+  re-trust after a legitimate reinstall. Existing installs pin on next
+  connect — nothing is locked out by the upgrade.
+- **The README no longer misreports security.** It said *"portal login is not
+  enabled in this build… put it behind a reverse proxy with auth"* — nine
+  releases stale, and the first thing an evaluator reads. It now describes the
+  four auth modes, session revocation, and states plainly what `none` means.
+- **A failed request no longer looks like an empty cluster.** `usePoll` exposes
+  an error that Instances, Models and Nodes never rendered, so a dropped
+  connection or an expired session displayed "No instances yet" — telling the
+  operator something false about their hardware. All three now show what failed
+  and that it is a portal problem, not a cluster one.
+- **Added `SECURITY.md`** with a private disclosure route, an explicit statement
+  of what the portal can do to your hardware, and the current limitations —
+  single authorization level, no audit log, unscoped MCP token, single-process
+  design — written down rather than discovered.
+
 ## v1.28.1 — jobs stop being stranded by a restart
 - **Fixed: a portal restart left in-flight jobs recorded as `running` forever.**
   A job exists only as a task in one process, so every image rollout — which

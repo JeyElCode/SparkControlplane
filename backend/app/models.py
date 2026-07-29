@@ -95,6 +95,13 @@ class Node(Base):
     sudo_password_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     hardened: Mapped[bool] = mapped_column(Boolean, default=False)  # generated key installed
+    # The node's SSH host key, captured on first connect and pinned thereafter
+    # ("ssh-ed25519 AAAA..."). Until this exists the portal accepts whatever key
+    # the host offers, which is the window a man-in-the-middle needs — and the
+    # very next thing sent over that connection is the sudo password. NULL means
+    # "not yet seen"; clearing it is the deliberate re-trust action after a
+    # legitimate host rebuild.
+    host_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

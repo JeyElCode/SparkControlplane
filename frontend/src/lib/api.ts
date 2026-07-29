@@ -16,6 +16,7 @@ export interface Node {
   auth_method: "password" | "key";
   sudo_mode: "nopasswd" | "password";
   hardened: boolean;
+  has_host_key?: boolean;
   has_ssh_password: boolean;
   has_ssh_key: boolean;
   has_sudo_password: boolean;
@@ -762,6 +763,7 @@ export const api = {
   createNode: (n: NodeInput) => j<Node>("/api/nodes", { method: "POST", body: JSON.stringify(n) }),
   updateNode: (id: number, n: Partial<NodeInput>) =>
     j<Node>(`/api/nodes/${id}`, { method: "PATCH", body: JSON.stringify(n) }),
+  forgetHostKey: (id: number) => j<Node>(`/api/nodes/${id}/forget-host-key`, { method: "POST" }),
   deleteNode: (id: number) => j<void>(`/api/nodes/${id}`, { method: "DELETE" }),
   testNode: (id: number) => j<ConnectionTest>(`/api/nodes/${id}/test`, { method: "POST" }),
   listInterfaces: (id: number) => j<InterfaceInfo[]>(`/api/nodes/${id}/interfaces`),

@@ -199,9 +199,12 @@ editable at runtime in **Settings**.
   segment.
 - The QSFP network has **no gateway**: 2 nodes = a direct cable; 3-4 nodes need
   a QSFP switch with every node in the same subnet (default `/24`).
-- Portal login is **not** enabled in this build; the secret-encryption layer and
-  an auth dependency hook are wired in for a future release. Put it behind a
-  reverse proxy with auth if you expose it beyond your LAN.
+- **Portal login** is configured with `SPARK_AUTH_MODE`: `none` (open — for a
+  trusted LAN only), `password`, `ldap`, or `oidc` (single sign-on via Entra ID,
+  Keycloak or Okta, with a mandatory group/role requirement). Sessions can be
+  revoked from Settings → Sessions, and revocation survives a restart. In `none`
+  mode anyone who can reach the portal has full control of your hardware — put
+  it behind an authenticating proxy or turn a real mode on.
 - The container runs as a **non-root** user (`spark`, uid 10001).
 
 ---

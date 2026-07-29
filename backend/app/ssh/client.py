@@ -59,6 +59,7 @@ class NodeConn:
     key_passphrase: str | None
     sudo_mode: str
     sudo_password: str | None
+    host_key: str | None = None
 
     @classmethod
     def from_node(cls, node: Node) -> "NodeConn":
@@ -77,6 +78,7 @@ class NodeConn:
             key_passphrase=decrypt(node.ssh_key_passphrase_enc),
             sudo_mode=node.sudo_mode,
             sudo_password=decrypt(node.sudo_password_enc),
+            host_key=node.host_key,
         )
 
 
@@ -89,6 +91,9 @@ class SSHClient:
         self.conn = conn
         self._ssh: asyncssh.SSHClientConnection | None = None
         self._lock = asyncio.Lock()
+        # Set after a first connect to a node with no pinned key, so the caller
+        # can persist it. See ssh_for_node.
+        self.captured_host_key: str | None = None
 
     # --- connection lifecycle -------------------------------------------
     def _live(self) -> bool:
@@ -122,9 +127,20 @@ class SSHClient:
                 host=self.conn.lan_ip,
                 port=self.conn.ssh_port,
                 username=self.conn.ssh_user,
-                known_hosts=None,  # lab cluster; host keys not pinned
                 connect_timeout=settings.ssh_connect_timeout,
             )
+            # Trust on first use, pin thereafter. Without this the portal
+            # accepts any host key on every connect — and then sends the sudo
+            # password over that connection — so anyone able to intercept the
+            # LAN path to a node obtains root on it.
+            if self.conn.host_key:
+                target = (
+                    f"[{self.conn.lan_ip}]:{self.conn.ssh_port}"
+                    if self.conn.ssh_port != 22 else self.conn.lan_ip
+                )
+                opts["known_hosts"] = f"{target} {self.conn.host_key}\n".encode()
+            else:
+                opts["known_hosts"] = None  # first sight: capture below
             if self.conn.auth_method == AUTH_KEY and self.conn.private_key:
                 try:
                     key = asyncssh.import_private_key(
@@ -140,8 +156,27 @@ class SSHClient:
                 opts["password"] = self.conn.password or ""
             try:
                 self._ssh = await asyncssh.connect(**opts)
+            except asyncssh.HostKeyNotVerifiable as exc:
+                raise SSHError(
+                    f"The SSH host key for {self.conn.name} ({self.conn.lan_ip}) does not "
+                    f"match the one recorded when it was first added. Either the node was "
+                    f"rebuilt, or something is intercepting the connection — the portal is "
+                    f"refusing to send credentials until you say which. If the node was "
+                    f"legitimately reinstalled, clear its recorded key on the Nodes page to "
+                    f"trust the new one. ({exc})"
+                ) from None
             except (OSError, asyncssh.Error) as exc:
                 raise SSHError(f"SSH connect to {self.conn.lan_ip} failed: {exc}") from exc
+            if not self.conn.host_key:
+                # Best-effort: recording the key must never be the reason a
+                # connection fails.
+                getter = getattr(self._ssh, "get_server_host_key", None)
+                key = getter() if callable(getter) else None
+                if key is not None:
+                    # "ssh-ed25519 AAAAC3Nz..." — algorithm + base64, no comment.
+                    parts = key.export_public_key("openssh").decode().split()
+                    if len(parts) >= 2:
+                        self.captured_host_key = f"{parts[0]} {parts[1]}"
 
     async def close(self) -> None:
         if self._ssh is not None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -118,8 +119,6 @@ def now_tz() -> datetime:
             log.warning("Invalid SPARK_SCHEDULE_TZ %r — using system time", settings.schedule_tz)
     return datetime.now().astimezone()
 
-
-import os
 
 RETRY_SECONDS = float(os.environ.get("SPARK_SCHEDULE_RETRY_SECONDS", "120"))
 MAX_ATTEMPTS = 5

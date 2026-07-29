@@ -440,7 +440,7 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
             run.finished_at = _now()
             await _commit(session, handle)
             return f"Eval '{run.name}' complete (overall {(run.overall_score or 0) * 100:.0f}%)"
-        except Exception as exc:
+        except Exception:
             run.status = JOB_ERROR
             run.finished_at = _now()
             await _commit(session, handle)

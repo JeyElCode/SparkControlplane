@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +13,8 @@ from ..schemas import ConnectionTest, InterfaceInfo, JobAccepted, NodeIn, NodeOu
 from ..services import cluster
 from ..services.jobs import jobs
 from ..ssh import pool, ssh_for_node
+
+log = logging.getLogger("spark.nodes")
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
@@ -165,6 +169,24 @@ async def list_interfaces(node_id: int, session: AsyncSession = Depends(get_sess
     # QSFP candidates first, link-up first, fastest first
     out.sort(key=lambda i: (not i.qsfp_candidate, not i.carrier, -(i.speed_mbps or 0), i.name))
     return out
+
+
+@router.post("/{node_id}/forget-host-key", response_model=NodeOut)
+async def forget_host_key(node_id: int, session: AsyncSession = Depends(get_session)):
+    """Clear a node's pinned SSH host key so the next connect trusts a new one.
+
+    The deliberate action after a legitimate rebuild. It is deliberately manual:
+    a changed host key is either a reinstall or an interception, and only a
+    human knows which.
+    """
+    node = await session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, "Node not found")
+    node.host_key = None
+    await session.commit()
+    await pool.drop(node_id)  # force a fresh connect that re-pins
+    log.warning("cleared the pinned SSH host key for %s", node.name)
+    return NodeOut.of(node)
 
 
 @router.post("/{node_id}/harden", response_model=JobAccepted)

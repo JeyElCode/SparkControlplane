@@ -4,11 +4,14 @@ multiplexed asyncssh connection per node instead of reconnecting each time."""
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Node
 from .client import NodeConn, SSHClient, SSHError
+
+log = logging.getLogger("spark.ssh")
 
 __all__ = ["SSHError", "SSHClient", "NodeConn", "pool", "ssh_for_node"]
 
@@ -57,4 +60,16 @@ async def ssh_for_node(session: AsyncSession, node: Node) -> SSHClient:
     connected client from the pool. A fresh NodeConn each call ensures secret
     rotations / edits take effect (the pool reconnects when identity changes)."""
     conn = NodeConn.from_node(node)
-    return await pool.get(conn)
+    client = await pool.get(conn)
+    # Trust on first use: the first successful connect records the host key, and
+    # every connect after that is verified against it.
+    if client.captured_host_key and not node.host_key:
+        node.host_key = client.captured_host_key
+        client.captured_host_key = None
+        try:
+            await session.commit()
+            log.info("pinned SSH host key for %s (%s)", node.name, node.host_key.split()[0])
+        except Exception:  # noqa: BLE001 - pinning must never break an operation
+            await session.rollback()
+            log.warning("could not persist the host key for %s", node.name, exc_info=True)
+    return client

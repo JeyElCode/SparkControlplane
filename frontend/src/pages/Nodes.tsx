@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, ConnectionTest, InterfaceInfo, Node, NodeInput, Role } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { boolKind } from "../lib/format";
-import { Badge, Field, Modal, Spinner } from "../components/ui";
+import { Badge, Field, Modal, Spinner, LoadError } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { LiveLogPanel } from "../components/LiveLogPanel";
 import { useToast } from "../components/Toast";
@@ -155,7 +155,7 @@ function NodeForm({
 }
 
 export default function Nodes() {
-  const { data: nodes, reload } = usePoll(() => api.listNodes(), 0);
+  const { data: nodes, error: nodesError, reload } = usePoll(() => api.listNodes(), 0);
   const { toast } = useToast();
   const [form, setForm] = useState<{ initial: NodeInput; editing: Node | null } | null>(null);
   const [tests, setTests] = useState<Record<number, ConnectionTest | "loading">>({});
@@ -269,6 +269,8 @@ export default function Nodes() {
             </>
           )}
         </div>
+
+      <LoadError error={nodesError} what="nodes" />
       </div>
 
       <div className="grid grid-2">
@@ -281,6 +283,9 @@ export default function Nodes() {
                   <strong>{n.name}</strong>
                   <Badge kind="blue" dot={false}>{n.role}</Badge>
                   {n.hardened && <Badge kind="green">key auth</Badge>}
+                  {n.has_host_key
+                    ? <Badge kind="green">host key pinned</Badge>
+                    : <Badge kind="amber">host key not yet pinned</Badge>}
                 </div>
               </div>
               <dl className="kv">
@@ -310,6 +315,15 @@ export default function Nodes() {
                 </button>
                 <button className="btn btn-sm" onClick={() => setForm({ initial: { ...EMPTY, ...n, ssh_password: "", ssh_private_key: "", sudo_password: "", ssh_key_passphrase: "" }, editing: n })}>Edit</button>
                 {!n.hardened && <button className="btn btn-sm" onClick={() => harden(n.id)}>Harden → key</button>}
+                {n.has_host_key && (
+                  <button className="btn btn-sm" title="Only after a legitimate reinstall — a changed key is otherwise a sign of interception"
+                    onClick={async () => {
+                      if (!confirm(`Forget the pinned SSH host key for ${n.name}?\n\nOnly do this if you reinstalled or replaced the node. If you did not, a changed host key means something is intercepting the connection.`)) return;
+                      await api.forgetHostKey(n.id);
+                      toast("Host key cleared — it will be pinned again on the next connection", "success");
+                      reload();
+                    }}>Forget host key</button>
+                )}
                 <button className="btn btn-sm" onClick={() => setLogsFor(n.name)} title="Live journalctl tail (Ray unit)">Logs</button>
                 <button className="btn btn-sm" onClick={() => power(n, "reboot")}>Reboot</button>
                 <button className="btn btn-sm" onClick={() => power(n, "shutdown")}>Shut down</button>

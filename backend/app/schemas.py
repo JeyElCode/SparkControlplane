@@ -290,6 +290,7 @@ class NodeOut(BaseModel):
     auth_method: str
     sudo_mode: str
     hardened: bool
+    has_host_key: bool = False
     has_ssh_password: bool
     has_ssh_key: bool
     has_sudo_password: bool

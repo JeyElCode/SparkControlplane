@@ -59,6 +59,9 @@ class FakeConnection:
         """Simulate the transport dying underneath us (sshd restart)."""
         self.closed = True
 
+    def get_server_host_key(self):
+        return None  # host-key capture is exercised in test_host_key_pinning
+
 
 @pytest.fixture()
 def connections(monkeypatch):

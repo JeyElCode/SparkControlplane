@@ -43,6 +43,7 @@ from ..schemas import (
     NodeStatus,
     RayStatus,
     StatusSnapshot,
+    XidEvent,
 )
 from ..ssh import ssh_for_node
 from .paths import models_host_dir
@@ -390,13 +391,11 @@ XID_LOOKBACK_SECONDS = 600  # first scan looks this far back
 XID_KEEP = 20               # events retained per node
 
 
-def parse_xid_lines(raw: str) -> list["XidEvent"]:
+def parse_xid_lines(raw: str) -> list[XidEvent]:
     """Parse `journalctl -k -o short-unix` output for NVRM Xid events.
 
     Line shape: ``1721721721.123456 host kernel: NVRM: Xid (PCI:...): 79, ...``
     """
-    from ..schemas import XidEvent
-
     out: list[XidEvent] = []
     for line in raw.splitlines():
         line = line.strip()
