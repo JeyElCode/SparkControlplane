@@ -20,7 +20,11 @@ dependencies = [
     "python-multipart>=0.0.9",
     "PyYAML>=6.0",
     "greenlet>=3.0",
-    "mcp>=1.2",
+    # Capped at <2 deliberately: mcp 2.0 moved `mcp.server.fastmcp`, which
+    # app/mcp_server.py imports, and because main.py fail-opens on an MCP import
+    # error the only symptom is that /mcp silently does not exist. `mcp>=1.2`
+    # let a major bump through and CI caught it resolving 2.0.0. See #67.
+    "mcp>=1.2,<2",
 ]
 
 [project.optional-dependencies]

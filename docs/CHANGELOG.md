@@ -15,6 +15,13 @@
   off, so the rules are now an intentional choice (defect-finding: undefined
   names, unused bindings, unresolved imports) rather than whatever the installed
   version happens to default to.
+- **Dependencies are capped at tested majors.** Enabling the gate immediately
+  found what it was for: CI resolved `mcp 2.0.0`, which moved
+  `mcp.server.fastmcp`, so the MCP server failed to build — and because that
+  build is deliberately fail-open, the only symptom on a fresh install is that
+  `/mcp` silently does not exist. Capped at `<2` (see #67 for the 2.x port).
+  Anyone whose image was built recently should check `GET /api/meta`, which
+  reports `mcp_enabled`.
 - **SSH host keys are pinned, trust-on-first-use.** `known_hosts=None` meant
   every connection accepted whatever key the host offered — on first contact and
   forever after — and the next thing sent over that connection is the sudo
