@@ -8,7 +8,13 @@
   workflow will not publish unless they pass, and CI builds `linux/arm64` too —
   previously the architecture that actually runs on a Spark was published
   without ever being built in CI. Eight pre-existing lint errors fixed to make
-  the gate green.
+  the gate green. **The linter is pinned and its rule set declared explicitly** —
+  the first CI run proved why: an unpinned `ruff>=0.5` picked up a newer release
+  whose wider defaults turned a locally-green tree into 342 findings. A gate
+  that fails for reasons the author did not cause is a gate that gets switched
+  off, so the rules are now an intentional choice (defect-finding: undefined
+  names, unused bindings, unresolved imports) rather than whatever the installed
+  version happens to default to.
 - **SSH host keys are pinned, trust-on-first-use.** `known_hosts=None` meant
   every connection accepted whatever key the host offered — on first contact and
   forever after — and the next thing sent over that connection is the sudo

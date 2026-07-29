@@ -25,9 +25,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.5",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
+    # Pinned deliberately. An unpinned linter means a new release can turn a
+    # green tree red with hundreds of stylistic findings that have nothing to do
+    # with the change being reviewed — and a gate that fails for reasons the
+    # author did not cause is a gate that gets disabled.
+    "ruff==0.15.22",
+    "pytest>=8.0,<9",
+    "pytest-asyncio>=0.23,<2",
 ]
 
 [build-system]
@@ -40,6 +44,26 @@ packages = ["app"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+# Declared explicitly rather than inherited from whatever the installed ruff
+# defaults to. These are the rules that catch *defects* — undefined names,
+# unused bindings, imports that do not resolve, mutable default arguments,
+# bare excepts — as opposed to stylistic modernisation, which would churn the
+# tree without making anything more correct.
+select = [
+    "F",    # pyflakes: undefined names, unused imports/variables
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+]
+ignore = [
+    "E501",  # long lines are a judgement call, not a build failure
+]
+# Deliberately not yet enabled: "B" (bugbear) and "ASYNC" report 36 findings in
+# the current tree, a mix of genuine (raise-from, zip strict=) and
+# false-for-this-codebase (ASYNC109 flags the `timeout=` parameter that is this
+# project's own SSH API). Adopting them is a change worth making on its own
+# terms rather than smuggling into an unrelated batch. See issue tracker.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
