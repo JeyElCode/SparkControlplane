@@ -266,6 +266,40 @@ class Instance(Base):
     node: Mapped[Node | None] = relationship()
 
 
+class ServeProfile(Base):
+    """A named, reusable set of vLLM serve settings for a model.
+
+    Getting a large model to serve is a matter of a dozen interacting flags
+    (context length, GPU memory fraction, batch limits, the right parsers), and
+    one wrong value is an out-of-memory ten minutes into a weight load. Without
+    this, that knowledge lives in someone's shell history or a stranger's
+    README. A profile makes it a thing you can apply, save and share.
+
+    Deliberately holds only *serve* settings: never a name, port, node, API key
+    or TLS material. Those are per-instance facts, and a profile that carried
+    them would be unshareable at best and a credential leak at worst.
+    """
+
+    __tablename__ = "serve_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional hint: the HF repo this profile was tuned for. Free-form so a
+    # profile can also be model-agnostic ("small model, single node").
+    repo_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The settings themselves, as a JSON object of InstanceIn field names. JSON
+    # rather than 18 columns: the set tracks vLLM's flags, which change between
+    # releases, and a profile that silently dropped an unknown key on upgrade
+    # would be worse than useless.
+    settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    # True for profiles shipped with the image. Never edited in place — an
+    # upgrade replaces them, so a user edit would be silently clobbered.
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 class ApiKey(Base):
     """A per-client credential for the /v1 gateway.
 

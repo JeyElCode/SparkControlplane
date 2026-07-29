@@ -34,6 +34,7 @@ from .routers import (
     nodes,
     playground,
     power,
+    profiles,
     schedules,
     status,
     storage,
@@ -155,7 +156,7 @@ app.add_middleware(AuthMiddleware)
 if settings.effective_auth_mode != "none":
     log.info("Portal auth is ON (mode=%s)", settings.effective_auth_mode)
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage, gateway):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage, gateway, profiles):
     app.include_router(r.router)
 # The loop only picks up attributes named `router`; the gateway also exposes an
 # operator-facing /api view guarded by the normal portal session.

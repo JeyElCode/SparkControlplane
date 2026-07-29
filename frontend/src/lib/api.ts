@@ -607,6 +607,28 @@ export interface GatewayInfo {
   unavailable: GatewayRoute[];
 }
 
+export interface ServeProfile {
+  id: number;
+  name: string;
+  description?: string | null;
+  repo_id?: string | null;
+  settings: Record<string, any>;
+  builtin: boolean;
+  created_at: string;
+}
+
+export interface ServeProfileExport {
+  kind: string;
+  version: number;
+  profiles: { name: string; description?: string | null; repo_id?: string | null; settings: Record<string, any> }[];
+}
+
+export interface ServeProfileImportResult {
+  imported: string[];
+  skipped: string[];
+  dropped_fields: string[];
+}
+
 export interface ApiKey {
   id: number;
   label: string;
@@ -828,6 +850,15 @@ export const api = {
     j<Instance>(`/api/instances/${id}`, { method: "PATCH", body: JSON.stringify(i) }),
   startInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/start`, { method: "POST" }),
   stopInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/stop`, { method: "POST" }),
+  listProfiles: () => j<ServeProfile[]>("/api/profiles"),
+  createProfile: (body: { name: string; description?: string | null; repo_id?: string | null; settings: Record<string, any> }) =>
+    j<ServeProfile>("/api/profiles", { method: "POST", body: JSON.stringify(body) }),
+  profileFromInstance: (instanceId: number, body: { name: string; description?: string | null; repo_id?: string | null }) =>
+    j<ServeProfile>(`/api/profiles/from-instance/${instanceId}`, { method: "POST", body: JSON.stringify({ ...body, settings: {} }) }),
+  deleteProfile: (id: number) => j<void>(`/api/profiles/${id}`, { method: "DELETE" }),
+  exportProfiles: () => j<ServeProfileExport>("/api/profiles/export"),
+  importProfiles: (doc: ServeProfileExport) =>
+    j<ServeProfileImportResult>("/api/profiles/import", { method: "POST", body: JSON.stringify(doc) }),
   gatewayRoutes: () => j<GatewayInfo>("/api/gateway/routes"),
   gatewayTraffic: () => j<GatewayTraffic>("/api/gateway/traffic"),
   listApiKeys: () => j<ApiKey[]>("/api/gateway/keys"),

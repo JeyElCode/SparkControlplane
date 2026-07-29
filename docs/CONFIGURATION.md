@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This is the complete configuration reference for the Spark Control Plane (v1.25.0),
+This is the complete configuration reference for the Spark Control Plane (v1.26.0),
 the single-container FastAPI + React portal that automates a NVIDIA DGX Spark (up to 4-node)
 vLLM cluster.
 

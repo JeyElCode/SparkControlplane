@@ -39,6 +39,7 @@ from .routers import backup as backup_router
 from .routers import cluster as cluster_router
 from .routers import evals as evals_router
 from .routers import gateway as gateway_router
+from .routers import profiles as profiles_router
 from .routers import instances as instances_router
 from .routers import jobs as jobs_router
 from .routers import logs as logs_router
@@ -67,6 +68,9 @@ from .schemas import (
     ApiKeyUpdate,
     GatewayInfo,
     GatewayTraffic,
+    ServeProfileExport,
+    ServeProfileIn,
+    ServeProfileOut,
     InstanceOut,
     InstanceUpdate,
     InterfaceInfo,
@@ -269,6 +273,46 @@ def build_mcp_server() -> "FastMCP":
         routes, and whether a bearer token is required. Use this to hand a
         client a working config."""
         return await _with_session(gateway_router.gateway_routes)
+
+    # ---------------- serve profiles ----------------
+    @mcp.tool()
+    async def profile_list() -> list[ServeProfileOut]:
+        """Known-good vLLM serve settings, saved and shareable. Use one to
+        create an instance without rediscovering a model's flags."""
+        return await _with_session(profiles_router.list_profiles)
+
+    @mcp.tool()
+    async def profile_create(
+        name: str,
+        settings: dict,
+        description: str | None = None,
+        repo_id: str | None = None,
+    ) -> ServeProfileOut:
+        """Save a set of vLLM serve settings under a name. `settings` uses
+        InstanceIn field names (topology, gpu_memory_utilization,
+        max_model_len, max_num_seqs, reasoning_parser, ...)."""
+        return await _with_session(
+            profiles_router.create_profile,
+            payload=ServeProfileIn(
+                name=name, description=description, repo_id=repo_id, settings=settings
+            ),
+        )
+
+    @mcp.tool()
+    async def profile_from_instance(
+        instance_id: int, name: str, description: str | None = None
+    ) -> ServeProfileOut:
+        """Capture a working instance's serve settings as a reusable profile."""
+        return await _with_session(
+            profiles_router.profile_from_instance,
+            instance_id=instance_id,
+            payload=ServeProfileIn(name=name, description=description),
+        )
+
+    @mcp.tool()
+    async def profile_export() -> ServeProfileExport:
+        """Export user profiles as a shareable JSON document."""
+        return await _with_session(profiles_router.export_profiles)
 
     @mcp.tool()
     async def gateway_traffic() -> GatewayTraffic:

@@ -29,6 +29,7 @@ from ..models import (
     CustomTask,
     Instance,
     InstanceSchedule,
+    ServeProfile,
     ModelNodeState,
     ModelRegistry,
     Node,
@@ -50,6 +51,11 @@ _TABLES: list[tuple[str, type]] = [
     ("instances", Instance),
     ("instance_schedules", InstanceSchedule),
     ("custom_tasks", CustomTask),
+    # Serve profiles: configuration worth a bring-up, so it belongs in a backup.
+    # Built-in rows travel too, which is harmless — a restore replaces the table
+    # wholesale and the next start re-seeds built-ins by name, so they converge
+    # on the image's version either way rather than duplicating.
+    ("serve_profiles", ServeProfile),
 ]
 _SINGLETONS = {"cluster_config", "settings"}
 
