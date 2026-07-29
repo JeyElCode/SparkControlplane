@@ -225,14 +225,29 @@ npm run typecheck    # tsc --noEmit
 npm run build        # production build into dist/
 ```
 
-CI (`.github/workflows/ci.yml`) runs the frontend typecheck + build, a backend
-import smoke test, and a Docker build on every push/PR.
+### Building the image by hand
+
+```bash
+docker buildx build -t spark-controlplane:dev --load .
+```
+
+**BuildKit is required.** The frontend stage is pinned to the *build* platform
+(`FROM --platform=$BUILDPLATFORM`), which the legacy builder rejects at parse
+time — so `DOCKER_BUILDKIT=0 docker build .` and Compose v1 will not work.
+`docker buildx build` and `docker compose` (v2) are fine. The Dockerfile explains
+why the pin is there; the short version is that building the SPA under QEMU
+emulation intermittently hangs for six hours.
+
+CI (`.github/workflows/ci.yml`) runs the frontend typecheck + build, the full
+backend test suite + `ruff`, and a multi-arch Docker build on every push/PR.
 
 ## Release
 
-Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds a
-multi-arch image (amd64 + arm64) and publishes it to
-`ghcr.io/jeyelcode/spark-controlplane:<version>` and `:latest`.
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which runs the test
+suite, builds a multi-arch image (amd64 + arm64), publishes it to
+`ghcr.io/jeyelcode/spark-controlplane:<version>` and `:latest`, and then **runs
+the arm64 image** to confirm it is genuinely aarch64 and serves a usable SPA —
+the only architecture a DGX Spark can execute.
 
 ```bash
 git tag vX.Y.Z && git push origin vX.Y.Z
