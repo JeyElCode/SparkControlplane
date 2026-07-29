@@ -52,6 +52,9 @@ def test_builtins_are_seeded_and_carry_the_laguna_flags(client):
     assert s["max_num_seqs"] == 8
     assert s["max_num_batched_tokens"] == 2048
     assert s["reasoning_parser"] == "poolside_v1"
+    # NOT trust_remote_code: it was never in the operator's known-good set, and
+    # shipping it enabled while refusing it on import would be incoherent.
+    assert "trust_remote_code" not in s
 
 
 def test_builtins_cannot_be_edited_or_deleted(client):
@@ -221,12 +224,27 @@ def test_locally_created_profiles_may_still_pin_an_image(client):
 
 
 def test_import_rejects_invalid_settings_outright(client):
+    """A dropped passthrough is discarded quietly (it was never going to be
+    used), but a bad value in a field that IS imported fails the document —
+    better than storing a profile that errors minutes into a start."""
     r = client.post("/api/profiles/import", json={
         "kind": "spark-controlplane-serve-profiles",
         "version": 1,
-        "profiles": [{"name": "bad", "settings": {"advanced_args": "{not-an-array}"}}],
+        "profiles": [{"name": "bad", "settings": {"topology": "sideways"}}],
     })
     assert r.status_code == 422 and "bad" in r.json()["detail"]
+
+    # ...whereas a malformed passthrough is simply dropped, not fatal
+    r = client.post("/api/profiles/import", json={
+        "kind": "spark-controlplane-serve-profiles",
+        "version": 1,
+        "profiles": [{"name": "ok", "settings": {
+            "advanced_args": "{not-an-array}", "max_model_len": 4096,
+        }}],
+    })
+    assert r.status_code == 200
+    stored = next(p for p in client.get("/api/profiles").json() if p["name"] == "ok")
+    assert stored["settings"] == {"max_model_len": 4096}
 
 
 def test_profiles_survive_a_backup_round_trip(client):
@@ -254,42 +272,66 @@ def test_profiles_survive_a_backup_round_trip(client):
     assert "laguna-fp8-dual" in builtins
 
 
-def test_import_strips_identity_and_trust_flags_from_advanced_args(client):
-    """advanced_args survives import (it is where real tuning lives) — but it
-    is a flag passthrough, so it could smuggle back exactly what the field
-    allowlist excludes. --served-model-name would let an imported profile
-    hijack gateway routing by claiming another model's name; the rest change
-    what is served or what is trusted."""
+def test_import_drops_every_flag_passthrough(client):
+    """v1.26.0 tried to keep advanced_args by filtering a denylist of dangerous
+    flags. The denylist was bypassable within minutes: --middleware makes vLLM
+    import an arbitrary object into the API server, --tool-parser-plugin
+    executes a Python file, --allowed-local-media-path turns the endpoint into
+    an arbitrary file read — none were on the list, and none were reported.
+
+    A denylist of flags against an upstream CLI that grows every release cannot
+    be right. Passthroughs are now dropped wholesale on import."""
     res = client.post("/api/profiles/import", json={
         "kind": "spark-controlplane-serve-profiles",
         "version": 1,
         "profiles": [{
-            "name": "sneaky",
+            "name": "trojan",
             "settings": {
-                "trust_remote_code": True,
+                "gpu_memory_utilization": 0.8,
+                "max_model_len": 8192,
                 "advanced_args": json.dumps([
-                    {"flag": "--served-model-name", "value": "laguna"},
-                    {"flag": "--api-key", "value": "attacker"},
+                    {"flag": "--middleware", "value": "evil.module:hook"},
+                    {"flag": "--tool-parser-plugin", "value": "/models/evil.py"},
+                    {"flag": "--allowed-local-media-path", "value": "/"},
                     {"flag": "--enable-chunked-prefill", "value": None},
                 ]),
+                "compilation_config": json.dumps({"level": 3}),
+                "trust_remote_code": True,
             },
         }],
     }).json()
 
-    assert res["imported"] == ["sneaky"]
-    stored = next(p for p in client.get("/api/profiles").json() if p["name"] == "sneaky")
-    kept = json.loads(stored["settings"]["advanced_args"])
-    flags = [i["flag"] for i in kept]
-    assert "--served-model-name" not in flags, "imported profile could hijack gateway routing"
-    assert "--api-key" not in flags
-    assert flags == ["--enable-chunked-prefill"], "legitimate tuning must survive"
-    # trust_remote_code executes code from the model repo — the operator turns
-    # that on deliberately, not because a shared file said so
+    stored = next(p for p in client.get("/api/profiles").json() if p["name"] == "trojan")
+    assert "advanced_args" not in stored["settings"], "flag passthrough survived import"
+    assert "compilation_config" not in stored["settings"]
     assert stored["settings"].get("trust_remote_code") is not True
-    # reported back so the operator knows what was removed, not silently dropped
-    assert "sneaky.--served-model-name" in res["dropped_fields"]
-    assert "sneaky.--api-key" in res["dropped_fields"]
-    assert "sneaky.trust_remote_code" in res["dropped_fields"]
+    # the tuning that is the actual point of a shared profile survives
+    assert stored["settings"]["gpu_memory_utilization"] == 0.8
+    assert stored["settings"]["max_model_len"] == 8192
+    # and the operator is told what was removed, not left to discover it
+    assert set(res["dropped_fields"]) == {
+        "trojan.advanced_args", "trojan.compilation_config", "trojan.trust_remote_code",
+    }
+
+
+def test_the_motivating_recipe_survives_import_intact(client):
+    """The whole point of #56 is sharing a recipe like Laguna's. Dropping the
+    passthroughs must not cost anything that recipe actually needs."""
+    laguna = {
+        "topology": "distributed", "tensor_parallel_size": 2,
+        "gpu_memory_utilization": 0.72, "max_model_len": 131072,
+        "max_num_seqs": 8, "max_num_batched_tokens": 2048,
+        "reasoning_parser": "poolside_v1", "tool_parser": "poolside_v1",
+        "enable_tool_choice": True,
+    }
+    res = client.post("/api/profiles/import", json={
+        "kind": "spark-controlplane-serve-profiles", "version": 1,
+        "profiles": [{"name": "laguna-shared", "settings": laguna}],
+    }).json()
+    assert res["imported"] == ["laguna-shared"] and res["dropped_fields"] == []
+    stored = next(p for p in client.get("/api/profiles").json()
+                  if p["name"] == "laguna-shared")
+    assert stored["settings"] == laguna
 
 
 def test_locally_authored_profiles_keep_full_control(client):
@@ -300,9 +342,14 @@ def test_locally_authored_profiles_keep_full_control(client):
         "name": "mine",
         "settings": {
             "trust_remote_code": True,
-            "advanced_args": json.dumps([{"flag": "--served-model-name", "value": "x"}]),
+            "advanced_args": json.dumps([{"flag": "--enable-chunked-prefill", "value": None}]),
+            "compilation_config": json.dumps({"level": 3}),
+            "vllm_image": "nvcr.io/nvidia/vllm:26.05-py3",
         },
     })
     assert r.status_code == 201
-    assert r.json()["settings"]["trust_remote_code"] is True
-    assert "--served-model-name" in r.json()["settings"]["advanced_args"]
+    got = r.json()["settings"]
+    assert got["trust_remote_code"] is True
+    assert "--enable-chunked-prefill" in got["advanced_args"]
+    assert got["compilation_config"] == json.dumps({"level": 3})
+    assert got["vllm_image"] == "nvcr.io/nvidia/vllm:26.05-py3"

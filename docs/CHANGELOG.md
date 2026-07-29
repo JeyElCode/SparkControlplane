@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.26.1 — profile import: allowlist, not denylist
+- **Fixed: the v1.26.0 import filter was bypassable.** Profile import kept
+  `advanced_args` and filtered a denylist of ten dangerous flags. A review
+  demonstrated the bypass in minutes — `--middleware <dotted.path>` makes vLLM
+  import an arbitrary object into the API server, `--tool-parser-plugin
+  <file.py>` executes a Python file, `--allowed-local-media-path /` turns the
+  inference endpoint into an arbitrary file read. None were on the list, and
+  none were reported as dropped, so an operator importing a hostile profile was
+  told nothing had been removed. Since vLLM renders `advanced_args` *after* its
+  own flags, a duplicated flag also won on argparse last-wins.
+  `compilation_config` was not filtered at all.
+- **Passthroughs are now dropped wholesale on import**, exactly like
+  `vllm_image` and `extra_args`: `advanced_args` and `compilation_config` are
+  removed and reported. A denylist of flags against an upstream CLI that grows
+  every release is out of date the moment it ships; an allowlist of settings is
+  not. Nothing that matters is lost — the recipe this feature exists for
+  (Laguna) needs none of them, and every one remains settable by hand on a
+  profile you author yourself, where you are the author rather than the
+  recipient. A malformed passthrough is now discarded quietly instead of
+  failing the whole document, while a bad value in a field that *is* imported
+  still rejects it.
+- **Removed `trust_remote_code` from the `laguna-fp8-dual` built-in.** It was
+  not part of the configuration that actually served — it was added by
+  implementation, not measurement — and shipping it enabled while the same
+  module refuses it from an imported profile was incoherent.
+
 ## v1.26.0 — serve profiles: stop rediscovering a model's flags
 - **Known-good vLLM settings, saved under a name.** Getting a large model to
   serve is a dozen interacting flags — context length, GPU memory fraction,

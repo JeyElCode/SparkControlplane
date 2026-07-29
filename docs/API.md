@@ -592,12 +592,16 @@ rejected with `422`.
 there a `docker run` on the nodes with `--gpus all` and the models directory
 mounted, so import:
 
-- drops `vllm_image` and `extra_args` entirely,
-- strips `--served-model-name` (gateway-routing hijack), `--model`,
-  `--tokenizer`, `--api-key`, `--host`, `--port`, `--trust-remote-code`,
-  `--load-format`, `--config-format`, `--download-dir` from `advanced_args`,
+- drops every flag passthrough — `vllm_image`, `extra_args`, `advanced_args`
+  and `compilation_config`,
 - refuses to enable `trust_remote_code`,
 - validates everything else through `InstanceIn`.
+
+v1.26.0 tried to keep `advanced_args` by filtering a denylist of dangerous
+flags; that was bypassable (`--middleware` imports an arbitrary object into the
+vLLM server, `--tool-parser-plugin` executes a Python file). A denylist against
+an upstream CLI that grows every release cannot hold, so passthroughs are
+dropped wholesale.
 
 Removed fields come back in `dropped_fields` rather than disappearing silently.
 None of this restricts profiles you author locally — the difference is

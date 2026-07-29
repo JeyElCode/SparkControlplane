@@ -65,52 +65,31 @@ PROFILE_FIELDS: tuple[str, ...] = (
 # root shell: `vllm_image` picks the container that runs with --gpus all and the
 # models dir mounted, and `extra_args` is a raw flag passthrough. An operator can
 # still set either by hand on an instance — the difference is authorship.
-IMPORT_BLOCKED_FIELDS: frozenset[str] = frozenset({"vllm_image", "extra_args"})
-
-# `advanced_args` is the interesting half of a shared profile — it is where real
-# tuning lives — so it survives import. But it is a flag passthrough, which means
-# it could smuggle back exactly what the field allowlist excludes. These change
-# the instance's IDENTITY or TRUST rather than its tuning, and are stripped from
-# an imported profile:
-#   --served-model-name  hijacks gateway routing (claim another model's name)
-#   --model / --tokenizer  serve something other than the model on the card
-#   --api-key            the portal injects its own; a second one breaks or
-#                        exfiltrates depending on who chose it
-#   --host / --port      placement, which is the portal's to decide
-#   --trust-remote-code  executes code from the model repo at load time
-_IMPORT_BLOCKED_FLAGS: frozenset[str] = frozenset({
-    "--served-model-name", "--model", "--tokenizer", "--api-key",
-    "--host", "--port", "--trust-remote-code", "--download-dir",
-    "--load-format", "--config-format",
+IMPORT_BLOCKED_FIELDS: frozenset[str] = frozenset({
+    "vllm_image",
+    "extra_args",
+    # advanced_args and compilation_config are dropped for the SAME reason,
+    # learned the hard way: v1.26.0 tried to keep advanced_args by filtering a
+    # denylist of dangerous flags, and the denylist was bypassable within
+    # minutes. `--middleware <dotted.path>` makes vLLM import an arbitrary
+    # object into the API server; `--tool-parser-plugin <file.py>` executes a
+    # Python file; `--allowed-local-media-path /` turns the endpoint into an
+    # arbitrary file read — none of which were on the list, and none of which
+    # were reported as dropped. vLLM's flag surface grows every release, so any
+    # such list is out of date the moment it ships.
+    #
+    # An allowlist of *values* is defensible; a denylist of *flags* against an
+    # upstream CLI is not. Nothing is lost that matters: the recipe this feature
+    # exists for (Laguna) needs none of these, and an operator can still set all
+    # of them by hand on their own profile, where they are the author.
+    "advanced_args",
+    "compilation_config",
 })
 
-# Same reasoning as --trust-remote-code above: legitimate (Laguna needs it) but
-# a shared profile flipping it on is an escalation the operator should perform
-# deliberately, so it is dropped on import and re-enabled by hand.
+# Legitimate on a profile you wrote; refused from one you were sent, because it
+# executes code from the model repo at load time and that is a decision the
+# operator should make deliberately.
 _IMPORT_BLOCKED_TRUE_FLAGS: frozenset[str] = frozenset({"trust_remote_code"})
-
-
-def _filter_advanced_args(raw: str | None) -> tuple[str | None, list[str]]:
-    """Strip identity/trust-changing flags from an imported advanced_args blob.
-
-    Returns ``(cleaned_json_or_None, dropped_flag_names)``.
-    """
-    if not raw:
-        return raw, []
-    try:
-        items = json.loads(raw)
-    except (ValueError, TypeError):
-        return raw, []  # invalid JSON is rejected later by validate_settings
-    if not isinstance(items, list):
-        return raw, []
-    kept, dropped = [], []
-    for item in items:
-        flag = item.get("flag") if isinstance(item, dict) else None
-        if isinstance(flag, str) and flag.split("=")[0].strip() in _IMPORT_BLOCKED_FLAGS:
-            dropped.append(flag)
-            continue
-        kept.append(item)
-    return (json.dumps(kept) if kept else None), dropped
 
 
 def settings_from_instance(inst) -> dict:
@@ -147,12 +126,6 @@ def sanitize_settings(raw: dict, *, trusted: bool) -> tuple[dict, list[str]]:
         if not trusted and key in _IMPORT_BLOCKED_TRUE_FLAGS and value is True:
             dropped.append(key)
             continue
-        if not trusted and key == "advanced_args":
-            cleaned, flags = _filter_advanced_args(value)
-            dropped.extend(flags)
-            if cleaned is None:
-                continue
-            value = cleaned
         out[key] = value
     return out, dropped
 
@@ -208,7 +181,6 @@ BUILTIN_PROFILES: list[dict] = [
             "reasoning_parser": "poolside_v1",
             "tool_parser": "poolside_v1",
             "enable_tool_choice": True,
-            "trust_remote_code": True,
         },
     },
     {
