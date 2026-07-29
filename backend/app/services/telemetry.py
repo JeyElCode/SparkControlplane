@@ -916,6 +916,25 @@ class TelemetryEngine:
             emit("spark_vllm_kv_cache_pct", "gauge", "KV-cache utilization percent.", il, m.kv_cache_pct)
             emit("spark_vllm_ttft_ms", "gauge", "Mean time-to-first-token, last window.", il, m.ttft_ms)
             emit("spark_vllm_e2e_latency_ms", "gauge", "Mean end-to-end request latency, last window.", il, m.e2e_ms)
+
+        # Gateway traffic, attributed per client. Cardinality is bounded by the
+        # number of issued API keys x live models — a handful either way — so
+        # labelling by both is safe here in a way it would not be for a public
+        # multi-tenant gateway.
+        from .gwstats import stats as gw
+        from .ratelimit import limiter
+
+        for (client, model_name), b in gw.totals.items():
+            gl = {"client": client, "model": model_name}
+            emit("spark_gateway_requests_total", "counter", "Gateway requests handled.", gl, b.requests)
+            emit("spark_gateway_errors_total", "counter", "Gateway requests answered non-2xx.", gl, b.errors)
+            emit("spark_gateway_rejected_total", "counter", "Gateway requests rejected (401/429).", gl, b.rejected)
+            if b.requests:
+                emit("spark_gateway_duration_ms_avg", "gauge", "Mean gateway request duration.", gl, round(b.duration_ms_total / b.requests, 1))
+            if b.ttfb_count:
+                emit("spark_gateway_ttfb_ms_avg", "gauge", "Mean time to first byte through the gateway.", gl, round(b.ttfb_ms_total / b.ttfb_count, 1))
+        for client, n in limiter.snapshot().items():
+            emit("spark_gateway_in_flight", "gauge", "Requests currently in flight per client.", {"client": client}, n)
         return "\n".join(lines) + "\n"
 
     def instance_history(self, minutes: int | None = None) -> list[InstanceHistory]:

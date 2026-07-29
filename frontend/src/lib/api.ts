@@ -607,6 +607,53 @@ export interface GatewayInfo {
   unavailable: GatewayRoute[];
 }
 
+export interface ApiKey {
+  id: number;
+  label: string;
+  prefix: string;
+  enabled: boolean;
+  max_concurrent?: number | null;
+  max_rpm?: number | null;
+  last_used_at?: string | null;
+  created_at: string;
+  in_flight: number;
+}
+
+/** Only ever returned by create — the token exists in exactly one response. */
+export interface ApiKeyCreated extends ApiKey {
+  token: string;
+}
+
+export interface GatewayTrafficRow {
+  client: string;
+  model: string;
+  requests: number;
+  errors: number;
+  rejected: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  avg_ms?: number | null;
+  avg_ttfb_ms?: number | null;
+}
+
+export interface GatewayRequest {
+  ts: number;
+  client: string;
+  model: string;
+  instance?: string | null;
+  status: number;
+  duration_ms: number;
+  ttfb_ms?: number | null;
+  streamed: boolean;
+  error?: string | null;
+}
+
+export interface GatewayTraffic {
+  since_start: GatewayTrafficRow[];
+  recent: GatewayRequest[];
+  in_flight: Record<string, number>;
+}
+
 export interface StatusSnapshot {
   setup_complete: boolean;
   qsfp_ok?: boolean | null;
@@ -782,6 +829,13 @@ export const api = {
   startInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/start`, { method: "POST" }),
   stopInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/stop`, { method: "POST" }),
   gatewayRoutes: () => j<GatewayInfo>("/api/gateway/routes"),
+  gatewayTraffic: () => j<GatewayTraffic>("/api/gateway/traffic"),
+  listApiKeys: () => j<ApiKey[]>("/api/gateway/keys"),
+  createApiKey: (body: { label: string; max_concurrent?: number | null; max_rpm?: number | null }) =>
+    j<ApiKeyCreated>("/api/gateway/keys", { method: "POST", body: JSON.stringify(body) }),
+  updateApiKey: (id: number, body: Partial<Pick<ApiKey, "label" | "enabled" | "max_concurrent" | "max_rpm">>) =>
+    j<ApiKey>(`/api/gateway/keys/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteApiKey: (id: number) => j<void>(`/api/gateway/keys/${id}`, { method: "DELETE" }),
   reconcileInstance: (id: number) => j<Instance>(`/api/instances/${id}/reconcile`, { method: "POST" }),
   reloadInstanceTls: (id: number, tls_cert: string, tls_key: string) =>
     j<JobAccepted>(`/api/instances/${id}/tls/reload`, { method: "POST", body: JSON.stringify({ tls_cert, tls_key }) }),

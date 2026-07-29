@@ -287,6 +287,7 @@ textarea { resize: vertical; min-height: 70px; font-family: var(--mono); }
 
 /* --- Misc --- */
 .muted { color: var(--text-dim); }
+.text-red { color: var(--red); }
 /* Small annotation next to a status badge (e.g. model-load progress). */
 .badge-note { font-size: 11.5px; color: var(--text-faint); }
 .faint { color: var(--text-faint); }

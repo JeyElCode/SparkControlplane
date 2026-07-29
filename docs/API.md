@@ -1,6 +1,6 @@
 # API Reference
 
-REST + WebSocket reference for the Spark Control Plane (v1.24.0). The API is
+REST + WebSocket reference for the Spark Control Plane (v1.25.0). The API is
 served by the FastAPI backend under the `/api` prefix; everything else is the
 built React SPA. All request and response bodies are JSON unless noted.
 
@@ -537,3 +537,29 @@ Get the current status snapshot:
 ```bash
 curl http://localhost:8080/api/status
 ```
+
+
+### Gateway API keys
+
+Per-client credentials for `/v1`. Managed under `/api` (portal session), never
+via the gateway bearer.
+
+| Method | Path | Description | Request | Response |
+|---|---|---|---|---|
+| GET | `/api/gateway/keys` | List keys (never the secrets) + live in-flight counts. | — | `ApiKeyOut[]` |
+| POST | `/api/gateway/keys` | Issue a key. **The only response that ever contains the token.** | `ApiKeyIn` | `201` `ApiKeyCreated` |
+| PATCH | `/api/gateway/keys/{id}` | Rename, revoke (`enabled: false`), or change limits. Effective on the next request. | `ApiKeyUpdate` | `ApiKeyOut` |
+| DELETE | `/api/gateway/keys/{id}` | Delete a key. | — | `204` |
+| GET | `/api/gateway/traffic` | Per-client traffic since portal start + recent requests + in-flight. | — | `GatewayTraffic` |
+
+**`ApiKeyIn`** — `label`, optional `max_concurrent`, `max_rpm` (null/0 = use the
+global default, which is unlimited).
+
+**`ApiKeyOut`** — `id`, `label`, `prefix` (`sk-spark-<8 hex>`), `enabled`,
+`max_concurrent`, `max_rpm`, `last_used_at`, `created_at`, `in_flight`.
+
+> Tokens are stored as SHA-256 digests and cannot be recovered. A lost key is
+> deleted and reissued, not retrieved.
+
+**Limits.** Over a cap returns `429` with `Retry-After` and a message naming the
+limit. Concurrency is counted per (client, instance).
