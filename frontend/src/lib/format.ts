@@ -44,6 +44,17 @@ export function timeAgo(iso?: string | null): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+/** How long an instance has been loading, with the previous load time for
+ * comparison when we know it. A big model legitimately takes minutes, so the
+ * operator needs "4m elapsed, last load took 6m" to judge slow vs stuck. */
+export function loadProgress(startedAt?: string | null, lastLoadSeconds?: number | null): string {
+  if (!startedAt) return "";
+  const elapsed = Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000));
+  const parts = [`${fmtUptime(elapsed)} elapsed`];
+  if (lastLoadSeconds) parts.push(`last load took ${fmtUptime(lastLoadSeconds)}`);
+  return parts.join(" · ");
+}
+
 export type BadgeKind = "green" | "amber" | "red" | "blue" | "gray";
 
 const STATUS_KIND: Record<string, BadgeKind> = {

@@ -1,6 +1,6 @@
 # API Reference
 
-REST + WebSocket reference for the Spark Control Plane (v1.23.0). The API is
+REST + WebSocket reference for the Spark Control Plane (v1.24.0). The API is
 served by the FastAPI backend under the `/api` prefix; everything else is the
 built React SPA. All request and response bodies are JSON unless noted.
 
@@ -178,7 +178,8 @@ container on one node (TP=1, mp backend) and requires a `node_id`.
 | POST | `` | Create an instance; defaults resolved from topology/model. | `InstanceIn` | `201` `InstanceOut` |
 | GET | `/{id}` | Get one instance. | — | `InstanceOut` |
 | PATCH | `/{id}` | Update runtime fields. | `InstanceUpdate` (partial) | `InstanceOut` |
-| POST | `/{id}/start` | Start (install + enable + start systemd unit). | — | `JobAccepted` |
+| POST | `/{id}/start` | Start (install + enable + start systemd unit). Leaves the instance `starting`; it becomes `running` only once `/health` is confirmed. `409` if a start/stop job is already in flight. | — | `JobAccepted` |
+| POST | `/{id}/reconcile` | Re-probe the unit + `/health` now and correct the recorded status (instead of waiting for the next observer tick). | — | `InstanceOut` |
 | POST | `/{id}/stop` | Stop the instance. | — | `JobAccepted` |
 | DELETE | `/{id}` | Job: stop, remove the systemd unit, drop the row. | — | `JobAccepted` |
 

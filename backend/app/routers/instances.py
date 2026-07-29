@@ -18,6 +18,7 @@ from ..models import (
     Node,
 )
 from ..schemas import InstanceIn, InstanceOut, InstanceUpdate, JobAccepted, TlsReloadIn
+from ..services import inst_state
 from ..services import instances as inst_svc
 from ..services.jobs import jobs
 
@@ -198,6 +199,13 @@ async def start_instance(instance_id: int, session: AsyncSession = Depends(get_s
     inst = await inst_svc.load_instance(session, instance_id)
     if inst is None:
         raise HTTPException(404, "Instance not found")
+    if (flight := inst_state.in_flight(instance_id)) is not None:
+        action, job_id = flight
+        raise HTTPException(
+            409,
+            f"A {action} job is already running for '{inst.name}' (job {job_id}). "
+            f"Wait for it to finish — starting twice would fight over the same unit.",
+        )
     name = inst.name
 
     async def coro(h):
@@ -206,6 +214,21 @@ async def start_instance(instance_id: int, session: AsyncSession = Depends(get_s
 
     job_id = await jobs.start("instance.start", f"Start {name}", coro, target=name)
     return JobAccepted(job_id=job_id, message="Start requested")
+
+
+@router.post("/{instance_id}/reconcile", response_model=InstanceOut)
+async def reconcile_instance(instance_id: int, session: AsyncSession = Depends(get_session)):
+    """Re-probe this instance and correct its recorded status immediately,
+    instead of waiting for the next observer tick. The escape hatch for when the
+    portal and reality disagree."""
+    inst = await inst_svc.load_instance(session, instance_id)
+    if inst is None:
+        raise HTTPException(404, "Instance not found")
+    from ..services.reconcile import reconciler
+
+    await reconciler.tick()
+    await session.refresh(inst)
+    return InstanceOut.of(inst)
 
 
 @router.post("/{instance_id}/tls/reload", response_model=JobAccepted)

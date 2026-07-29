@@ -38,6 +38,7 @@ from .routers import alerts as alerts_router
 from .routers import backup as backup_router
 from .routers import cluster as cluster_router
 from .routers import evals as evals_router
+from .routers import gateway as gateway_router
 from .routers import instances as instances_router
 from .routers import jobs as jobs_router
 from .routers import logs as logs_router
@@ -62,6 +63,7 @@ from .schemas import (
     EvalStarted,
     InstanceHistory,
     InstanceIn,
+    GatewayInfo,
     InstanceOut,
     InstanceUpdate,
     InterfaceInfo,
@@ -257,6 +259,21 @@ def build_mcp_server() -> "FastMCP":
     async def instance_start(instance_id: int) -> JobAccepted:
         """Start an instance (async job — poll job_get for progress)."""
         return await _with_session(instances_router.start_instance, instance_id=instance_id)
+
+    @mcp.tool()
+    async def gateway_routes() -> GatewayInfo:
+        """Which model names the /v1 gateway accepts right now, where each one
+        routes, and whether a bearer token is required. Use this to hand a
+        client a working config."""
+        return await _with_session(gateway_router.gateway_routes)
+
+    @mcp.tool()
+    async def instance_reconcile(instance_id: int) -> InstanceOut:
+        """Re-probe an instance's systemd unit and /health, and correct its
+        recorded status. Use when the portal and the node disagree."""
+        return await _with_session(
+            instances_router.reconcile_instance, instance_id=instance_id
+        )
 
     @mcp.tool()
     async def instance_stop(instance_id: int) -> JobAccepted:

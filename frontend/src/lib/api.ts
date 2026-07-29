@@ -410,6 +410,9 @@ export interface Instance {
   systemd_unit?: string | null;
   status: string;
   last_error?: string | null;
+  started_at?: string | null;
+  last_healthy_at?: string | null;
+  last_load_seconds?: number | null;
 }
 
 export interface InstanceInput {
@@ -573,12 +576,35 @@ export interface InstanceRuntimeStatus {
   instance_id: number;
   name: string;
   status: string;
+  node_id?: number | null;
   systemd_active?: boolean | null;
   health_ok?: boolean | null;
+  n_restarts?: number | null;
   served_model?: string | null;
   endpoint?: string | null;
   detail?: string | null;
   metrics?: InstanceMetrics | null;
+  started_at?: string | null;
+  last_healthy_at?: string | null;
+  last_load_seconds?: number | null;
+}
+
+export interface GatewayRoute {
+  model_name: string;
+  instance_id: number;
+  instance: string;
+  status: string;
+  node?: string | null;
+  healthy?: boolean | null;
+  confirmed_upstream?: boolean | null;
+}
+
+export interface GatewayInfo {
+  base_path: string;
+  auth_required: boolean;
+  token_configured: boolean;
+  routes: GatewayRoute[];
+  unavailable: GatewayRoute[];
 }
 
 export interface StatusSnapshot {
@@ -755,6 +781,8 @@ export const api = {
     j<Instance>(`/api/instances/${id}`, { method: "PATCH", body: JSON.stringify(i) }),
   startInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/start`, { method: "POST" }),
   stopInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/stop`, { method: "POST" }),
+  gatewayRoutes: () => j<GatewayInfo>("/api/gateway/routes"),
+  reconcileInstance: (id: number) => j<Instance>(`/api/instances/${id}/reconcile`, { method: "POST" }),
   reloadInstanceTls: (id: number, tls_cert: string, tls_key: string) =>
     j<JobAccepted>(`/api/instances/${id}/tls/reload`, { method: "POST", body: JSON.stringify({ tls_cert, tls_key }) }),
   deleteInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}`, { method: "DELETE" }),

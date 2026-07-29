@@ -40,7 +40,8 @@ def client(tmp_path, monkeypatch):
 
 
 def _seed_instance(name: str, status: str = "running", aliases: str | None = None,
-                   api_key: str | None = None) -> int:
+                   api_key: str | None = None, last_load_seconds: int | None = None,
+                   last_error: str | None = None) -> int:
     import app.db as db
     from app.crypto import encrypt
     from app.models import Instance, ModelRegistry, Node
@@ -61,7 +62,8 @@ def _seed_instance(name: str, status: str = "running", aliases: str | None = Non
             await s.flush()
             inst = Instance(name=name, model_id=model.id, topology="distributed",
                             status=status, port=18000, served_model_names=aliases,
-                            api_key_enc=encrypt(api_key) if api_key else None)
+                            api_key_enc=encrypt(api_key) if api_key else None,
+                            last_load_seconds=last_load_seconds, last_error=last_error)
             s.add(inst)
             await s.commit()
             return inst.id
@@ -108,7 +110,10 @@ def test_models_and_routing(client, monkeypatch):
 
     data = client.get("/v1/models").json()["data"]
     ids = {m["id"] for m in data}
-    assert ids == {"model-lag", "laguna", "lag-alias"}  # only RUNNING instances
+    # Aliases REPLACE the registry name: the unit launches with
+    # `--served-model-name laguna lag-alias`, so vLLM does not answer to
+    # "model-lag" and the gateway must not advertise or route it.
+    assert ids == {"laguna", "lag-alias"}
 
     record: dict = {}
     _fake_upstream(monkeypatch, record)
@@ -124,11 +129,51 @@ def test_models_and_routing(client, monkeypatch):
     # unknown model -> 404 listing what's live
     r = client.post("/v1/chat/completions", json={"model": "nope", "messages": []})
     assert r.status_code == 404 and "laguna" in r.json()["detail"]
+    # the registry name of an aliased instance is NOT routable — a clear 404
+    # from the portal beats a confusing 404 from vLLM itself
+    r = client.post("/v1/chat/completions", json={"model": "model-lag", "messages": []})
+    assert r.status_code == 404
     # model on a stopped instance -> 503
     r = client.post("/v1/chat/completions", json={"model": "model-stopped-one", "messages": []})
     assert r.status_code == 503 and "not running" in r.json()["detail"]
     # missing model field -> 422
     assert client.post("/v1/chat/completions", json={"messages": []}).status_code == 422
+
+
+def test_lifecycle_states_get_honest_errors(client):
+    """A client retrying a 3-minute model load is doing the right thing; one
+    retrying a crashed instance is not. The gateway must say which it is."""
+    _seed_instance("loading", status="starting", last_load_seconds=240)
+    _seed_instance("broken", status="error", last_error="CUDA out of memory")
+    _seed_instance("bye", status="stopping")
+
+    # still loading -> 503 that invites a retry, with a learned Retry-After
+    r = client.post("/v1/chat/completions", json={"model": "model-loading", "messages": []})
+    assert r.status_code == 503
+    assert "loading" in r.json()["detail"]
+    assert "4 min" in r.json()["detail"]  # learned from the last successful load
+    assert int(r.headers["Retry-After"]) == 240
+
+    # crashed -> 503 quoting the reason, and NO Retry-After (retrying won't help)
+    r = client.post("/v1/chat/completions", json={"model": "model-broken", "messages": []})
+    assert r.status_code == 503
+    assert "failed to start" in r.json()["detail"]
+    assert "CUDA out of memory" in r.json()["detail"]
+    assert "Retry-After" not in r.headers
+
+    r = client.post("/v1/chat/completions", json={"model": "model-bye", "messages": []})
+    assert r.status_code == 503 and "shutting down" in r.json()["detail"]
+
+
+def test_models_lists_only_health_confirmed_instances(client):
+    """/v1/models is a promise that a name is servable right now, so an
+    instance still loading its weights must not appear."""
+    _seed_instance("live")
+    _seed_instance("loading", status="starting")
+    _seed_instance("broken", status="error")
+
+    ids = {m["id"] for m in client.get("/v1/models").json()["data"]}
+    assert ids == {"model-live"}
 
 
 def test_streaming_passthrough(client, monkeypatch):

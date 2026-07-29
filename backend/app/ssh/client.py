@@ -91,12 +91,32 @@ class SSHClient:
         self._lock = asyncio.Lock()
 
     # --- connection lifecycle -------------------------------------------
+    def _live(self) -> bool:
+        """True when the cached connection is still usable. asyncssh keeps the
+        object around after the transport dies, so ``is not None`` alone would
+        hand out a dead connection forever — every later command would fail
+        until the portal restarted."""
+        return self._ssh is not None and not self._ssh.is_closed()
+
+    async def _discard(self) -> None:
+        """Drop a connection known to be dead so the next call reconnects."""
+        ssh, self._ssh = self._ssh, None
+        if ssh is not None:
+            ssh.abort()
+            try:
+                await ssh.wait_closed()
+            except Exception:  # noqa: BLE001 - already dead; best-effort
+                pass
+
     async def connect(self) -> None:
-        if self._ssh is not None:
+        if self._live():
             return
         async with self._lock:
-            if self._ssh is not None:
+            if self._live():
                 return
+            if self._ssh is not None:
+                # Cached but dead (sshd restart, network flap, node reboot).
+                await self._discard()
             settings = get_settings()
             opts: dict = dict(
                 host=self.conn.lan_ip,
@@ -192,8 +212,15 @@ class SSHClient:
                 await asyncio.wait_for(proc.wait(), timeout=timeout)
                 exit_status = proc.exit_status or 0
         except asyncio.TimeoutError as exc:
+            # The connection itself is usually fine (long-running command); leave
+            # it pooled rather than forcing a reconnect on every slow script.
             raise SSHError(f"Command timed out after {timeout}s on {self.conn.name}") from exc
-        except asyncssh.Error as exc:
+        except (OSError, asyncssh.Error) as exc:
+            # Transport-level failure: the pooled connection is unusable from
+            # here on. Drop it so the next call reconnects instead of failing
+            # forever. A non-zero *exit status* is not this — that is a healthy
+            # connection reporting a failed command, handled by `check` below.
+            await self._discard()
             raise SSHError(f"SSH command failed on {self.conn.name}: {exc}") from exc
 
         result = RunResult(exit_status, "\n".join(out_lines), "\n".join(err_lines))

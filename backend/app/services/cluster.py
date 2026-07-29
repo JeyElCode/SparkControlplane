@@ -116,7 +116,7 @@ async def update_image(
     cluster image, then (optionally) restart the Ray units and rolling-restart
     running instances so they pick it up. Instances pinned to their own
     ``vllm_image`` are left alone."""
-    from ..models import INST_RUNNING, Instance
+    from ..models import INST_ACTIVE_STATES, Instance
     from . import instances as inst_svc
     from .phases import _ray_node_count
 
@@ -174,7 +174,7 @@ async def update_image(
             insts = list(
                 (
                     await session.execute(
-                        select(Instance).where(Instance.status == INST_RUNNING)
+                        select(Instance).where(Instance.status.in_(INST_ACTIVE_STATES))
                     )
                 )
                 .scalars()

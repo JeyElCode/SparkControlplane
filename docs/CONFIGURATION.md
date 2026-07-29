@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This is the complete configuration reference for the Spark Control Plane (v1.23.0),
+This is the complete configuration reference for the Spark Control Plane (v1.24.0),
 the single-container FastAPI + React portal that automates a NVIDIA DGX Spark (up to 4-node)
 vLLM cluster.
 
@@ -83,6 +83,12 @@ In the **Role** column below:
 | `SPARK_USAGE_ROLLUP_SECONDS` | `usage_rollup_seconds` | `300` | Runtime fixed | Interval for persisting vLLM token/request counter rollups to the `usage_samples` table. |
 | `SPARK_USAGE_RETENTION_DAYS` | `usage_retention_days` | `90` | Runtime fixed | How long usage-history rows are kept before being purged. |
 | `SPARK_SCHEDULE_TICK_SECONDS` | `schedule_tick_seconds` | `60` | Runtime fixed | How often instance live-windows are evaluated. |
+| `SPARK_RECONCILE_ENABLED` | `reconcile_enabled` | `true` | Runtime fixed | Reconcile recorded instance status against the nodes (promote on a healthy `/health`, demote a dead instance to `error`). Kill switch. |
+| `SPARK_RECONCILE_TICK_SECONDS` | `reconcile_tick_seconds` | `10` | Runtime fixed | How often the status observer runs. Reads the telemetry caches; opens no SSH of its own. |
+| `SPARK_RECONCILE_START_DEADLINE_SECONDS` | `reconcile_start_deadline_seconds` | `1800` | Runtime fixed | How long an instance may be `starting` without ever going healthy before it is called failed. Generous on purpose — a large FP8 model takes many minutes to load; crash-loop and dead-unit detection catch real failures far sooner. |
+| `SPARK_RECONCILE_UNHEALTHY_SECONDS` | `reconcile_unhealthy_seconds` | `120` | Runtime fixed | How long a previously-healthy instance must fail `/health` before demotion, so one missed scrape doesn't flap it. |
+| `SPARK_RECONCILE_UNIT_DEAD_SECONDS` | `reconcile_unit_dead_seconds` | `45` | Runtime fixed | How long the systemd unit must read inactive/failed before demotion (must exceed the unit's `RestartSec`). |
+| `SPARK_RECONCILE_CRASHLOOP_RESTARTS` | `reconcile_crashloop_restarts` | `3` | Runtime fixed | Restarts observed while never once healthy before the instance is called a crash loop — the signal that catches an out-of-memory at model load. |
 | `SPARK_SCHEDULE_TZ` | `schedule_tz` | _system_ | Runtime fixed | IANA timezone schedule times are interpreted in (e.g. `Europe/Oslo`). |
 | `SPARK_SCHEDULE_RETRY_SECONDS` | — | `120` | Process | Backoff before re-issuing a scheduled start/stop whose job failed (max 5 attempts). |
 | `SPARK_NODE_INSTALL_DIR` | `node_install_dir` | `/opt/spark-controlplane` | Runtime fixed | Where helper scripts + systemd units are installed **on the nodes**. |

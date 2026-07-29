@@ -53,6 +53,13 @@ INST_RUNNING = "running"
 INST_STOPPING = "stopping"
 INST_ERROR = "error"
 
+# Occupies (or is about to occupy) GPU memory on its node — a shutdown kills it
+# and a fleet image update must restart it. "starting" covers the whole
+# install-and-load window, which for a large FP8 model is many minutes.
+INST_ACTIVE_STATES = (INST_STARTING, INST_RUNNING)
+# A control-plane job owns the row; the status observer must not overrule it.
+INST_INFLIGHT_STATES = (INST_STARTING, INST_STOPPING)
+
 # Job states
 JOB_PENDING = "pending"
 JOB_RUNNING = "running"
@@ -240,6 +247,17 @@ class Instance(Base):
     systemd_unit: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=INST_STOPPED)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Status reconciliation (see services/reconcile.py). `status` is a claim the
+    # portal makes; these three are the evidence behind it, and they must be
+    # durable so a portal restart mid-load doesn't lose the anchor and demote a
+    # perfectly healthy load. All nullable: pre-upgrade rows have no history.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_healthy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # How long the last successful start took to go green — turns "it's been 4
+    # minutes" into "it took 6 minutes last time" for both the UI and the
+    # gateway's Retry-After.
+    last_load_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

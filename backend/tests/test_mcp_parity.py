@@ -18,6 +18,7 @@ EXPECTED_NEW = [
     "backup_restore_s3", "backup_status",
     "storage_report", "storage_delete_orphan", "storage_clear_hf_cache",
     "image_tags", "image_update",
+    "instance_reconcile", "gateway_routes",
 ]
 
 
@@ -61,6 +62,7 @@ def test_read_tools_execute(mcp_server):
             ("backup_export", {}),
             ("schedule_list", {}),
             ("usage_get", {}),
+            ("gateway_routes", {}),
         ]:
             out[name] = await mcp_server.call_tool(name, args)
         return out
@@ -68,10 +70,15 @@ def test_read_tools_execute(mcp_server):
     results = asyncio.run(run())
 
     def payload(res):
-        # this SDK returns a list of TextContent blocks with JSON text
+        # Two shapes from this SDK: tools returning a pydantic model yield
+        # (content_blocks, structured_dict); others yield just the blocks,
+        # whose text is the JSON.
         import json
 
+        if isinstance(res, tuple):
+            return res[1]
         return json.loads(res[0].text)
 
     assert payload(results["backup_export"])["kind"] == "spark-controlplane-backup"
     assert 0 <= payload(results["schedule_now"])["weekday"] <= 6
+    assert payload(results["gateway_routes"])["base_path"] == "/v1"

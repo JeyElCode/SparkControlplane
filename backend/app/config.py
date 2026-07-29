@@ -160,6 +160,25 @@ class Settings(BaseSettings):
     schedule_tick_seconds: float = Field(default=60.0)
     schedule_tz: str = Field(default="")
     ssh_connect_timeout: int = Field(default=15)
+    # --- Instance status reconciliation (services/reconcile.py) -----------
+    # The observer that corrects `Instance.status` against what the nodes
+    # actually report, so the gateway stops routing to dead upstreams.
+    reconcile_enabled: bool = Field(default=True)  # kill switch
+    reconcile_tick_seconds: float = Field(default=10.0)
+    # How long an instance may be starting without ever going healthy before it
+    # is called failed. Large FP8 models legitimately take many minutes to load
+    # (Laguna-class ≈ 6-10 min), so this is deliberately generous — crash-loop
+    # and dead-unit detection catch real failures long before it expires.
+    reconcile_start_deadline_seconds: float = Field(default=1800.0)
+    # A previously-healthy instance must look dead this long before demotion,
+    # so a single missed scrape or a brief GC pause doesn't flap it to error.
+    reconcile_unhealthy_seconds: float = Field(default=120.0)
+    # A dead systemd unit is definite, but `Restart=on-failure` means a crash
+    # loop reads as "active" between restarts; hold it briefly (> RestartSec).
+    reconcile_unit_dead_seconds: float = Field(default=45.0)
+    # Restarts observed while never once healthy = crash loop (e.g. vLLM OOM at
+    # load). This is what catches an OOM in ~40s instead of 30 minutes.
+    reconcile_crashloop_restarts: int = Field(default=3)
     # Where helper scripts + systemd units are installed on the nodes.
     node_install_dir: str = Field(default="/opt/spark-controlplane")
 
