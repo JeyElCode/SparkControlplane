@@ -14,10 +14,36 @@ from ..config import get_settings
 from ..crypto import decrypt_cookie, encrypt
 from ..services import auth as auth_svc
 from ..services import oidc as oidc_svc
+from ..services import sessions as sessions_svc
 
 log = logging.getLogger("spark.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def cookie_secure(request: Request) -> bool:
+    """Resolve the Secure flag for this request.
+
+    Reading X-Forwarded-Proto directly is necessary, not sloppy: the image runs
+    uvicorn without --forwarded-allow-ips, so behind a k8s ingress the peer is
+    the ingress pod and uvicorn ignores forwarded headers — `request.url.scheme`
+    reads "http" in exactly the deployment where Secure matters.
+
+    Trusting that header *for this decision* is safe, which is unusual. The only
+    lie that matters is claiming http on an HTTPS deployment, and it rides on
+    the liar's own request, so it weakens only the liar's own cookie. Stripping
+    Secure from a *victim's* cookie would mean injecting headers into the
+    victim's request — i.e. already being on-path inside TLS.
+    """
+    mode = get_settings().auth_cookie_secure
+    if mode == "true":
+        return True
+    if mode == "false":
+        return False
+    if request.url.scheme == "https":
+        return True
+    fwd = request.headers.get("x-forwarded-proto", "")
+    return fwd.split(",")[0].strip().lower() == "https"
 
 
 class LoginIn(BaseModel):
@@ -77,15 +103,22 @@ async def login(payload: LoginIn, request: Request, response: Response):
         max_age=int(settings.auth_session_hours * 3600),
         httponly=True,
         samesite="lax",
-        secure=settings.auth_cookie_secure,
+        secure=cookie_secure(request),
         path="/",
     )
     return MeOut(auth_mode=mode, auth_required=True, authenticated=True, user=user)
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response):
     settings = get_settings()
+    # Deleting the cookie is a *request* to a cooperating browser: a copy taken
+    # beforehand keeps working until it expires. Kill the session properly. The
+    # request presenting the cookie tells us its own id, so no registry of
+    # issued sessions is needed.
+    claims = auth_svc.session_claims(request.cookies.get(auth_svc.COOKIE_NAME))
+    if claims and claims.get("jti"):
+        await sessions_svc.revoke_jti(claims["jti"], float(claims.get("exp", 0)))
     response.delete_cookie(auth_svc.COOKIE_NAME, path="/")
     redirect = None
     if settings.effective_auth_mode == "oidc":
@@ -115,7 +148,7 @@ def _require_oidc(settings) -> None:
 
 
 @router.get("/oidc/login")
-async def oidc_login(response: Response):
+async def oidc_login(request: Request):
     """Begin a sign-in: redirect to the provider with PKCE + state + nonce."""
     settings = get_settings()
     _require_oidc(settings)
@@ -140,7 +173,7 @@ async def oidc_login(response: Response):
         # provider, and Strict would not send this cookie — which is what pushes
         # people to SameSite=None. Do not.
         samesite="lax",
-        secure=settings.auth_cookie_secure,
+        secure=cookie_secure(request),
         path="/api/auth/oidc",
     )
     return redirect
@@ -207,7 +240,7 @@ async def oidc_callback(request: Request):
         max_age=int(auth_svc.session_seconds()),
         httponly=True,
         samesite="lax",
-        secure=settings.auth_cookie_secure,
+        secure=cookie_secure(request),
         path="/",
     )
     done.delete_cookie(TX_COOKIE, path="/api/auth/oidc")

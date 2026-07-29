@@ -36,7 +36,26 @@ class Settings(BaseSettings):
     auth_mode: str = Field(default="none")
     admin_user: str = Field(default="admin")
     auth_session_hours: float = Field(default=24.0)
-    auth_cookie_secure: bool = Field(default=False)  # set true when served over HTTPS
+    # "auto" (default) sets Secure when the request looks like HTTPS; "true"/
+    # "false" force it. Auto exists because this project has two audiences: a
+    # plain-HTTP homelab, where a forced Secure cookie is an unexplained login
+    # loop, and an HTTPS ingress, where the absence of Secure is a real weakness.
+    auth_cookie_secure: str = Field(default="auto")
+
+    @field_validator("auth_cookie_secure", mode="before")
+    @classmethod
+    def _norm_cookie_secure(cls, v):
+        # Accept the legacy booleans so existing deployments keep working.
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        text = str(v).strip().lower()
+        if text in ("auto", ""):
+            return "auto"
+        if text in ("1", "true", "yes", "on"):
+            return "true"
+        if text in ("0", "false", "no", "off"):
+            return "false"
+        raise ValueError("SPARK_AUTH_COOKIE_SECURE must be auto, true or false")
     # Bearer token that lets Prometheus scrape /metrics while auth is on.
     metrics_token: str | None = Field(default=None)
     # Bearer token for the /v1 API gateway (env override; the Settings-stored

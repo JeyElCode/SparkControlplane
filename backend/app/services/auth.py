@@ -13,6 +13,7 @@ encrypts secrets at rest, so no extra key management.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -44,18 +45,54 @@ class AuthError(Exception):
 # that minted it, so switching to SSO cannot be defeated by a cookie issued
 # under the old, weaker mode.
 SESSION_TYPE = "session"
-SESSION_VERSION = 2
+SESSION_VERSION = 3
+
+
+def config_fingerprint() -> str:
+    """A short digest of the credentials/authorization config.
+
+    Binding it into the session revokes every old cookie the moment that config
+    changes, with no stored state at all: `get_settings` is lru_cached, so
+    rotating SPARK_ADMIN_PASSWORD (or tightening the required group) already
+    requires a restart — and at that restart the old cookies simply stop
+    matching. Deliberately NOT cached: caching it on the settings object's id()
+    is a recycled-id bug that would silently stop revoking and pass every test
+    that doesn't reload.
+    """
+    settings = get_settings()
+    material = "\x1f".join(str(x) for x in (
+        settings.effective_auth_mode,
+        settings.admin_user,
+        settings.admin_password or "",
+        settings.ldap_url or "",
+        settings.ldap_group_required or "",
+        settings.oidc_issuer or "",
+        settings.oidc_client_id or "",
+        settings.oidc_group_required or "",
+    ))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
 def create_session(user: str, *, mode: str | None = None) -> str:
+    from . import sessions as sessions_svc
+
     settings = get_settings()
-    exp = time.time() + session_seconds()
+    now = time.time()
+    # Never mint a token that is already revoked. If the clock stepped backward
+    # (NTP correction, a bad RTC, a restored snapshot), `now` can land before a
+    # revocation cutoff — and then every fresh login is instantly dead and the
+    # portal becomes permanently unloggable-into with no way out but editing
+    # the database.
+    issued_at = max(now, sessions_svc.epoch_for(user) + 1.0)
     return encrypt(json.dumps({
         "t": SESSION_TYPE,
         "v": SESSION_VERSION,
         "m": mode or settings.effective_auth_mode,
         "u": user,
-        "exp": exp,
+        "iat": issued_at,
+        "jti": sessions_svc.new_jti(),
+        "c": config_fingerprint(),
+        "exp": issued_at + session_seconds(),
     }))
 
 
@@ -71,43 +108,90 @@ def session_seconds() -> float:
     return hours * 3600
 
 
-def parse_session(token: str | None) -> str | None:
-    """Username for a valid unexpired session token, else None. A cookie is
-    attacker-controlled input — any decrypt/parse failure is just "no session"."""
+def session_claims(token: str | None) -> dict | None:
+    """The validated claims of a session, or None. Same checks as
+    :func:`parse_session`, which is the thin wrapper over this."""
     if not token:
         return None
-    # decrypt_cookie, not decrypt: a tampered cookie is user input, not an
-    # operational fault, so it must not log at ERROR — and in oidc mode the
-    # unauthenticated callback decrypts attacker-supplied cookies, which would
-    # otherwise hand anyone a way to fill the log.
     raw = decrypt_cookie(token)
     if not raw:
         return None
     try:
         data = json.loads(raw)
-        if not isinstance(data, dict):
-            return None
-        if float(data.get("exp", 0)) < time.time():
-            return None
-        user = data.get("u")
-        if not (isinstance(user, str) and user):
-            return None
-        # v1 tokens (pre-1.27) carry no type/mode. Accept them ONLY while the
-        # mode they were minted under is still the one in force — otherwise
-        # enabling SSO would leave every password-mode cookie valid, which is
-        # precisely the downgrade SSO is meant to end. They age out within one
-        # session lifetime.
-        mode = get_settings().effective_auth_mode
-        if "t" in data or "v" in data:
-            if data.get("t") != SESSION_TYPE:
-                return None
-            if data.get("m") and data["m"] != mode:
-                return None
-        elif mode == "oidc":
-            return None
-        return user
     except (ValueError, TypeError):
         return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        if float(data.get("exp", 0)) < time.time():
+            return None
+    except (ValueError, TypeError):
+        return None
+    user = data.get("u")
+    if not (isinstance(user, str) and user):
+        return None
+    mode = get_settings().effective_auth_mode
+    if data.get("t") != SESSION_TYPE:
+        return None
+    if data.get("m") and data["m"] != mode:
+        return None
+    # v3 added revocation. Older tokens carry no jti/iat/fingerprint and so
+    # cannot be checked against any of it — reject them and make everyone log
+    # in once, rather than leave a class of session that is structurally
+    # unrevocable.
+    if data.get("v") != SESSION_VERSION:
+        return None
+    if data.get("c") != config_fingerprint():
+        return None
+    from . import sessions as sessions_svc
+
+    try:
+        issued_at = float(data.get("iat", 0))
+    except (ValueError, TypeError):
+        return None
+    if sessions_svc.is_revoked(user, data.get("jti"), issued_at):
+        return None
+    return data
+
+
+def parse_session(token: str | None) -> str | None:
+    """Username for a valid, unexpired, unrevoked session, else None. A cookie
+    is attacker-controlled input — every failure is just "no session"."""
+    claims = session_claims(token)
+    return claims.get("u") if claims else None
+
+
+def ws_session_valid(ws) -> bool:
+    """Is the session behind this WebSocket still good?
+
+    AuthMiddleware checks once, at the handshake. These streams then run for
+    hours — the dashboard holds one open for as long as the tab is — so without
+    a periodic re-check a revoked session keeps receiving live cluster
+    telemetry until the user closes the tab. Revocation that only applies to
+    *new* connections is not revocation.
+    """
+    if get_settings().effective_auth_mode == "none":
+        return True
+    return parse_session(ws.cookies.get(COOKIE_NAME)) is not None
+
+
+async def ws_revocation_watchdog(ws, interval: float = 15.0) -> None:
+    """Close ``ws`` once its session stops being valid.
+
+    For streams whose main loop blocks on ``ws.receive()`` and therefore never
+    ticks on its own. Run it as a sibling task and cancel it in the same finally
+    that tears the stream down.
+    """
+    import asyncio as _asyncio
+
+    while True:
+        await _asyncio.sleep(interval)
+        if not ws_session_valid(ws):
+            try:
+                await ws.close(code=4401)
+            except Exception:  # noqa: BLE001 - already gone
+                pass
+            return
 
 
 # --- login throttle -------------------------------------------------------

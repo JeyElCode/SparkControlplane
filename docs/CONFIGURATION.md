@@ -1,6 +1,6 @@
 # Configuration Reference
 
-This is the complete configuration reference for the Spark Control Plane (v1.27.0),
+This is the complete configuration reference for the Spark Control Plane (v1.28.0),
 the single-container FastAPI + React portal that automates a NVIDIA DGX Spark (up to 4-node)
 vLLM cluster.
 
@@ -47,7 +47,7 @@ In the **Role** column below:
 | `SPARK_ADMIN_USER` | `admin_user` | `admin` | Process | Username for `password` mode. |
 | `SPARK_ADMIN_PASSWORD` | `admin_password` | _none_ | Process | Password for `password` mode (required for that mode). |
 | `SPARK_AUTH_SESSION_HOURS` | `auth_session_hours` | `24` | Process | Session cookie lifetime. |
-| `SPARK_AUTH_COOKIE_SECURE` | `auth_cookie_secure` | `false` | Process | Set `true` when the portal is served over HTTPS. |
+| `SPARK_AUTH_COOKIE_SECURE` | `auth_cookie_secure` | `auto` | Process | `auto` sets the cookie's Secure flag when the request is HTTPS (reading `X-Forwarded-Proto`, because behind an ingress uvicorn sees plain HTTP from the ingress pod — exactly where Secure matters). `true`/`false` force it; existing boolean values still parse. Settings → Sessions shows what the current request resolved to, so a mis-set proxy is visible instead of a mysterious login loop. |
 | `SPARK_METRICS_TOKEN` | `metrics_token` | _none_ | Process | Bearer token allowing Prometheus to scrape `/metrics` while auth is on. |
 | `SPARK_GATEWAY_TOKEN` | `gateway_token` | _none_ | Process | Bearer token for the `/v1` API gateway while auth is on (overrides the Settings-stored token). |
 | `SPARK_LDAP_URL` | `ldap_url` | _none_ | Process | `ldap://host:389` or `ldaps://host:636` (required for `ldap` mode). |

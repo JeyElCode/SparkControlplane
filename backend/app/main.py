@@ -36,6 +36,7 @@ from .routers import (
     power,
     profiles,
     schedules,
+    sessions as sessions_router,
     status,
     storage,
     usage,
@@ -92,7 +93,7 @@ async def lifespan(app: FastAPI):
     from .services.backup import runner as backup_runner
     from .services.reconcile import reconciler as status_reconciler
     from .services.gwstats import gw_collector
-    from .services import apikeys
+    from .services import apikeys, sessions
 
     # Load the gateway key -> principal map before serving: verification is a
     # dict lookup on every request, never a DB round trip.
@@ -102,6 +103,14 @@ async def lifespan(app: FastAPI):
             log.info("loaded %d gateway API key(s)", n_keys)
     except Exception:  # noqa: BLE001 - never block startup on this
         log.exception("could not load gateway API keys")
+    # Deliberately NOT in a try/except, unlike the key cache above. The
+    # polarities are opposite: an unloaded key map denies everything (safe), an
+    # unloaded revocation list would ALLOW everything — silently un-revoking
+    # every revoked session. A portal that cannot read this must refuse to
+    # start, loudly, rather than serve with the safety off.
+    n_revocations = await sessions.load()
+    if n_revocations:
+        log.info("loaded %d session revocation rule(s)", n_revocations)
     gw_collector.start()
     telemetry_engine.start()
     # Reads the telemetry caches, so it starts after the engine and stops first.
@@ -156,7 +165,7 @@ app.add_middleware(AuthMiddleware)
 if settings.effective_auth_mode != "none":
     log.info("Portal auth is ON (mode=%s)", settings.effective_auth_mode)
 
-for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage, gateway, profiles):
+for r in (nodes, cluster, models, instances, status, playground, jobs, evals, power, logs, alerts, auth, usage, schedules, backup, storage, gateway, profiles, sessions_router):
     app.include_router(r.router)
 # The loop only picks up attributes named `router`; the gateway also exposes an
 # operator-facing /api view guarded by the normal portal session.

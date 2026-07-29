@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.28.0 — sessions you can actually end
+- **Signing out now revokes.** Before this, `logout` only deleted the cookie —
+  which is a *request* to a cooperating browser. A copy taken beforehand kept
+  working until it expired, and there was no action an operator could take at
+  all. Logout now kills that specific session server-side, effective on the
+  very next request.
+- **"Sign out all my sessions" and "Sign out a user"** in Settings → Sessions,
+  for a suspected leak or an offboarding, plus a "sign out everyone" panic
+  button. None of it is undone by a restart, a GitOps sync, or a backup restore
+  — `session_revocations` is deliberately excluded from the backup bundle,
+  because a restore replaces tables wholesale and a month-old bundle would
+  otherwise resurrect a session revoked last week.
+- **Rotating `SPARK_ADMIN_PASSWORD` invalidates every old session by itself**,
+  with no stored state and nothing to click: the session carries a fingerprint
+  of the credential config, and because settings are cached a rotation already
+  requires a restart. Tightening a required group does the same.
+- **In-flight WebSockets are re-checked.** The status, log and job streams
+  authenticated once at the handshake and then ran for hours — the dashboard
+  holds one open for as long as the tab is. A revoked session kept receiving
+  live cluster telemetry until the user closed the browser. Revocation that
+  applies only to *new* connections is not revocation.
+- **`SPARK_AUTH_COOKIE_SECURE` is now `auto` by default** (`true`/`false` still
+  force it, and existing boolean values still parse). Auto sets Secure when the
+  request is HTTPS, reading `X-Forwarded-Proto` because behind an ingress
+  uvicorn sees plain HTTP from the ingress pod — i.e. exactly the deployment
+  where Secure matters. Settings → Sessions shows what the current request
+  resolved to, so a mis-set proxy is visible rather than a mysterious login
+  loop.
+- **Everyone signs in once after this upgrade.** Older cookies carry no session
+  id or issue time, so they cannot be checked against any of this; rather than
+  leave a class of session that is structurally unrevocable, they are rejected.
+- Two failure modes worth naming, because both would otherwise be discovered in
+  production. An unloaded revocation list **denies** rather than allows — the
+  opposite polarity to the API-key cache, since an unloaded list that said "no"
+  would silently un-revoke everything — so the portal refuses to start if it
+  can't read it. And a **backward clock step** (NTP correction, bad RTC,
+  restored snapshot) would otherwise make every freshly minted session land
+  before an existing revocation cutoff, leaving the portal permanently
+  unloggable-into with no fix but editing the database; new sessions are now
+  issued after any cutoff that applies to them.
+- **The honest guarantee, in one sentence:** you can end any portal session
+  from the portal, it takes effect on the next request and survives a restart —
+  but the portal still never asks your directory anything after sign-in, so an
+  account disabled in Entra or LDAP keeps access here until someone presses one
+  of these buttons or the 8-hour SSO session cap expires.
+- New: `GET /api/sessions`, `POST /api/sessions/revoke`; MCP `session_status`
+  and `session_revoke`. One new table (`session_revocations`), created
+  automatically.
+
 ## v1.27.0 — single sign-on (OIDC)
 - **`SPARK_AUTH_MODE=oidc`**: authorization code + PKCE against Entra ID,
   Keycloak or Okta. The portal never sees a password — MFA and conditional

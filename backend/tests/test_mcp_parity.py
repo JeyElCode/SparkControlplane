@@ -21,6 +21,7 @@ EXPECTED_NEW = [
     "instance_reconcile", "gateway_routes",
     "gateway_traffic", "gateway_key_list", "gateway_key_revoke",
     "profile_list", "profile_create", "profile_from_instance", "profile_export",
+    "session_revoke", "session_status",
 ]
 
 

@@ -266,6 +266,46 @@ class Instance(Base):
     node: Mapped[Node | None] = relationship()
 
 
+class SessionRevocation(Base):
+    """A session, or a user's whole set of sessions, that must stop working.
+
+    Sessions are stateless encrypted cookies, so there is nothing to delete —
+    revocation has to be a rule that ``parse_session`` consults. Two kinds:
+
+    * ``jti`` — one specific session (an explicit logout). The request that
+      presents the cookie tells us its own id, so no registry of issued
+      sessions is needed, and the row can be dropped once that token would have
+      expired anyway.
+    * ``epoch`` — every session for ``subject`` issued before ``not_before``
+      ("sign out everywhere", a suspected leak, offboarding). ``subject=""`` is
+      the global form. One row per revoked user: growth is bounded by the
+      number of users, not by traffic or time.
+
+    Deliberately **not** in the backup bundle: a restore replaces listed tables
+    wholesale, so including this would let a month-old bundle un-revoke a
+    session that was revoked last week.
+    """
+
+    __tablename__ = "session_revocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(8))          # "epoch" | "jti"
+    subject: Mapped[str] = mapped_column(String(128), index=True)  # username, "" = all, or jti
+    # Sessions issued before this instant are dead. For a jti row this is just
+    # the point after which the row itself can be swept.
+    not_before: Mapped[float] = mapped_column(Float)
+    # For a jti row: when the token it kills expires on its own, after which
+    # the row is inert and gets swept. Epoch rows use 0 and are kept forever —
+    # growth is bounded by "distinct users ever revoked", which for this
+    # deployment is a handful, and an expiry bound that has to be *derived* is
+    # one more thing to get subtly wrong.
+    expires_at: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # One time representation in a security table, deliberately: a naive/aware
+    # datetime mixup is exactly how a comparison silently inverts.
+    created_at: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 class ServeProfile(Base):
     """A named, reusable set of vLLM serve settings for a model.
 

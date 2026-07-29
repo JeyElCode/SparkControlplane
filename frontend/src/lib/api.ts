@@ -609,6 +609,15 @@ export interface GatewayInfo {
   unavailable: GatewayRoute[];
 }
 
+export interface RevocationStatus {
+  loaded: boolean;
+  global_not_before?: number | null;
+  users: { username: string; not_before: number }[];
+  revoked_session_count: number;
+  cookie_secure_mode: string;
+  cookie_secure_effective: boolean;
+}
+
 export interface ServeProfile {
   id: number;
   name: string;
@@ -852,6 +861,11 @@ export const api = {
     j<Instance>(`/api/instances/${id}`, { method: "PATCH", body: JSON.stringify(i) }),
   startInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/start`, { method: "POST" }),
   stopInstance: (id: number) => j<JobAccepted>(`/api/instances/${id}/stop`, { method: "POST" }),
+  sessionStatus: () => j<RevocationStatus>("/api/sessions"),
+  revokeSessions: (body: { username?: string; everyone?: boolean; reason?: string }) =>
+    j<{ subject: string; not_before: number; detail: string }>("/api/sessions/revoke", {
+      method: "POST", body: JSON.stringify(body),
+    }),
   listProfiles: () => j<ServeProfile[]>("/api/profiles"),
   createProfile: (body: { name: string; description?: string | null; repo_id?: string | null; settings: Record<string, any> }) =>
     j<ServeProfile>("/api/profiles", { method: "POST", body: JSON.stringify(body) }),

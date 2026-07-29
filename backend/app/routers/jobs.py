@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..db import SessionLocal, get_session
+from ..services import auth as auth_svc
 from ..models import Job
 from ..schemas import JobDetail, JobOut
 from ..services.jobs import jobs as job_mgr
@@ -86,6 +87,11 @@ async def stream_logs(ws: WebSocket, job_id: int):
         # authoritative job state and ends the stream once it is terminal and we
         # have sent every persisted log line.
         while True:
+            # The loop wakes at least every 5s, so re-check here rather than
+            # letting a revoked session keep streaming job output.
+            if not auth_svc.ws_session_valid(ws):
+                await ws.close(code=4401)
+                return
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=5.0)
             except asyncio.TimeoutError:

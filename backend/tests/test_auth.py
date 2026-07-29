@@ -9,6 +9,22 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def _load_revocations() -> None:
+    """Establish the invariant the app lifespan provides.
+
+    `sessions.is_revoked` answers "yes" until the revocation list has been
+    loaded — an unloaded list that said "no" would silently un-revoke every
+    revoked session. Tests that call create_session/parse_session directly get
+    no lifespan, so they must load it themselves.
+    """
+    import asyncio
+
+    from app.services import sessions
+
+    sessions.reset_for_tests()
+    asyncio.run(sessions.load())
+
+
 def _fresh_client(tmp_path, monkeypatch, **env):
     monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
     for k, v in env.items():
@@ -22,6 +38,11 @@ def _fresh_client(tmp_path, monkeypatch, **env):
     import app.main as main
 
     importlib.reload(main)
+    # Module-level revocation state is NOT reset by importlib.reload(main), so
+    # without this a "restart" in one test leaks into the next.
+    from app.services import sessions
+
+    sessions.reset_for_tests()
     return TestClient(main.app)
 
 
@@ -102,6 +123,13 @@ def test_session_expiry_and_tamper(tmp_path, monkeypatch):
     import app.config as config
 
     config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    import asyncio
+
+    asyncio.run(db.init_db())
+    _load_revocations()
     from app.services.auth import create_session, parse_session
 
     token = create_session("jorgen")
