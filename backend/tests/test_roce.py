@@ -118,20 +118,72 @@ def test_no_blank_line_inside_the_docker_run(name):
 
 
 @pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
-def test_launch_degrades_to_tcp_when_the_host_has_no_rdma(tmp_path):
-    """No /dev/infiniband must mean a normal TCP launch, not a failure.
+def test_launch_succeeds_whatever_rdma_the_host_has(tmp_path):
+    """A node with no RoCE has to keep working exactly as it does today.
 
-    A node with no RoCE has to keep working exactly as it does today; this
-    feature is an optimisation, and an optimisation that stops a cluster from
-    serving is a regression.
+    Deliberately asserts only what is true on BOTH kinds of host, because this
+    test runs on CI machines and developer laptops whose /dev/infiniband we do
+    not control. An earlier version asserted the "no devices" diagnostic
+    appeared on stderr; that passed locally and failed on the runner, which is
+    a test coupled to its environment rather than to the behaviour. The
+    behaviour is: the launch works either way, and `--device` appears only when
+    there is a device to map.
     """
     script = ALL_RENDERS["distributed-head"](roce_hca="rocep1s0f1:1", roce_gid_index="3")
     res = _run_script(tmp_path, script)
-    assert res.returncode == 0
-    assert "img:1" in res.stdout
-    assert "no /dev/infiniband devices" in res.stderr
-    # No --device flags were emitted, because none exist on this host.
-    assert "ARG:--device" not in res.stdout
+    args = [ln[4:] for ln in res.stdout.splitlines() if ln.startswith("ARG:")]
+
+    assert res.returncode == 0, res.stderr
+    assert "img:1" in args, "the launch must reach docker with an image either way"
+    assert "NCCL_IB_HCA=rocep1s0f1:1" in args
+    assert "NCCL_IB_GID_INDEX=3" in args
+
+    # --device is only legitimate when a real char device backs it.
+    for i, a in enumerate(args):
+        if a == "--device":
+            path = args[i + 1].split(":")[0]
+            assert os.path.exists(path), f"mapped a device that does not exist: {path}"
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_device_discovery_maps_what_is_there_and_nothing_else(tmp_path):
+    """The preflight logic itself, against a directory we control.
+
+    Testing it here rather than through a rendered script keeps it independent
+    of the host's real /dev/infiniband, which is what made the previous version
+    of this test flaky.
+    """
+    fake = tmp_path / "ib"
+    fake.mkdir()
+    # /dev/null is a char device, so it stands in for a verbs node.
+    (fake / "uverbs0").symlink_to("/dev/null")
+    (fake / "notachardevice").write_text("x")
+
+    snippet = t._RDMA_PREFLIGHT.replace("/dev/infiniband", str(fake))
+    probe = f"{snippet}\nprintf '%s\\n' \"${{RDMA_ARGS[@]+${{RDMA_ARGS[@]}}}}\"\n"
+    script = tmp_path / "p.sh"
+    script.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + probe)
+    res = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=60)
+
+    assert res.returncode == 0, res.stderr
+    out = res.stdout
+    assert "uverbs0" in out, "an existing char device must be mapped"
+    assert "notachardevice" not in out, "a regular file must not be mapped as a device"
+    assert "IPC_LOCK" in out, "capability is added when any device is mapped"
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_device_discovery_emits_nothing_when_there_is_nothing(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    snippet = t._RDMA_PREFLIGHT.replace("/dev/infiniband", str(empty))
+    probe = f"{snippet}\nprintf 'COUNT=%d\\n' \"${{#RDMA_ARGS[@]}}\"\n"
+    script = tmp_path / "p.sh"
+    script.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + probe)
+    res = subprocess.run(["bash", str(script)], capture_output=True, text=True, timeout=60)
+
+    assert res.returncode == 0, res.stderr
+    assert "COUNT=0" in res.stdout, "no devices must mean no flags, not a failure"
 
 
 def test_roce_env_only_when_both_values_are_known():
