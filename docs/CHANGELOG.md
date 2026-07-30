@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.31.0 — the fast interconnect is actually used
+
+- **Multi-node tensor parallelism now runs its all-reduce over RoCE instead of
+  TCP.** On a two-Spark pair a 900-token generation was pushing 5.7 GB over TCP
+  with the RDMA counters flat at zero, and decoding at ~27 tok/s against a
+  ~66 tok/s reference. The cause was not a missing setting but a missing
+  *device*: NCCL opens `/dev/infiniband/uverbs*` through libibverbs, and the
+  container was never given them. `--network host` shares the network
+  namespace, not `/dev`. `NCCL_IB_HCA` on its own would not have helped — it
+  filters an already-enumerated device list, and the list was empty, so NCCL
+  fell back to sockets without an error. The portal now discovers the RDMA
+  device and the matching RoCE v2 GID index for the interconnect, maps the
+  verbs devices in, and sets `NCCL_IB_HCA` / `NCCL_IB_GID_INDEX`. The Ray
+  topology gets the same treatment.
+- **It degrades rather than failing.** A node with no RDMA, an unreachable
+  node, a probe that times out — the instance starts over TCP exactly as
+  before, and the job log says which of those happened and what to check.
+  Devices are discovered at launch rather than written into the script, because
+  `uverbs` numbering is not stable across reboots and a stale device path would
+  turn a node that served fine into a crash loop.
+- **Per-instance environment variables**, so `NCCL_*`, `VLLM_*` and `HF_*`
+  settings no longer require building a custom image. Editable on the instance
+  form; refused on `cluster` topology, where they would reach only the rank-0
+  driver and not the Ray workers. Never accepted from an imported serve profile
+  — `LD_PRELOAD` in a stranger's JSON is root code execution on a DGX.
+- **Fixed: the arm64 image was never actually tested.** The check added in
+  v1.30.0 reported success having executed none of its assertions, because
+  `docker run` does not attach stdin without `-i`. It now runs, and greps for a
+  sentinel so that a check which cannot execute fails loudly instead of passing
+  quietly.
+
+If you run a `cluster`-topology instance, re-run the **Ray setup phase** after
+upgrading: restarting an instance execs into the existing Ray container, which
+was launched without the verbs devices, so the counters would stay at zero.
+
+Two prerequisites this cannot establish for you, both of which produce the same
+silent TCP fallback: the vLLM image must ship rdma-core (`libibverbs`), and the
+RoCE port must be ACTIVE with an IP configured on the interconnect. The job log
+reports what the probe found.
+
 ## v1.30.0 — the portal does the arithmetic
 
 A control plane that asks the same questions as the command line has not earned
