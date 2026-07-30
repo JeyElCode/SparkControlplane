@@ -92,7 +92,12 @@ jobs:
           set -euo pipefail
           IMAGE="ghcr.io/jeyelcode/spark-controlplane:${GITHUB_REF_NAME}"
           echo "Verifying $IMAGE runs as linux/arm64 under emulation…"
-          docker run --rm --platform linux/arm64 --entrypoint python "$IMAGE" - <<'PY'
+
+          # `-i` is load-bearing: without it docker does not attach stdin, so
+          # `python -` reads EOF, runs nothing and exits 0. The v1.30.0 release
+          # passed this step having executed none of it.
+          OUTPUT=$(docker run -i --rm --platform linux/arm64 \
+                     --entrypoint python "$IMAGE" - <<'PY'
           import pathlib, platform, sys
 
           # The interpreter itself proves the image is really aarch64: a
@@ -129,4 +134,15 @@ jobs:
 
           print("app imports OK, version", __version__, flush=True)
           print(f"dist OK: index.html + {len(assets)} bundle(s)", flush=True)
+          print("SMOKE-OK", flush=True)
           PY
+          )
+          echo "$OUTPUT"
+
+          # A checked assertion is worthless if the thing asserting can silently
+          # not run. The sentinel is the guard on the guard: if the script never
+          # executes for ANY reason, there is no SMOKE-OK and this step fails.
+          echo "$OUTPUT" | grep -q '^SMOKE-OK$' || {
+            echo "::error::the arm64 smoke test produced no SMOKE-OK sentinel — it did not actually run"
+            exit 1
+          }
