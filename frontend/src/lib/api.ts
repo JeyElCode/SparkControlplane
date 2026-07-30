@@ -420,7 +420,9 @@ export interface Instance {
   tokenizer_mode?: string | null;
   reasoning_parser?: string | null;
   compilation_config?: string | null; // JSON string → --compilation-config
-  advanced_args?: string | null; // JSON array string of {flag,value|null}
+  advanced_args?: string | null;
+  /** Per-instance container env. Refused on `cluster` topology. */
+  env_vars?: Record<string, string> | null; // JSON array string of {flag,value|null}
   master_port?: number | null; // distributed only → --master-port
   extra_args?: string | null; // legacy raw passthrough
   vllm_image?: string | null; // per-instance image override (else cluster image)
@@ -459,6 +461,8 @@ export interface InstanceInput {
   reasoning_parser?: string | null;
   compilation_config?: string | null;
   advanced_args?: string | null;
+  /** Per-instance container env. Refused on `cluster` topology. */
+  env_vars?: Record<string, string> | null;
   master_port?: number | null; // empty = auto-assign
   extra_args?: string | null;
   vllm_image?: string | null; // per-instance image override (else cluster image)

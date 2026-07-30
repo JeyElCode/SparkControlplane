@@ -59,6 +59,7 @@ PROFILE_FIELDS: tuple[str, ...] = (
     "advanced_args",
     "vllm_image",
     "extra_args",
+    "env_vars",
 )
 
 # Dropped when a profile arrives from OUTSIDE this portal. Both reach a remote
@@ -84,6 +85,11 @@ IMPORT_BLOCKED_FIELDS: frozenset[str] = frozenset({
     # of them by hand on their own profile, where they are the author.
     "advanced_args",
     "compilation_config",
+    # Environment reaches the container directly: LD_PRELOAD, PYTHONSTARTUP or
+    # BASH_ENV in a stranger's profile is arbitrary code as root on a DGX, and
+    # HF_ENDPOINT silently redirects every weight download. Settable by hand on
+    # your own instance, never accepted from an import.
+    "env_vars",
 })
 
 # Legitimate on a profile you wrote; refused from one you were sent, because it
@@ -212,3 +218,13 @@ BUILTIN_PROFILES: list[dict] = [
         },
     },
 ]
+
+
+# Being in IMPORT_BLOCKED_FIELDS only blocks anything if the name is also in
+# PROFILE_FIELDS: sanitize_settings drops unknown keys first, so a name that is
+# blocked but not known is a no-op that silently looks like protection. A
+# spelling drift between the two tuples is exactly how that happens.
+assert IMPORT_BLOCKED_FIELDS <= set(PROFILE_FIELDS), (
+    "IMPORT_BLOCKED_FIELDS contains a name that is not a PROFILE_FIELDS name, "
+    "so it blocks nothing: " + repr(IMPORT_BLOCKED_FIELDS - set(PROFILE_FIELDS))
+)
