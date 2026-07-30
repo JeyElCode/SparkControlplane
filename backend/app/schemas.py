@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import models as m
 
@@ -621,6 +621,70 @@ class ModelOut(BaseModel):
         )
 
 
+
+# Env-var names allowed into a container. `fullmatch` is deliberate: with a `$`
+# anchor, "NCCL_DEBUG\n" passes, because Python's `$` matches before a trailing
+# newline — and a newline in a key truncates the generated docker-run command.
+_ENV_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+MAX_ENV_VARS = 64
+
+
+def _v_env_vars(v):
+    """Validate a per-instance environment map.
+
+    This is operator-set configuration, not untrusted input — whoever can set
+    it can already choose the container image — so the rules exist to keep the
+    generated artifacts well-formed, not to contain a hostile operator.
+
+    Newlines are rejected in values as well as keys. For the script path a
+    newline merely truncates a command, but a `cluster`-topology instance is
+    launched from a systemd `ExecStart=` line, and systemd's parser is
+    line-based: a value containing a newline followed by `ExecStartPre=...`
+    becomes a *second directive*, which is root code execution outside the
+    container that no amount of shell quoting would prevent.
+    """
+    if v is None:
+        return None
+    if not isinstance(v, dict):
+        raise ValueError("env must be an object of KEY: VALUE pairs")
+    if len(v) > MAX_ENV_VARS:
+        raise ValueError(f"at most {MAX_ENV_VARS} environment variables")
+    out: dict[str, str] = {}
+    for key, value in v.items():
+        key = str(key)
+        if not _ENV_KEY_RE.match(key):
+            raise ValueError(
+                f"invalid environment variable name {key!r}: use letters, digits "
+                "and underscore, starting with a letter or underscore"
+            )
+        # Coerce nothing: True -> "True" is a real NCCL footgun, and silently
+        # turning it into a string hides the mistake until the model is loaded.
+        if not isinstance(value, str):
+            raise ValueError(
+                f"value for {key} must be a string (got {type(value).__name__})"
+            )
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"value for {key} must not contain a newline")
+        if len(value) > 4096:
+            raise ValueError(f"value for {key} is too long (max 4096 characters)")
+        out[key] = value
+    return out
+
+
+def _parse_env_json(raw: str | None) -> dict[str, str] | None:
+    """Stored JSON -> dict for the API. Tolerant: a malformed value must not
+    make the whole instance unreadable."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {str(k): str(v) for k, v in data.items()}
+
+
 # --- Serve planning ------------------------------------------------------
 class PlanIn(BaseModel):
     model_id: int
@@ -687,7 +751,37 @@ class InstanceIn(BaseModel):
     tool_parser: str | None = None  # auto-mapped if None and enable_tool_choice
     served_model_names: str | None = None  # space/newline-separated aliases; ≥1 wins
     compilation_config: str | None = None  # JSON string, validated
-    advanced_args: str | None = None       # JSON array of {flag, value}
+    advanced_args: str | None = None
+    # Per-instance container environment. See _v_env_vars for why newlines are
+    # refused and services/profiles.py for why this is never accepted from an
+    # imported profile.
+    env_vars: dict[str, str] | None = None
+
+    @field_validator("env_vars")
+    @classmethod
+    def _check_env_vars(cls, v):
+        return _v_env_vars(v)
+
+    @model_validator(mode="after")
+    def _env_not_on_cluster(self):
+        """Refuse env on `cluster` topology.
+
+        Two independent reasons. Functionally it would not work: a cluster
+        instance is `docker exec`ed into the long-lived Ray head container, so
+        the variables would reach the rank-0 driver only, never the Ray worker
+        actors that do the other half of the all-reduce — a setting that
+        appears to apply and silently does not. And structurally the exec runs
+        from a systemd `ExecStart=` line, where a value is one newline away
+        from becoming a second unit directive executed as root on the host.
+        Use `distributed` topology, which launches its own container per node.
+        """
+        if self.env_vars and self.topology == "cluster":
+            raise ValueError(
+                "Per-instance environment is not supported on 'cluster' topology "
+                "(the instance runs inside the shared Ray container). Use "
+                "'distributed' topology, or set the variable on the Ray cluster."
+            )
+        return self       # JSON array of {flag, value}
     master_port: int | None = None         # distributed rendezvous port (None = auto)
     extra_args: str | None = None          # legacy raw passthrough
     vllm_image: str | None = None          # per-instance image override (else cluster image)
@@ -788,6 +882,7 @@ class InstanceOut(BaseModel):
     served_model_names: str | None
     compilation_config: str | None
     advanced_args: str | None
+    env_vars: dict[str, str] | None = None
     master_port: int
     extra_args: str | None
     vllm_image: str | None
@@ -831,6 +926,7 @@ class InstanceOut(BaseModel):
             served_model_names=inst.served_model_names,
             compilation_config=inst.compilation_config,
             advanced_args=inst.advanced_args,
+            env_vars=_parse_env_json(inst.env_vars),
             master_port=inst.master_port,
             extra_args=inst.extra_args,
             vllm_image=inst.vllm_image,

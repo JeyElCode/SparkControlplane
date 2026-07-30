@@ -15,6 +15,8 @@ Each instance is a systemd unit so it survives reboots when autostart is on.
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
 import shlex
 
@@ -42,6 +44,8 @@ from . import inst_state, nodeops, templates
 from .jobs import JobHandle
 from .paths import hf_cache_host_path, model_container_path, models_host_dir
 from .parsers import tool_parser_for
+
+log = logging.getLogger("spark.instances")
 
 
 async def load_instance(session: AsyncSession, instance_id: int) -> Instance | None:
@@ -283,6 +287,7 @@ async def _start_instance(session: AsyncSession, handle: JobHandle, instance_id:
                 models_dir=models_host_dir(node, cfg),
                 shm=cfg.shm_size,
                 serve_cmd=serve_cmd,
+                env_vars=_instance_env(inst),
             )
             script_path = f"{install_dir}/vllm-{inst.name}.sh"
             await nodeops.install_file(ssh, script_path, run_script, mode="755")
@@ -385,11 +390,15 @@ async def _start_distributed(
             },
         )
         ssh = await ssh_for_node(session, node)
+        roce = await _probe_roce(session, node, handle)
         run_script = templates.render_instance_docker_run_distributed(
             name=inst.name, role="worker", image=inst.vllm_image or cfg.vllm_image,
             hf_home=hf_cache_host_path(node, cfg), models_dir=models_host_dir(node, cfg),
             shm=cfg.shm_size, iface=node.qsfp_iface, host_qsfp=node.qsfp_ip,
             master_addr=master_addr, serve_cmd=serve_cmd,
+            roce_hca=roce.hca if roce.usable else None,
+            roce_gid_index=roce.gid_index if roce.usable else None,
+            env_vars=_instance_env(inst),
         )
         script_path = f"{install_dir}/vllm-{inst.name}-worker.sh"
         await nodeops.install_file(ssh, script_path, run_script, mode="755")
@@ -410,11 +419,15 @@ async def _start_distributed(
         },
     )
     ssh = await ssh_for_node(session, head)
+    roce = await _probe_roce(session, head, handle)
     run_script = templates.render_instance_docker_run_distributed(
         name=inst.name, role="head", image=inst.vllm_image or cfg.vllm_image,
         hf_home=hf_cache_host_path(head, cfg), models_dir=models_host_dir(head, cfg),
         shm=cfg.shm_size, iface=head.qsfp_iface, host_qsfp=head.qsfp_ip,
         master_addr=master_addr, serve_cmd=serve_cmd,
+        roce_hca=roce.hca if roce.usable else None,
+        roce_gid_index=roce.gid_index if roce.usable else None,
+        env_vars=_instance_env(inst),
     )
     script_path = f"{install_dir}/vllm-{inst.name}.sh"
     await nodeops.install_file(ssh, script_path, run_script, mode="755")
@@ -426,6 +439,49 @@ async def _start_distributed(
         ssh, templates.instance_unit_name(inst.name), unit,
         enable=inst.autostart, log_cb=handle.ssh_log_cb(),
     )
+
+
+async def _probe_roce(session, node, handle=None):
+    """Best-effort RoCE facts for one node. NEVER raises.
+
+    Fail-open is the whole contract. A node with no RDMA, a probe that times
+    out, a broken sudoers, an SSH hiccup — every one of them must leave the
+    instance starting exactly as it does today, over TCP. This is an
+    optimisation; a cluster that works must not stop working because a
+    diagnostic could not run.
+    """
+    from .roce import RoceInfo, detect_script_for, parse_probe
+
+    try:
+        ssh = await ssh_for_node(session, node)
+        res = await ssh.run(detect_script_for(node.qsfp_iface, node.qsfp_ip), timeout=20)
+        info = parse_probe(res.stdout)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        log.info("RoCE probe failed on %s: %s", node.name, exc)
+        info = RoceInfo(status="probe-failed", detail=str(exc))
+    if handle is not None:
+        try:
+            await handle.log(f"[{node.name}] {info.summary()}")
+        except Exception:  # noqa: BLE001
+            pass
+    return info
+
+
+def _instance_env(inst) -> dict[str, str]:
+    """The instance's env map, parsed from its stored JSON. Tolerant by design:
+    a malformed value must not stop an instance from starting."""
+    import json as _json
+
+    if not getattr(inst, "env_vars", None):
+        return {}
+    try:
+        data = _json.loads(inst.env_vars)
+    except (ValueError, TypeError):
+        log.warning("instance %s has unparseable env_vars; ignoring", inst.name)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
 
 
 async def _health_ok(url: str, verify: bool = True) -> bool:

@@ -14,8 +14,17 @@ traffic over the QSFP interface.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shlex
+
+log = logging.getLogger("spark.templates")
+
+# Env-var names accepted into a container. `fullmatch` semantics matter: with
+# `re.match` and a `$` anchor, "NCCL_DEBUG\n" passes, because Python's `$` also
+# matches before a trailing newline — and a newline in a key truncates the
+# generated docker-run command.
+_ENV_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
 RAY_HEAD_CONTAINER = "spark-ray-head"
 RAY_WORKER_CONTAINER = "spark-ray-worker"
@@ -70,59 +79,163 @@ _NET_ENVS = [
 ]
 
 
-def _net_env_flags(iface: str) -> str:
-    parts = []
-    for key, val in _NET_ENVS:
-        parts.append(f'  -e {key}={shlex.quote(val.format(iface=iface))} \\')
-    return "\n".join(parts)
+def _net_env_flags(iface: str) -> list[str]:
+    return [f"-e {key}={shlex.quote(val.format(iface=iface))}" for key, val in _NET_ENVS]
+
+
+def _docker_run(*groups: str | list[str]) -> str:
+    """Join docker-run arguments into one backslash-continued command.
+
+    Every optional argument group goes through here rather than being
+    interpolated as a pre-formatted block, because an *empty* block used to
+    leave a blank line in the middle of the continuation — which silently ends
+    the command at that point. The truncated `docker run` then executes without
+    an image and the unit crash-loops on ``Restart=on-failure``.
+
+    That failure is invisible to `bash -n`, which parses the result as valid
+    (it is: it is just a different, wrong command). It would have fired on
+    every instance that has no per-instance env and every node with no RoCE —
+    i.e. the entire existing fleet. Building the argument list in Python and
+    dropping empties here makes it unrepresentable.
+    """
+    args: list[str] = []
+    for group in groups:
+        if isinstance(group, str):
+            group = [group]
+        args.extend(a for a in group if a and a.strip())
+    return " \\\n  ".join(args)
+
+
+def env_flags(env_vars: dict[str, str] | None) -> list[str]:
+    """``-e KEY=VALUE`` for a per-instance env map.
+
+    The WHOLE ``KEY=VALUE`` token is quoted as one word, never just the value.
+    Quoting only the value lets a key containing whitespace split into extra
+    argv words that docker reads as its own flags — ``A=1 --privileged -v /:/host``
+    as a key is a container escape, and it needs no shell metacharacter at all.
+    The schema validator is the primary control; this is the layer that has to
+    hold when the row did not come through it (a restored backup bundle
+    constructs Instance rows with no Pydantic in the path).
+    """
+    if not env_vars:
+        return []
+    out: list[str] = []
+    for key, value in env_vars.items():
+        if not _ENV_KEY_RE.match(str(key)):
+            log.warning("dropping env var with unusable name %r", key)
+            continue
+        out.append(f"-e {shlex.quote(f'{key}={value}')}")
+    return out
+
+
+def roce_env_flags(hca: str | None, gid_index: str | None) -> list[str]:
+    """``NCCL_IB_HCA`` / ``NCCL_IB_GID_INDEX`` — only when both are known.
+
+    Half of this pair is worse than neither: naming the device without the GID
+    index leaves NCCL guessing, and the wrong RoCE v2 GID connects and then
+    stalls, which is far harder to diagnose than the TCP fallback it replaced.
+    """
+    if not hca or gid_index is None:
+        return []
+    return [
+        f"-e NCCL_IB_HCA={shlex.quote(hca)}",
+        f"-e NCCL_IB_GID_INDEX={shlex.quote(str(gid_index))}",
+    ]
+
+
+# Discovering the verbs devices at *launch* rather than baking them into the
+# script is deliberate. `uverbsN` numbering is assigned at driver probe order
+# and is not stable across reboots; a `--device` naming a node that does not
+# exist makes `docker run` fail outright, which would turn a node that happily
+# served over TCP into a crash loop. The units order only on docker.service, so
+# a script written when the driver was loaded can easily run before it is.
+#
+# Consequently: no RDMA devices means no flags and a plain TCP launch, exactly
+# as before. Degrading is the whole point.
+_RDMA_PREFLIGHT = """# --- RDMA device discovery (see services/roce.py) ---------------------------
+RDMA_ARGS=()
+for _d in /dev/infiniband/uverbs* /dev/infiniband/rdma_cm; do
+  [ -c "$_d" ] && RDMA_ARGS+=(--device "$_d:$_d:rw")
+done
+if [ ${#RDMA_ARGS[@]} -gt 0 ]; then
+  RDMA_ARGS+=(--cap-add IPC_LOCK)
+else
+  echo "spark: no /dev/infiniband devices on this host - NCCL will use TCP sockets" >&2
+fi
+"""
+
+# Expands to nothing when the array is empty. The `+` form is required: under
+# `set -u` a bare "${arr[@]}" on an empty array is an unbound-variable error on
+# older bash, and this script runs with `set -euo pipefail`.
+_RDMA_ARGS_LINE = '${RDMA_ARGS[@]+"${RDMA_ARGS[@]}"}'
 
 
 def render_ray_head_script(
     *, image: str, hf_home: str, models_dir: str, head_qsfp: str, iface: str,
     ray_port: int, shm: str, dashboard_port: int,
+    roce_hca: str | None = None, roce_gid_index: str | None = None,
 ) -> str:
+    # The Ray head hosts every `cluster`-topology instance (they `docker exec`
+    # into this container), so its TP all-reduce needs the same RDMA plumbing
+    # as the native-distributed path. Note the lifecycle trap: these scripts
+    # are only re-rendered by the `ray` setup phase, so restarting a cluster
+    # instance execs into the *existing* container and inherits whatever this
+    # was launched with. Re-run the Ray phase to pick up RoCE.
+    args = _docker_run(
+        f"run --rm --name {RAY_HEAD_CONTAINER}",
+        f"--network host --shm-size {shm} --gpus all",
+        "--ulimit memlock=-1 --ulimit stack=67108864",
+        _RDMA_ARGS_LINE,
+        f"-v {shlex.quote(hf_home)}:/root/.cache/huggingface",
+        f"-v {shlex.quote(models_dir)}:/models",
+        f"-e VLLM_HOST_IP={shlex.quote(head_qsfp)}",
+        f"-e MASTER_ADDR={shlex.quote(head_qsfp)}",
+        _net_env_flags(iface),
+        roce_env_flags(roce_hca, roce_gid_index),
+        "--entrypoint bash",
+        shlex.quote(image),
+        "-c " + shlex.quote(
+            f"{_RAY_INSTALL} && ray start --block --head "
+            f"--node-ip-address={head_qsfp} --port={ray_port} --dashboard-host=0.0.0.0 "
+            f"--dashboard-port={dashboard_port}"
+        ),
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 docker rm -f {RAY_HEAD_CONTAINER} >/dev/null 2>&1 || true
-exec docker run --rm --name {RAY_HEAD_CONTAINER} \\
-  --network host --shm-size {shm} --gpus all \\
-  --ulimit memlock=-1 --ulimit stack=67108864 \\
-  -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
-  -v {shlex.quote(models_dir)}:/models \\
-  -e VLLM_HOST_IP={shlex.quote(head_qsfp)} \\
-  -e MASTER_ADDR={shlex.quote(head_qsfp)} \\
-{_net_env_flags(iface)}
-  --entrypoint bash \\
-  {shlex.quote(image)} \\
-  -c {shlex.quote(
-      f"{_RAY_INSTALL} && ray start --block --head "
-      f"--node-ip-address={head_qsfp} --port={ray_port} --dashboard-host=0.0.0.0 "
-      f"--dashboard-port={dashboard_port}"
-  )}
+{_RDMA_PREFLIGHT}
+exec docker {args}
 """
 
 
 def render_ray_worker_script(
     *, image: str, hf_home: str, models_dir: str, head_qsfp: str, worker_qsfp: str,
     iface: str, ray_port: int, shm: str,
+    roce_hca: str | None = None, roce_gid_index: str | None = None,
 ) -> str:
+    args = _docker_run(
+        f"run --rm --name {RAY_WORKER_CONTAINER}",
+        f"--network host --shm-size {shm} --gpus all",
+        "--ulimit memlock=-1 --ulimit stack=67108864",
+        _RDMA_ARGS_LINE,
+        f"-v {shlex.quote(hf_home)}:/root/.cache/huggingface",
+        f"-v {shlex.quote(models_dir)}:/models",
+        f"-e VLLM_HOST_IP={shlex.quote(worker_qsfp)}",
+        f"-e MASTER_ADDR={shlex.quote(head_qsfp)}",
+        _net_env_flags(iface),
+        roce_env_flags(roce_hca, roce_gid_index),
+        "--entrypoint bash",
+        shlex.quote(image),
+        "-c " + shlex.quote(
+            f"{_RAY_INSTALL} && ray start --block "
+            f"--address={head_qsfp}:{ray_port} --node-ip-address={worker_qsfp}"
+        ),
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 docker rm -f {RAY_WORKER_CONTAINER} >/dev/null 2>&1 || true
-exec docker run --rm --name {RAY_WORKER_CONTAINER} \\
-  --network host --shm-size {shm} --gpus all \\
-  --ulimit memlock=-1 --ulimit stack=67108864 \\
-  -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
-  -v {shlex.quote(models_dir)}:/models \\
-  -e VLLM_HOST_IP={shlex.quote(worker_qsfp)} \\
-  -e MASTER_ADDR={shlex.quote(head_qsfp)} \\
-{_net_env_flags(iface)}
-  --entrypoint bash \\
-  {shlex.quote(image)} \\
-  -c {shlex.quote(
-      f"{_RAY_INSTALL} && ray start --block "
-      f"--address={head_qsfp}:{ray_port} --node-ip-address={worker_qsfp}"
-  )}
+{_RDMA_PREFLIGHT}
+exec docker {args}
 """
 
 
@@ -299,19 +412,27 @@ WantedBy=multi-user.target
 
 def render_instance_docker_run_single(
     *, name: str, image: str, hf_home: str, models_dir: str, shm: str, serve_cmd: str,
+    env_vars: dict[str, str] | None = None,
 ) -> str:
+    # No RDMA plumbing here on purpose: a single-node instance is TP=1, so
+    # there is no cross-node all-reduce to accelerate, and mapping verbs
+    # devices into a container that cannot use them is privilege for nothing.
     container = instance_container(name)
+    args = _docker_run(
+        f"run --rm --name {container}",
+        f"--network host --shm-size {shm} --gpus all",
+        "--ulimit memlock=-1 --ulimit stack=67108864",
+        f"-v {shlex.quote(hf_home)}:/root/.cache/huggingface",
+        f"-v {shlex.quote(models_dir)}:/models",
+        env_flags(env_vars),
+        "--entrypoint bash",
+        shlex.quote(image),
+        f"-lc {shlex.quote(serve_cmd)}",
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 docker rm -f {container} >/dev/null 2>&1 || true
-exec docker run --rm --name {container} \\
-  --network host --shm-size {shm} --gpus all \\
-  --ulimit memlock=-1 --ulimit stack=67108864 \\
-  -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
-  -v {shlex.quote(models_dir)}:/models \\
-  --entrypoint bash \\
-  {shlex.quote(image)} \\
-  -lc {shlex.quote(serve_cmd)}
+exec docker {args}
 """
 
 
@@ -341,6 +462,8 @@ WantedBy=multi-user.target
 def render_instance_docker_run_distributed(
     *, name: str, role: str, image: str, hf_home: str, models_dir: str, shm: str,
     iface: str, host_qsfp: str, master_addr: str, serve_cmd: str,
+    roce_hca: str | None = None, roce_gid_index: str | None = None,
+    env_vars: dict[str, str] | None = None,
 ) -> str:
     """Docker-run wrapper for one node of a native torch.distributed launch.
 
@@ -350,20 +473,27 @@ def render_instance_docker_run_distributed(
     ``MASTER_ADDR`` for the rendezvous. ``role`` is ``head`` (rank 0, serves the
     API) or ``worker`` (rank >= 1, ``--headless``)."""
     container = instance_container(name) if role == "head" else distributed_worker_container(name)
+    args = _docker_run(
+        f"run --rm --name {container}",
+        f"--network host --shm-size {shm} --gpus all",
+        "--ulimit memlock=-1 --ulimit stack=67108864",
+        _RDMA_ARGS_LINE,
+        f"-v {shlex.quote(hf_home)}:/root/.cache/huggingface",
+        f"-v {shlex.quote(models_dir)}:/models",
+        f"-e VLLM_HOST_IP={shlex.quote(host_qsfp)}",
+        f"-e MASTER_ADDR={shlex.quote(master_addr)}",
+        _net_env_flags(iface),
+        roce_env_flags(roce_hca, roce_gid_index),
+        env_flags(env_vars),
+        "--entrypoint bash",
+        shlex.quote(image),
+        f"-lc {shlex.quote(serve_cmd)}",
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 docker rm -f {container} >/dev/null 2>&1 || true
-exec docker run --rm --name {container} \\
-  --network host --shm-size {shm} --gpus all \\
-  --ulimit memlock=-1 --ulimit stack=67108864 \\
-  -v {shlex.quote(hf_home)}:/root/.cache/huggingface \\
-  -v {shlex.quote(models_dir)}:/models \\
-  -e VLLM_HOST_IP={shlex.quote(host_qsfp)} \\
-  -e MASTER_ADDR={shlex.quote(master_addr)} \\
-{_net_env_flags(iface)}
-  --entrypoint bash \\
-  {shlex.quote(image)} \\
-  -lc {shlex.quote(serve_cmd)}
+{_RDMA_PREFLIGHT}
+exec docker {args}
 """
 
 

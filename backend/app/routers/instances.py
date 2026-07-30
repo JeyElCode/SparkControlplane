@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,6 +214,7 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         served_model_names=payload.served_model_names,
         compilation_config=payload.compilation_config,
         advanced_args=payload.advanced_args,
+        env_vars=json.dumps(payload.env_vars) if payload.env_vars else None,
         master_port=master_port,
         extra_args=payload.extra_args,
         vllm_image=payload.vllm_image,
@@ -275,6 +278,10 @@ async def update_instance(
             continue  # ports are non-nullable; null in a PATCH means "keep"
         if field in secret_map:
             setattr(inst, secret_map[field], encrypt(value))
+        elif field == "env_vars":
+            # Stored as JSON text; an empty map means "clear it", which is
+            # distinct from the field being absent from the PATCH.
+            setattr(inst, field, json.dumps(value) if value else None)
         else:
             setattr(inst, field, value)
     if inst.tls_enabled:

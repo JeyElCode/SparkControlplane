@@ -241,6 +241,12 @@ class Instance(Base):
     compilation_config: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Structured passthrough: JSON array of {"flag": "--x", "value": "y"|null}.
     advanced_args: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Per-instance container environment, a JSON object of KEY -> VALUE rendered
+    # as `docker -e KEY=VALUE`. Exists so an operator can set NCCL_IB_*,
+    # VLLM_* and friends without building a custom image. Nullable, so
+    # _add_missing_columns can add it to an existing database.
+    env_vars: Mapped[str | None] = mapped_column(Text, nullable=True)
     # `--master-port` for the native distributed rendezvous (distributed only).
     master_port: Mapped[int] = mapped_column(Integer, default=29500)
     # Legacy raw passthrough (kept for backward-compat; UI uses advanced_args).

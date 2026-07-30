@@ -31,6 +31,7 @@ const DEFAULTS: InstanceInput = {
   reasoning_parser: null,
   compilation_config: null,
   advanced_args: null,
+  env_vars: null,
   master_port: undefined,
   extra_args: null,
   vllm_image: null,
@@ -105,6 +106,7 @@ type AdvValues = Pick<
   | "reasoning_parser"
   | "compilation_config"
   | "advanced_args"
+  | "env_vars"
   | "extra_args"
   | "vllm_image"
 >;
@@ -113,10 +115,12 @@ function VllmAdvanced({
   v,
   patch,
   modelAlias,
+  topology,
 }: {
   v: AdvValues;
   patch: (p: Partial<AdvValues>) => void;
   modelAlias?: string;
+  topology?: Topology;
 }) {
   // Chips + rows are seeded once from the serialized props, then drive the
   // serialized value outward on every edit.
@@ -295,6 +299,12 @@ function VllmAdvanced({
           />
         </Field>
 
+        <EnvEditor
+          value={v.env_vars}
+          onChange={(env) => patch({ env_vars: env })}
+          topology={topology}
+        />
+
         <label className="checkbox">
           <input type="checkbox" checked={expert} onChange={(e) => setExpert(e.target.checked)} />
           <span>
@@ -313,6 +323,72 @@ function VllmAdvanced({
         )}
       </div>
     </details>
+  );
+}
+
+/** KEY=VALUE lines <-> the env map. A textarea rather than a row editor: this
+ *  is something operators paste from a runbook, and the point of the feature is
+ *  that setting one variable should not require building a custom image. */
+function envToText(env?: Record<string, string> | null): string {
+  if (!env) return "";
+  return Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+}
+
+function textToEnv(text: string): { env: Record<string, string> | null; error: string | null } {
+  const env: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) return { env: null, error: `Not a KEY=VALUE line: "${line}"` };
+    const key = line.slice(0, eq).trim();
+    // Mirrors the server rule, so the error arrives while typing rather than as
+    // a 422 after pressing Create.
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(key)) {
+      return { env: null, error: `Invalid variable name "${key}"` };
+    }
+    env[key] = line.slice(eq + 1).trim();
+  }
+  return { env: Object.keys(env).length ? env : null, error: null };
+}
+
+function EnvEditor({
+  value,
+  onChange,
+  topology,
+}: {
+  value?: Record<string, string> | null;
+  onChange: (env: Record<string, string> | null) => void;
+  topology?: Topology;
+}) {
+  const [text, setText] = useState(() => envToText(value));
+  const [error, setError] = useState<string | null>(null);
+  const clusterBlocked = topology === "cluster";
+
+  return (
+    <Field
+      label="Environment variables (optional)"
+      hint={
+        clusterBlocked
+          ? "Not available on cluster topology — the instance runs inside the shared Ray container, so variables would reach only the driver, not the workers."
+          : "One KEY=VALUE per line, passed to the container with docker -e."
+      }
+      help="For settings that live in the environment rather than in a vLLM flag — NCCL tuning, VLLM_* switches, HF_* endpoints. Multi-node RoCE (NCCL_IB_HCA / NCCL_IB_GID_INDEX) is detected and set automatically; anything set here takes precedence."
+    >
+      <textarea
+        rows={4}
+        disabled={clusterBlocked}
+        value={text}
+        placeholder={"NCCL_DEBUG=INFO"}
+        onChange={(e) => {
+          setText(e.target.value);
+          const parsed = textToEnv(e.target.value);
+          setError(parsed.error);
+          if (!parsed.error) onChange(parsed.env);
+        }}
+      />
+      {error && <div className="badge-note" style={{ color: "var(--red)" }}>{error}</div>}
+    </Field>
   );
 }
 
@@ -606,7 +682,7 @@ function CreateForm({
         <input value={f.tool_parser ?? ""} placeholder={selModel?.tool_parser ?? "auto"} onChange={(e) => set("tool_parser", e.target.value || null)} />
       </Field>
 
-      <VllmAdvanced v={f} patch={patch} modelAlias={selModel?.name} />
+      <VllmAdvanced v={f} patch={patch} modelAlias={selModel?.name} topology={f.topology} />
       <TlsConfig v={f} patch={patch} />
 
       <div className="row-2">
@@ -641,6 +717,7 @@ type EditFields = Pick<
   | "reasoning_parser"
   | "compilation_config"
   | "advanced_args"
+  | "env_vars"
   | "master_port"
   | "extra_args"
   | "vllm_image"
@@ -670,6 +747,7 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
     reasoning_parser: inst.reasoning_parser ?? null,
     compilation_config: inst.compilation_config ?? null,
     advanced_args: inst.advanced_args ?? null,
+    env_vars: inst.env_vars ?? null,
     master_port: inst.master_port ?? null,
     extra_args: inst.extra_args ?? null,
     vllm_image: inst.vllm_image ?? null,
@@ -770,7 +848,7 @@ function EditForm({ inst, onClose, onSaved }: { inst: Instance; onClose: () => v
         <span><span className="cb-label">Enable tool calling</span><div className="cb-sub">Adds --enable-auto-tool-choice with the right parser.</div></span>
       </label>
 
-      <VllmAdvanced v={f} patch={patch} modelAlias={inst.model_name} />
+      <VllmAdvanced v={f} patch={patch} modelAlias={inst.model_name} topology={inst.topology} />
       <TlsConfig v={f} patch={patch} editMode hasTlsCert={inst.has_tls_cert} />
 
       <label className="checkbox">
