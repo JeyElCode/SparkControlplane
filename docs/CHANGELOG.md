@@ -47,12 +47,23 @@ decide*.
   planner. The response is a valid create body — add a name and a model id and
   post it back — so an agent can stop guessing at `gpu_memory_utilization` too.
 
-One fix found while building it:
+Two fixes found while building it:
 
 - **`gpu_memory_utilization` was completely unvalidated.** Any float was
   accepted, including `0`, which vLLM refuses to start on, and `0.99`, which
   dies in the allocator. Now bounded to 0.1–0.95 at the API boundary, where it
   costs a second instead of ten minutes.
+- **Two releases had silently never shipped an image.** `v1.14.0` and `v1.25.0`
+  are the only gaps in the published tag sequence: building the React app for
+  `linux/arm64` runs npm under QEMU, which intermittently raises SIGILL inside
+  npm's child processes, and a surviving child then keeps the build step alive
+  until the job is killed at GitHub's six-hour ceiling — after which nothing is
+  pushed. Anyone who pinned either tag got a pull failure. The frontend is now
+  built on the runner's own architecture (its output is static JS/CSS, identical
+  whatever CPU emits it), every CI job has a timeout so a hang costs twenty
+  minutes rather than six hours, and the release now **runs** the arm64 image to
+  confirm it is genuinely aarch64 and serves a usable SPA — which nothing had
+  ever done for the one architecture a Spark can execute.
 
 ## v1.29.0 — things that have to be true before anyone else runs this
 - **CI now runs the tests.** The backend job was `pip install .` and an import
