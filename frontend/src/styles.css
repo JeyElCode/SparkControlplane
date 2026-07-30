@@ -316,3 +316,30 @@ textarea { resize: vertical; min-height: 70px; font-family: var(--mono); }
 .kv dt { color: var(--text-faint); }
 .kv dd { margin: 0; }
 .pill-node { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--bg-elev-2); border: 1px solid var(--border); }
+
+/* --- Serve plan (Quick launch + "Work it out for me") ------------------- */
+/* The reasoning is the product here, not decoration: an operator who can see
+   which number a recommendation came from can argue with it, and learns the
+   model for next time. So the explanations get real typographic weight rather
+   than being tucked into a tooltip. */
+.plan-summary {
+  font-size: 14.5px; line-height: 1.5; color: var(--text);
+  padding: 12px 14px; margin-bottom: 14px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm); background: var(--bg-elev-2);
+}
+.plan-reasons { display: flex; flex-direction: column; gap: 10px; }
+.plan-reason {
+  padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-elev-2);
+}
+.plan-reason-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 4px;
+}
+.plan-reason-label { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.plan-reason-value { font-family: var(--mono); font-size: 13px; color: var(--text); }
+.plan-reason-why { font-size: 12.5px; line-height: 1.55; color: var(--text-faint); }
+.plan-loading { display: flex; align-items: center; gap: 10px; padding: 24px 4px; color: var(--text-dim); font-size: 13.5px; }
+.plan-cta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.plan-cta .badge-note { flex: 1 1 260px; line-height: 1.5; }

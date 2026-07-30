@@ -161,6 +161,45 @@ async def validate_repo(repo_id: str) -> dict:
         return {"ok": False, "error": f"Could not reach HuggingFace: {exc}"}
 
 
+async def capture_shape(session: AsyncSession, model: ModelRegistry) -> bool:
+    """Fill in the config.json geometry columns and commit. True if anything landed.
+
+    Deliberately NOT called from :func:`add_model`: registering a model is a
+    local bookkeeping operation and must not depend on reaching HuggingFace —
+    that would make an air-gapped portal fail at the first step and put a
+    network round-trip inside the unit tests. The planner calls this lazily on
+    the first launch that needs the numbers, and caches the result on the row.
+
+    Never raises. Every failure here (no network, gated repo, no config.json)
+    leaves the columns NULL, which the planner reports as "context length
+    unverified" rather than guessing around.
+    """
+    from ..crypto import decrypt
+    from ..db import get_setting
+    from .hfmeta import fetch_shape
+
+    token = None
+    try:
+        setting = await get_setting(session)
+        if setting is not None and setting.hf_token_enc:
+            token = decrypt(setting.hf_token_enc)
+    except Exception:  # noqa: BLE001 - a bad token must not fail planning
+        token = None
+    try:
+        shape = await fetch_shape(model.repo_id, token)
+    except Exception:  # noqa: BLE001
+        return False
+    if not (shape.complete or shape.context_len):
+        return False
+    model.context_len = shape.context_len
+    model.num_layers = shape.num_layers
+    model.num_kv_heads = shape.num_kv_heads
+    model.head_dim = shape.head_dim
+    model.torch_dtype = shape.torch_dtype
+    await session.commit()
+    return True
+
+
 async def list_models_full(session: AsyncSession) -> list[ModelRegistry]:
     res = await session.execute(
         select(ModelRegistry)

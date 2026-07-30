@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { api, InstanceInput, Instance, Topology } from "../lib/api";
+import { Link, useLocation } from "react-router-dom";
+import { api, InstanceInput, Instance, Plan, Topology } from "../lib/api";
 import { usePoll } from "../lib/hooks";
 import { clientSnippet, gatewayBaseUrl, gatewayModelName } from "../lib/gateway";
 import { loadProgress, statusKind } from "../lib/format";
 import { Badge, EmptyState, Field, Modal, Spinner, LoadError } from "../components/ui";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { LiveLogPanel } from "../components/LiveLogPanel";
+import { PlanDetails } from "../components/QuickLaunch";
 import { useToast } from "../components/Toast";
 
 const DEFAULTS: InstanceInput = {
@@ -375,17 +376,58 @@ function TlsConfig({
   );
 }
 
-function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateForm({
+  onClose,
+  onCreated,
+  initial,
+  initialPlan,
+}: {
+  onClose: () => void;
+  onCreated: () => void;
+  /** Pre-filled values, e.g. handed over by Quick launch's "Customize". */
+  initial?: Partial<InstanceInput>;
+  /** The reasoning behind `initial`, shown so a pre-filled form is auditable
+   *  rather than a set of numbers that appeared from nowhere. */
+  initialPlan?: Plan;
+}) {
   const models = usePoll(() => api.listModels(), 0);
   const nodes = usePoll(() => api.listNodes(), 0);
   const profiles = usePoll(() => api.listProfiles(), 0);
   const [appliedProfile, setAppliedProfile] = useState<string | null>(null);
   const { toast } = useToast();
-  const [f, setF] = useState<InstanceInput>(DEFAULTS);
+  const [f, setF] = useState<InstanceInput>({ ...DEFAULTS, ...initial });
   const [busy, setBusy] = useState(false);
+  const [plan, setPlan] = useState<Plan | undefined>(initialPlan);
+  const [planning, setPlanning] = useState(false);
   const set = (k: keyof InstanceInput, v: any) => setF((p) => ({ ...p, [k]: v }));
   const patch = (p: Partial<InstanceInput>) => setF((prev) => ({ ...prev, ...p }));
   const selModel = (models.data ?? []).find((m) => m.id === f.model_id);
+
+  // Derive settings for whatever model is selected, honouring a topology the
+  // operator has already picked — the plan works around their decision rather
+  // than overwriting it.
+  const recommend = async () => {
+    if (!f.model_id) {
+      toast("Pick a model first — the recommendation is derived from it", "error");
+      return;
+    }
+    setPlanning(true);
+    try {
+      const p = await api.planInstance({
+        model_id: f.model_id,
+        topology: f.topology,
+        node_id: f.node_id,
+      });
+      setPlan(p);
+      patch({ ...(p.settings as Partial<InstanceInput>), name: f.name || p.name });
+      setAppliedProfile(null);
+      toast("Settings derived from your cluster — review them below", "success");
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setPlanning(false);
+    }
+  };
 
   const submit = async () => {
     if (!f.name || !f.model_id) {
@@ -466,6 +508,26 @@ function CreateForm({ onClose, onCreated }: { onClose: () => void; onCreated: ()
           </select>
         </Field>
       </div>
+
+      <div className="plan-cta">
+        <button className="btn" onClick={recommend} disabled={planning || !f.model_id}>
+          {planning ? <Spinner /> : "✨ Work it out for me"}
+        </button>
+        <span className="badge-note">
+          Fills in topology, memory fraction and context length from this model's
+          shape and what your nodes have free — then tells you why. Everything
+          stays editable.
+        </span>
+      </div>
+
+      {plan && (
+        <details className="collapse" open>
+          <summary>Why these settings</summary>
+          <div className="collapse-body">
+            <PlanDetails plan={plan} />
+          </div>
+        </details>
+      )}
 
       <Field label="Topology" hint={TOPO_HELP[f.topology]}>
         <select value={f.topology} onChange={(e) => set("topology", e.target.value as Topology)}>
@@ -730,7 +792,10 @@ export default function Instances() {
   const [saveProfileFor, setSaveProfileFor] = useState<Instance | null>(null);
   const [profileName, setProfileName] = useState("");
   const { toast } = useToast();
-  const [creating, setCreating] = useState(false);
+  // Quick launch's "Customize" navigates here carrying its derived plan, so
+  // the form opens already filled in with the reasoning attached.
+  const handoff = (useLocation().state ?? null) as { plan?: Plan; modelId?: number } | null;
+  const [creating, setCreating] = useState(!!handoff?.plan);
   const [editing, setEditing] = useState<Instance | null>(null);
   const [logsFor, setLogsFor] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: number; label: string } | null>(null);
@@ -983,7 +1048,18 @@ export default function Instances() {
         </Modal>
       )}
 
-      {creating && <CreateForm onClose={() => setCreating(false)} onCreated={() => instances.reload()} />}
+      {creating && (
+        <CreateForm
+          onClose={() => setCreating(false)}
+          onCreated={() => instances.reload()}
+          initial={
+            handoff?.plan
+              ? { ...(handoff.plan.settings as Partial<InstanceInput>), name: handoff.plan.name, model_id: handoff.modelId ?? 0 }
+              : undefined
+          }
+          initialPlan={handoff?.plan}
+        />
+      )}
       {editing && <EditForm inst={editing} onClose={() => setEditing(null)} onSaved={() => instances.reload()} />}
       {logsFor && (
         <Modal title="Live logs" wide onClose={() => setLogsFor(null)}>

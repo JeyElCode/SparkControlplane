@@ -170,6 +170,17 @@ class ModelRegistry(Base):
     tool_parser: Mapped[str | None] = mapped_column(String(32), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=MS_ABSENT)
+
+    # Geometry read from the repo's config.json (see services/hfmeta.py). These
+    # are what let the planner size a KV cache instead of guessing: without
+    # them it can still pick a topology, but it cannot say how long a context
+    # will fit. All nullable — a gated repo, an air-gapped portal or a model
+    # added before v1.30.0 simply has none, and the plan says so.
+    context_len: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    num_layers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    num_kv_heads: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    head_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    torch_dtype: Mapped[str | None] = mapped_column(String(32), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
