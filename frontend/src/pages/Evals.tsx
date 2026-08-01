@@ -8,7 +8,12 @@ import { BarList, LineChart, PALETTE } from "../components/charts";
 import { JobLogPanel } from "../components/JobLogPanel";
 import { useToast } from "../components/Toast";
 
-const DEFAULT_CATEGORIES = ["coding", "reasoning", "textgen", "judging"];
+// The predictability ladder — see backend eval_suites.py SPEED_LADDER. These
+// three are the default because tok/s is not one number: speculative decoding
+// speeds up predictable output and slows down creative output, and only
+// measuring all three shows which way an instance actually trades.
+const DEFAULT_CATEGORIES = ["predictable", "code", "creative"];
+const SPEED_LADDER = ["predictable", "code", "creative"];
 const pct = (s?: number | null) => (s == null ? "—" : `${Math.round(s * 100)}%`);
 
 function CatGroup({ title, cats, sel, onToggle }: { title: string; cats: string[]; sel: string[]; onToggle: (c: string) => void }) {

@@ -25,6 +25,9 @@ from sqlalchemy import delete, select
 from .. import db as _db
 from ..crypto import decrypt
 from ..models import (
+    EvalResult,
+    EvalRun,
+    PerfResult,
     ClusterConfig,
     CustomTask,
     Instance,
@@ -56,6 +59,12 @@ _TABLES: list[tuple[str, type]] = [
     # wholesale and the next start re-seeds built-ins by name, so they converge
     # on the image's version either way rather than duplicating.
     ("serve_profiles", ServeProfile),
+    # Eval history. Without these a restore silently empties the evidence —
+    # the scores, the trend, and anything gating a promotion on them. Ordered
+    # after `instances` because eval_runs.instance_id references it.
+    ("eval_runs", EvalRun),
+    ("eval_results", EvalResult),
+    ("perf_results", PerfResult),
 ]
 _SINGLETONS = {"cluster_config", "settings"}
 

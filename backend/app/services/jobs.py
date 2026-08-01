@@ -177,9 +177,39 @@ class JobManager:
                 )
                 await s.commit()
                 swept = len(orphans)
+            # EvalRun carries its OWN status column, so sweeping Job rows
+            # leaves an eval reading `running` forever — the Evals page then
+            # hides both View and Re-run and the row is permanently dead. This
+            # is the same defect as the job sweep above (v1.28.1), missed for
+            # evals because the status lives somewhere else.
+            swept += await self._sweep_eval_runs(s)
         if swept:
             log.warning("marked %d job(s) as interrupted by a portal restart", swept)
         return swept
+
+    async def _sweep_eval_runs(self, s) -> int:
+        """Fail eval runs the database still calls live. Same safety argument as
+        the job sweep: at startup nothing is driving them by definition."""
+        from sqlalchemy import select, update
+
+        from ..models import EvalRun
+
+        rows = list(
+            (
+                await s.execute(
+                    select(EvalRun.id).where(EvalRun.status.in_((JOB_RUNNING, JOB_PENDING)))
+                )
+            ).scalars().all()
+        )
+        if not rows:
+            return 0
+        await s.execute(
+            update(EvalRun).where(EvalRun.id.in_(rows)).values(
+                status=JOB_ERROR, finished_at=_now()
+            )
+        )
+        await s.commit()
+        return len(rows)
 
     # --- persistence helpers --------------------------------------------
     async def _db_write(self, op, *, critical: bool = False) -> bool:
