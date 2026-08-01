@@ -66,11 +66,13 @@ It ships as a single container published to
   `/proc/meminfo`, since the GB10 shares LPDDR5X between CPU and GPU and reports
   no separate VRAM), instance `/health` + served model, and a per-node memory
   budget with overcommit warnings.
-- **Evaluation & benchmarking** — benchmark **throughput** (TTFT, tokens/sec,
-  concurrency sweep for peak tok/s) and score models on **your own custom tasks**
-  (any scorer: deterministic, LLM-judge, **sandboxed code execution** → pass@1,
-  or **tool-call** correctness). Runs are saved, charted, and comparable over
-  time. See [docs/EVALS.md](docs/EVALS.md).
+- **Speed benchmarking across a predictability ladder** — tokens/sec and TTFT
+  measured on **predictable** (counting), **code**, and **creative** output,
+  because decode speed is not one number: speculative decoding multiplies
+  throughput on predictable text and *costs* you on creative text, and a single
+  average hides which way an instance trades. Concurrency sweep included; runs
+  are saved, charted and comparable across instances and over time. See
+  [docs/EVALS.md](docs/EVALS.md).
 - **Built-in playground** — smoke-test any running model from the UI.
 - **Granular teardown/reset** — stop instances, stop Ray, remove network / SSH /
   hosts, and (off by default) delete downloaded models.

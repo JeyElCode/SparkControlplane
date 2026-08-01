@@ -138,10 +138,6 @@ class Setting(Base):
     hf_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_poll_seconds: Mapped[int] = mapped_column(Integer, default=10)
     setup_complete: Mapped[bool] = mapped_column(Boolean, default=False)
-    # External LLM-judge endpoint (optional) for evaluations
-    judge_base_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    judge_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    judge_api_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Alerting: JSON blob of thresholds/durations (defaults merged in code) and
     # an optional notification webhook (URL may embed a token -> encrypted).
     alerts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -512,13 +508,11 @@ class JobLog(Base):
 
 
 # --- Evaluation / benchmarking -------------------------------------------
-EVAL_CATEGORIES = ("coding", "security", "reasoning", "judging", "tools")
 # Ceiling -> floor on the predictability ladder first (see eval_suites.py:
 # SPEED_LADDER), then the older mixed prompts. "code" replaced "coding" when
 # the ladder landed; historical PerfResult rows keep their original category
 # string, which is correct — they measured a different prompt.
 PERF_CATEGORIES = ("predictable", "code", "creative", "reasoning", "textgen", "judging")
-SCORERS = ("exact", "contains", "numeric", "mcq", "judge", "code_exec", "tool_call")
 
 
 class EvalRun(Base):
@@ -600,34 +594,3 @@ class PerfResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     run: Mapped[EvalRun] = relationship(back_populates="perf")
-
-
-class CustomTask(Base):
-    """A user-authored capability task. List/dict fields are stored as JSON text."""
-
-    __tablename__ = "custom_tasks"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    category: Mapped[str] = mapped_column(String(64))
-    name: Mapped[str] = mapped_column(String(255))
-    prompt: Mapped[str] = mapped_column(Text)
-    system: Mapped[str | None] = mapped_column(Text, nullable=True)
-    scorer: Mapped[str] = mapped_column(String(16))
-    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
-    contains_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    numeric_answer: Mapped[float | None] = mapped_column(Float, nullable=True)
-    numeric_tol: Mapped[float] = mapped_column(Float, default=0.01)
-    choices_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    correct: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    rubric: Mapped[str | None] = mapped_column(Text, nullable=True)
-    entry_point: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    test_code: Mapped[str | None] = mapped_column(Text, nullable=True)
-    code_prefix: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tools_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expected_tool: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    expected_args_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    forbid_tool_call: Mapped[bool] = mapped_column(Boolean, default=False)
-    max_tokens: Mapped[int] = mapped_column(Integer, default=1024)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

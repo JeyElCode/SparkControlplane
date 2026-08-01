@@ -372,9 +372,6 @@ class ClusterConfigOut(BaseModel):
 class SettingsIn(BaseModel):
     hf_token: str | None = None
     status_poll_seconds: int | None = None
-    judge_base_url: str | None = None
-    judge_model: str | None = None
-    judge_api_key: str | None = None  # write-only
     # Alerting: partial threshold overrides (validated/merged server-side) and
     # a write-only webhook URL ("" clears it).
     alerts: dict | None = None
@@ -396,9 +393,6 @@ class SettingsOut(BaseModel):
     has_hf_token: bool
     status_poll_seconds: int
     setup_complete: bool
-    judge_base_url: str | None = None
-    judge_model: str | None = None
-    has_judge_api_key: bool = False
     alerts: dict = Field(default_factory=dict)
     has_alert_webhook: bool = False
     backup_enabled: bool = False
@@ -1247,67 +1241,9 @@ class JobAccepted(BaseModel):
 # --- Evaluations ---------------------------------------------------------
 class CatalogOut(BaseModel):
     perf_categories: list[str]   # built-in throughput-test categories
-    custom_categories: list[str]  # distinct categories of user-authored tasks
+    speed_ladder: list[str]  # distinct categories of user-authored tasks
 
 
-_SCORER = Literal["exact", "contains", "numeric", "mcq", "judge", "code_exec", "tool_call"]
-
-
-class CustomTaskIn(BaseModel):
-    category: str
-    name: str
-    prompt: str
-    scorer: _SCORER
-    system: str | None = None
-    answer: str | None = None
-    contains: list[str] = Field(default_factory=list)
-    numeric_answer: float | None = None
-    numeric_tol: float = 0.01
-    choices: list[str] = Field(default_factory=list)
-    correct: str | None = None
-    rubric: str | None = None
-    entry_point: str | None = None
-    test_code: str | None = None
-    code_prefix: str | None = None
-    tools: list[dict] = Field(default_factory=list)
-    expected_tool: str | None = None
-    expected_args: dict[str, Any] = Field(default_factory=dict)
-    forbid_tool_call: bool = False
-    max_tokens: int = 1024
-    enabled: bool = True
-
-
-class CustomTaskOut(CustomTaskIn):
-    id: int
-
-    @classmethod
-    def of(cls, ct: m.CustomTask) -> "CustomTaskOut":
-        def jl(s):
-            try:
-                return json.loads(s) if s else []
-            except ValueError:
-                return []
-
-        def jd(s):
-            try:
-                return json.loads(s) if s else {}
-            except ValueError:
-                return {}
-
-        return cls(
-            id=ct.id, category=ct.category, name=ct.name, prompt=ct.prompt, scorer=ct.scorer,
-            system=ct.system, answer=ct.answer, contains=jl(ct.contains_json),
-            numeric_answer=ct.numeric_answer, numeric_tol=ct.numeric_tol, choices=jl(ct.choices_json),
-            correct=ct.correct, rubric=ct.rubric, entry_point=ct.entry_point, test_code=ct.test_code,
-            code_prefix=ct.code_prefix, tools=jl(ct.tools_json), expected_tool=ct.expected_tool,
-            expected_args=jd(ct.expected_args_json), forbid_tool_call=ct.forbid_tool_call,
-            max_tokens=ct.max_tokens, enabled=ct.enabled,
-        )
-
-
-class JudgeConfig(BaseModel):
-    type: Literal["none", "instance", "external"] = "none"
-    instance_id: int | None = None
 
 
 class EvalRunRequest(BaseModel):
@@ -1318,8 +1254,6 @@ class EvalRunRequest(BaseModel):
     categories: list[str] = Field(
         default_factory=lambda: ["predictable", "code", "creative"]
     )
-    capability: bool = True
-    performance: bool = True
     # Bounded because these two multiply into real load against a LIVE serving
     # instance, from a single-replica portal, and the Sparks have no
     # out-of-band recovery. Unbounded, `{"concurrency": [512], "perf_reps": 50}`
@@ -1341,8 +1275,6 @@ class EvalRunRequest(BaseModel):
                 raise ValueError(f"concurrency level {level} out of range (1-64)")
         return v
     temperature: float = 0.2
-    judge: JudgeConfig | None = None
-    sandbox_image: str = "python:3.12-slim"
 
 
 class EvalStarted(BaseModel):
@@ -1412,6 +1344,11 @@ class EvalRunOut(BaseModel):
     status: str
     overall_score: float | None
     peak_throughput_tps: float | None
+    # Best tok/s per predictability regime, so the run LIST can show the
+    # comparison that matters instead of a single peak across every category
+    # and concurrency level — which is precisely the number eval_suites.py
+    # argues is misleading. Derived from summary_json; empty on legacy rows.
+    ladder_tps: dict[str, float] = Field(default_factory=dict)
     judge_desc: str | None
     job_id: int | None
     created_at: datetime
@@ -1421,16 +1358,26 @@ class EvalRunOut(BaseModel):
     @classmethod
     def of(cls, run: m.EvalRun) -> "EvalRunOut":
         peak = None
+        ladder: dict[str, float] = {}
         if run.summary_json:
             try:
-                peak = json.loads(run.summary_json).get("peak_throughput_tps")
+                summary = json.loads(run.summary_json)
             except ValueError:
-                peak = None
+                summary = {}
+            if isinstance(summary, dict):
+                peak = summary.get("peak_throughput_tps")
+                raw = summary.get("ladder_tps")
+                if isinstance(raw, dict):
+                    ladder = {
+                        str(k): float(v) for k, v in raw.items()
+                        if isinstance(v, (int, float))
+                    }
         return cls(
             id=run.id, name=run.name, instance_id=run.instance_id, model_name=run.model_name,
             instance_label=run.instance_label, categories=run.categories.split(",") if run.categories else [],
             capability=run.capability, performance=run.performance, status=run.status,
-            overall_score=run.overall_score, peak_throughput_tps=peak, judge_desc=run.judge_desc,
+            overall_score=run.overall_score, peak_throughput_tps=peak, ladder_tps=ladder,
+            judge_desc=run.judge_desc,
             job_id=run.job_id, created_at=run.created_at, started_at=run.started_at,
             finished_at=run.finished_at,
         )
