@@ -156,3 +156,50 @@ async def test_a_restart_does_not_strand_an_eval_as_running(tmp_path, monkeypatc
         assert row.finished_at is not None
 
     config.get_settings.cache_clear()
+
+
+async def test_a_bundle_can_be_restored_after_an_eval_has_run(tmp_path, monkeypatch):
+    """`jobs` is deliberately not in the bundle, but eval_runs.job_id and
+    model_node_states.last_job_id are foreign keys into it — and SQLite runs
+    with PRAGMA foreign_keys=ON. Carrying those ids aborts the ENTIRE restore
+    with "FOREIGN KEY constraint failed", so a backup taken after any eval had
+    run could not be restored at all."""
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    await db.init_db()
+
+    import app.services.backup as backup_mod
+
+    importlib.reload(backup_mod)
+    monkeypatch.setattr(backup_mod, "_db", db)
+
+    from app.models import Job, EvalRun
+
+    async with db.SessionLocal() as s:
+        job = Job(type="eval", title="j", status="success")
+        s.add(job)
+        await s.flush()
+        s.add(EvalRun(
+            name="r", model_name="m", instance_label="l", categories="code",
+            config_json="{}", status="success", job_id=job.id,
+        ))
+        await s.commit()
+
+    bundle = await backup_mod.build_bundle()
+    run_rows = bundle["tables"]["eval_runs"]
+    assert run_rows and run_rows[0]["job_id"] is None, "dangling FK exported"
+
+    # The real proof: restoring must not raise. Jobs are absent by design.
+    await backup_mod.apply_bundle(bundle)
+
+    async with db.SessionLocal() as s:
+        from sqlalchemy import select
+
+        assert len((await s.execute(select(EvalRun))).scalars().all()) == 1
+
+    config.get_settings.cache_clear()
