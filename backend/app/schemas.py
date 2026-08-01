@@ -1313,11 +1313,33 @@ class JudgeConfig(BaseModel):
 class EvalRunRequest(BaseModel):
     instance_id: int
     name: str | None = None
-    categories: list[str] = Field(default_factory=lambda: ["coding", "reasoning", "textgen", "judging"])
+    # Defaults to the predictability ladder: one number per regime is the
+    # comparison that actually distinguishes two builds (see eval_suites.py).
+    categories: list[str] = Field(
+        default_factory=lambda: ["predictable", "code", "creative"]
+    )
     capability: bool = True
     performance: bool = True
-    perf_reps: int = 3
+    # Bounded because these two multiply into real load against a LIVE serving
+    # instance, from a single-replica portal, and the Sparks have no
+    # out-of-band recovery. Unbounded, `{"concurrency": [512], "perf_reps": 50}`
+    # was accepted and meant 512 concurrent streams at up to the per-request
+    # timeout each. vLLM queues rather than OOMs, so the damage is a saturated
+    # endpoint and a job that never ends — but nothing stopped it.
+    perf_reps: int = Field(default=3, ge=1, le=20)
     concurrency: list[int] = Field(default_factory=lambda: [1, 2, 4])
+
+    @field_validator("concurrency")
+    @classmethod
+    def _check_concurrency(cls, v: list[int]) -> list[int]:
+        if not v:
+            raise ValueError("concurrency needs at least one level")
+        if len(v) > 8:
+            raise ValueError("at most 8 concurrency levels per run")
+        for level in v:
+            if level < 1 or level > 64:
+                raise ValueError(f"concurrency level {level} out of range (1-64)")
+        return v
     temperature: float = 0.2
     judge: JudgeConfig | None = None
     sandbox_image: str = "python:3.12-slim"

@@ -25,6 +25,9 @@ from sqlalchemy import delete, select
 from .. import db as _db
 from ..crypto import decrypt
 from ..models import (
+    EvalResult,
+    EvalRun,
+    PerfResult,
     ClusterConfig,
     CustomTask,
     Instance,
@@ -56,14 +59,36 @@ _TABLES: list[tuple[str, type]] = [
     # wholesale and the next start re-seeds built-ins by name, so they converge
     # on the image's version either way rather than duplicating.
     ("serve_profiles", ServeProfile),
+    # Eval history. Without these a restore silently empties the evidence —
+    # the scores, the trend, and anything gating a promotion on them. Ordered
+    # after `instances` because eval_runs.instance_id references it.
+    ("eval_runs", EvalRun),
+    ("eval_results", EvalResult),
+    ("perf_results", PerfResult),
 ]
 _SINGLETONS = {"cluster_config", "settings"}
 
 
-def _row_to_dict(obj) -> dict:
+# Columns that reference a table the bundle deliberately does NOT carry. `jobs`
+# is transient run history, not configuration, so it is excluded — but SQLite
+# runs with `PRAGMA foreign_keys=ON` (db.py:35), so restoring a row whose
+# job_id names a job that no longer exists aborts the WHOLE restore with
+# "FOREIGN KEY constraint failed". Nulled on export: the job it pointed at is
+# gone by definition in the restored world, so the reference carries no
+# information, and every one of these columns is nullable.
+_DANGLING_FK_COLUMNS: dict[str, tuple[str, ...]] = {
+    "model_node_states": ("last_job_id",),
+    "eval_runs": ("job_id",),
+}
+
+
+def _row_to_dict(obj, *, table: str | None = None) -> dict:
+    drop = _DANGLING_FK_COLUMNS.get(table or obj.__table__.name, ())
     out = {}
     for col in obj.__table__.columns:
         v = getattr(obj, col.name)
+        if col.name in drop:
+            v = None
         if isinstance(v, datetime):
             v = v.isoformat()
         out[col.name] = v
@@ -96,7 +121,7 @@ async def build_bundle() -> dict:
     async with _db.SessionLocal() as session:
         for name, model in _TABLES:
             rows = (await session.execute(select(model))).scalars().all()
-            tables[name] = [_row_to_dict(r) for r in rows]
+            tables[name] = [_row_to_dict(r, table=name) for r in rows]
     return {
         "kind": "spark-controlplane-backup",
         "bundle_version": BUNDLE_VERSION,
