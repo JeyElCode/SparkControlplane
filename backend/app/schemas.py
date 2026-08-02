@@ -679,6 +679,118 @@ def _parse_env_json(raw: str | None) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in data.items()}
 
 
+
+# --- Named endpoints ------------------------------------------------------
+class EndpointIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    hostname: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=443, ge=1, le=65535)
+    description: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    # Write-only, both of them. The certificate is readable back only as
+    # metadata; the key is never readable at all.
+    tls_cert: str | None = None
+    tls_key: str | None = None
+
+
+class EndpointUpdate(BaseModel):
+    hostname: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    description: str | None = None
+    enabled: bool | None = None
+    aliases: list[str] | None = None
+
+
+class TlsUploadIn(BaseModel):
+    tls_cert: str
+    tls_key: str
+
+
+class PromoteIn(BaseModel):
+    instance_id: int
+    reason: str | None = None
+
+
+class EndpointPromotionOut(BaseModel):
+    id: int
+    endpoint_name: str
+    to_instance_name: str
+    to_model_name: str = ""
+    from_instance_name: str | None = None
+    status: str
+    reason: str | None = None
+    actor: str | None = None
+    job_id: int | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+
+
+class EndpointOut(BaseModel):
+    """An endpoint as the API exposes it.
+
+    Carries the certificate's PUBLIC metadata and never the key. Everything
+    here is sent in the clear during a TLS handshake anyway, so publishing it
+    costs nothing and answers the operator's real questions: which certificate
+    is this, does it cover the hostname, when does it expire.
+    """
+
+    id: int
+    name: str
+    hostname: str
+    port: int
+    description: str | None = None
+    enabled: bool = True
+    aliases: list[str] = Field(default_factory=list)
+    current_instance_id: int | None = None
+    current_instance: str | None = None
+    promoted_at: datetime | None = None
+    member_instances: list[str] = Field(default_factory=list)
+
+    has_tls: bool = False
+    tls_subject: str | None = None
+    tls_issuer: str | None = None
+    tls_sans: list[str] = Field(default_factory=list)
+    tls_fingerprint_sha256: str | None = None
+    tls_not_after: datetime | None = None
+    tls_days_remaining: int | None = None
+
+    @classmethod
+    async def of(cls, ep, session) -> "EndpointOut":
+        from sqlalchemy import select
+
+        from .models import Instance
+
+        current = (
+            await session.get(Instance, ep.current_instance_id)
+            if ep.current_instance_id else None
+        )
+        members = (
+            await session.execute(select(Instance.name).where(Instance.endpoint_id == ep.id))
+        ).scalars().all()
+        days = None
+        if ep.tls_not_after is not None:
+            days = (ep.tls_not_after - datetime.utcnow()).days
+        sans: list[str] = []
+        if ep.tls_sans_json:
+            try:
+                loaded = json.loads(ep.tls_sans_json)
+                sans = [str(x) for x in loaded] if isinstance(loaded, list) else []
+            except ValueError:
+                sans = []
+        return cls(
+            id=ep.id, name=ep.name, hostname=ep.hostname, port=ep.port,
+            description=ep.description, enabled=ep.enabled,
+            aliases=[a.alias for a in ep.aliases],
+            current_instance_id=ep.current_instance_id,
+            current_instance=current.name if current else None,
+            promoted_at=ep.promoted_at, member_instances=list(members),
+            has_tls=bool(ep.tls_cert_enc), tls_subject=ep.tls_subject,
+            tls_issuer=ep.tls_issuer, tls_sans=sans,
+            tls_fingerprint_sha256=ep.tls_fingerprint_sha256,
+            tls_not_after=ep.tls_not_after, tls_days_remaining=days,
+        )
+
+
 # --- Serve planning ------------------------------------------------------
 class PlanIn(BaseModel):
     model_id: int
@@ -744,6 +856,9 @@ class InstanceIn(BaseModel):
     enable_tool_choice: bool = True
     tool_parser: str | None = None  # auto-mapped if None and enable_tool_choice
     served_model_names: str | None = None  # space/newline-separated aliases; ≥1 wins
+    # Membership of a named endpoint. A member serves the ENDPOINT's aliases,
+    # not its own — see services/instances.py::_effective_aliases.
+    endpoint_id: int | None = None
     compilation_config: str | None = None  # JSON string, validated
     advanced_args: str | None = None
     # Per-instance container environment. See _v_env_vars for why newlines are

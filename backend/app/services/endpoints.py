@@ -203,3 +203,185 @@ def normalise_aliases(raw) -> tuple[list[str], list[str]]:
 
 def aliases_json(aliases: list[str]) -> str:
     return json.dumps(aliases)
+
+
+# --- promotion ------------------------------------------------------------
+# Everything below runs as a background JOB, never a request. The handoff is
+# stop-current -> start-target -> wait for a weight load that takes minutes ->
+# verify -> flip the pointer. A synchronous HTTP call cannot survive that, and
+# an operator closing a browser tab must not abandon a half-swapped endpoint.
+
+async def promote(handle, endpoint_id: int, instance_id: int, reason: str | None = None) -> str:
+    """Point an endpoint at a different instance.
+
+    The ordering is forced by the hardware, not chosen: prod-class instances are
+    TP=2 across the whole box, so the outgoing one MUST stop before the incoming
+    one can start. That means there is a window — minutes long, the weight load
+    — where the endpoint serves nothing. This function's job is to make that
+    window as short as it can be, to never leave it open silently, and to put
+    the previous instance back if the new one does not come up.
+    """
+    from sqlalchemy import select
+
+    from ..db import SessionLocal
+    from ..models import (
+        INST_RUNNING,
+        PROMO_ACTIVE,
+        PROMO_FAILED,
+        PROMO_PENDING,
+        PROMO_SUPERSEDED,
+        Endpoint,
+        EndpointPromotion,
+        Instance,
+    )
+    from . import inst_state
+    from .instances import start_instance, stop_instance
+
+    async with SessionLocal() as session:
+        endpoint = await session.get(Endpoint, endpoint_id)
+        if endpoint is None:
+            raise RuntimeError("Endpoint not found.")
+        target = await session.get(Instance, instance_id)
+        if target is None:
+            raise RuntimeError("Target instance not found.")
+
+        previous_id = endpoint.current_instance_id
+        previous = await session.get(Instance, previous_id) if previous_id else None
+
+        if previous_id == instance_id and target.status == INST_RUNNING:
+            return f"'{target.name}' already serves {endpoint.name} and is running."
+
+        # Refuse rather than half-swap. Each of these would otherwise be
+        # discovered with production already stopped.
+        if target.endpoint_id != endpoint.id:
+            raise RuntimeError(
+                f"'{target.name}' is not a member of endpoint '{endpoint.name}'. "
+                "Add it to the endpoint first so it launches with the right "
+                "aliases and certificate."
+            )
+        if inst_state.in_flight(instance_id):
+            raise RuntimeError(f"'{target.name}' is busy with another operation.")
+        if previous_id and inst_state.in_flight(previous_id):
+            raise RuntimeError(
+                f"'{previous.name if previous else previous_id}' is busy with "
+                "another operation."
+            )
+        if not endpoint.tls_cert_enc and endpoint.port == 443:
+            raise RuntimeError(
+                f"Endpoint '{endpoint.name}' has no certificate, so it cannot "
+                "serve HTTPS on :443. Upload one first."
+            )
+
+        aliases = [a.alias for a in endpoint.aliases]
+        promo = EndpointPromotion(
+            endpoint_id=endpoint.id, endpoint_name=endpoint.name,
+            to_instance_id=target.id, to_instance_name=target.name,
+            to_model_name=(target.model.name if target.model else ""),
+            from_instance_id=previous.id if previous else None,
+            from_instance_name=previous.name if previous else None,
+            status=PROMO_PENDING, reason=reason,
+            aliases_snapshot=aliases_json(aliases),
+            cert_fingerprint=endpoint.tls_fingerprint_sha256,
+            job_id=handle.job_id,
+        )
+        session.add(promo)
+        await session.commit()
+
+        await handle.log(
+            f"Promoting '{target.name}' to endpoint '{endpoint.name}' "
+            f"({endpoint.hostname}:{endpoint.port})"
+        )
+        if previous is not None:
+            await handle.log(
+                f"'{previous.name}' currently serves it and will be stopped first "
+                "— the endpoint is unavailable until the new instance finishes "
+                "loading. It is NOT deleted, so rolling back is a promote in "
+                "the other direction."
+            )
+
+        try:
+            if previous is not None and previous.status == INST_RUNNING:
+                await handle.log(f"Stopping '{previous.name}'…")
+                await stop_instance(session, handle, previous.id)
+
+            await handle.log(f"Starting '{target.name}' with {len(aliases)} alias(es)…")
+            await start_instance(session, handle, target.id)
+
+        except Exception as exc:  # noqa: BLE001 - every failure is recoverable-ish
+            promo.status = PROMO_FAILED
+            promo.finished_at = _utcnow_naive()
+            await session.commit()
+            # Production is down at this point and that is the only thing that
+            # matters. Try to put the previous instance back before reporting.
+            if previous is not None:
+                await handle.log(
+                    f"'{target.name}' did not come up: {exc}. "
+                    f"Restoring '{previous.name}'…", "error",
+                )
+                try:
+                    await start_instance(session, handle, previous.id)
+                    raise RuntimeError(
+                        f"Promotion failed ({exc}). '{previous.name}' has been "
+                        f"restarted and serves '{endpoint.name}' again."
+                    ) from exc
+                except Exception as restore_exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"Promotion failed ({exc}) AND the previous instance "
+                        f"'{previous.name}' could not be restarted "
+                        f"({restore_exc}). ENDPOINT '{endpoint.name}' IS DOWN — "
+                        "start an instance manually from the Instances page."
+                    ) from exc
+            raise RuntimeError(
+                f"Promotion failed and there was no previous instance to "
+                f"restore. Endpoint '{endpoint.name}' is not being served: {exc}"
+            ) from exc
+
+        # Only now does the endpoint point at the new instance. Flipping before
+        # the target is up would make the API claim a handoff that had not
+        # happened.
+        for row in (
+            await session.execute(
+                select(EndpointPromotion).where(
+                    EndpointPromotion.endpoint_id == endpoint.id,
+                    EndpointPromotion.status == PROMO_ACTIVE,
+                )
+            )
+        ).scalars():
+            row.status = PROMO_SUPERSEDED
+
+        endpoint.current_instance_id = target.id
+        endpoint.promoted_at = _utcnow_naive()
+        promo.status = PROMO_ACTIVE
+        promo.finished_at = _utcnow_naive()
+        await session.commit()
+
+        await handle.log(f"'{endpoint.name}' now served by '{target.name}'.")
+        return f"Promoted '{target.name}' to '{endpoint.name}'."
+
+
+def _utcnow_naive():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def previous_holder(session, endpoint_id: int) -> int | None:
+    """The instance that served this endpoint before the current one.
+
+    Rollback is not a distinct operation — it is a promote pointed backwards —
+    so this only has to answer "backwards to what".
+    """
+    from sqlalchemy import select
+
+    from ..models import PROMO_SUPERSEDED, EndpointPromotion
+
+    row = (
+        await session.execute(
+            select(EndpointPromotion)
+            .where(
+                EndpointPromotion.endpoint_id == endpoint_id,
+                EndpointPromotion.status == PROMO_SUPERSEDED,
+            )
+            .order_by(EndpointPromotion.started_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row.to_instance_id if row else None

@@ -264,6 +264,9 @@ class Instance(Base):
     endpoint_id: Mapped[int | None] = mapped_column(
         ForeignKey("endpoints.id"), nullable=True
     )
+    endpoint: Mapped["Endpoint | None"] = relationship(
+        foreign_keys=[endpoint_id], lazy="selectin"
+    )
     tls_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     tls_port: Mapped[int] = mapped_column(Integer, default=443)
     tls_cert_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -670,8 +673,16 @@ class Endpoint(Base):
 
     # Unique: one instance hosts at most one nginx sidecar, so at most one
     # endpoint. Nullable-unique is fine in SQLite — NULLs are distinct.
+    # endpoints -> instances and instances -> endpoints are mutually dependent.
+    # use_alter defers THIS constraint to an ALTER after both tables exist, so
+    # create_all can order them; without it SQLAlchemy cannot sort the metadata
+    # and warns that it may become an error.
     current_instance_id: Mapped[int | None] = mapped_column(
-        ForeignKey("instances.id", ondelete="SET NULL"), nullable=True, unique=True
+        ForeignKey(
+            "instances.id", ondelete="SET NULL",
+            use_alter=True, name="fk_endpoint_current_instance",
+        ),
+        nullable=True, unique=True,
     )
     promoted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
