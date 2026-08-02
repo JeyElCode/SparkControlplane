@@ -688,10 +688,17 @@ class TelemetryEngine:
         url, verify = base
         # httpx clients pin verify at construction; TLS instances are rare
         # enough that a one-off client per scrape is fine.
-        if not verify:
+        #
+        # `is not True`, NOT `not verify`. `verify` widened from a bool to
+        # "True | False | a CA bundle path" when node certificates arrived, and
+        # a path string is truthy — so `not verify` would send a private-CA
+        # scrape down the branch that uses the shared system-CA client. It
+        # would fail verification, metrics would go dark, and the reconciler
+        # would drive every healthy instance to `error`.
+        if verify is not True:
             import httpx
 
-            async with httpx.AsyncClient(timeout=3, verify=False) as c:
+            async with httpx.AsyncClient(timeout=3, verify=verify) as c:
                 resp = await c.get(f"{url}/metrics", headers=status_svc.instance_auth_headers(inst))
         else:
             resp = await client.get(f"{url}/metrics", headers=status_svc.instance_auth_headers(inst))

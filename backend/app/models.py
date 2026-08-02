@@ -77,6 +77,15 @@ class Node(Base):
     role: Mapped[str] = mapped_column(String(16))
     name: Mapped[str] = mapped_column(String(64))               # hostname, e.g. spark-01
     lan_ip: Mapped[str] = mapped_column(String(64))
+    # Fully-qualified DNS name, e.g. dgx-md-01.example.net. Nullable: an
+    # existing fleet has none until an operator fills it in.
+    #
+    # This is the node's TLS identity. The cluster proxy verifies the upstream
+    # certificate with X509_check_host, which matches dNSName SANs only and
+    # never looks at the address it connected to — so without a DNS name there
+    # is nothing a certificate could attest to that the proxy would check. An
+    # IP SAN is inert on this path no matter what it contains.
+    fqdn: Mapped[str | None] = mapped_column(String(253), nullable=True)
     qsfp_ip: Mapped[str] = mapped_column(String(64))
     qsfp_iface: Mapped[str] = mapped_column(String(32), default="enp1s0f1np1")
 
