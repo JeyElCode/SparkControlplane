@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.36.2 — evals died before contacting the model
+
+**Fixed: running a quality eval failed immediately with
+`PermissionError: [Errno 13] Permission denied: '/app/backend/data'`.**
+
+tool-eval-bench opens a run database at `Path.cwd() / "data" /
+"benchmarks.sqlite"` — relative to wherever the CLI is invoked, with no flag
+and no environment variable to point it elsewhere. The portal launched it from
+its own working directory, which is the read-only application directory, so the
+tool's first act was a `mkdir` that failed. The eval died before it ever
+reached the model.
+
+It now runs from `<data dir>/tool-eval-bench`, which is writable by definition —
+the portal's own database lives on that volume — and persistent, so the run
+history the tool keeps is not discarded on every deploy.
+
+Worth noting how it hid: `available()` probes the binary with `--help`, which
+never constructs the repository. The Evals page reported the suite installed and
+healthy right up to the moment someone used it.
+
 ## v1.36.1 — promote/rollback returned 500 on a successful promotion (#94)
 
 **Fixed: `POST /api/endpoints/{name}/promote` and `/rollback` returned 500
