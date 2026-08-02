@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.32.0 — evals do one thing: measure speed honestly
+
+**Breaking.** The operator-authored capability eval is gone. If you script
+against the portal, these no longer exist: `GET/POST /api/evals/tasks`,
+`PATCH/DELETE /api/evals/tasks/{id}`, the `eval_task_list` / `eval_task_create`
+/ `eval_task_update` / `eval_task_delete` MCP tools, the `judge` and
+`sandbox_image` fields on an eval request, and the external-judge settings.
+
+Nothing you have already measured is lost. Historical runs still open and still
+show their scores, the `custom_tasks` table is left on disk untouched rather
+than dropped, and an older backup bundle still restores.
+
+- **Speed is measured across a predictability ladder, and shown as a triple.**
+  `predictable` (counting), `code`, `creative`. Decode speed is not one number:
+  speculative decoding multiplies throughput on predictable output and *costs*
+  you on creative output. A build measured 79 / 72 / 35 tok/s where the one
+  without it managed 62 / 65 / 38 — faster on two regimes, slower on the third,
+  and indistinguishable from a plain win if you average it. The run list, the
+  trend chart and the comparison view now all show the three rungs instead of a
+  single peak across every category and concurrency level.
+- **Runs that measure nothing now fail instead of succeeding.** An unknown
+  category is rejected at the API with the valid list — previously it produced
+  a green run with no measurements, which is exactly what Re-run did on every
+  historical row. And a benchmark where every request failed now fails the run;
+  `_run_perf` records the error and returns, so with speed as the only half
+  nothing else would ever have caught a dead endpoint.
+- Progress no longer starts at 60%, and a run no longer reports
+  `complete (overall 0%)` — both were artefacts of the capability half owning
+  the first 60% of the bar and a score that no longer exists.
+
+### Fixed
+
+- **A backup bundle could not be restored.** `jobs` is deliberately excluded
+  from the bundle, but `model_node_states.last_job_id` — carried since backups
+  shipped — is a foreign key into it, and SQLite runs with
+  `PRAGMA foreign_keys=ON`. Any bundle taken after a model download aborted the
+  entire restore with `FOREIGN KEY constraint failed`. Nulled on export.
+- **Eval load was unbounded.** `{"concurrency": [512], "perf_reps": 50}` was
+  accepted, meaning 512 concurrent streams from a single-replica portal against
+  a live serving instance. Now capped.
+- **A portal restart stranded eval runs as `running` forever**, with the UI
+  hiding both View and Re-run. The v1.28.1 job sweep missed them because an
+  eval's status lives on its own column.
+- Eval history is included in the backup bundle.
+
 ## v1.31.0 — the fast interconnect is actually used
 
 - **Multi-node tensor parallelism now runs its all-reduce over RoCE instead of
