@@ -47,6 +47,7 @@ log = logging.getLogger("spark.toolbench")
 
 __all__ = [
     "PINNED_SHA",
+    "workdir",
     "BenchResult",
     "available",
     "parse_envelope",
@@ -63,6 +64,30 @@ PINNED_SHA = "5df1e9e0cbde8d5805ef4c70e3fe2a13cec5ab9c"
 # `available()` reports it and the API refuses the run with a clear reason
 # rather than the subprocess failing with ENOENT halfway through a job.
 BENCH_BIN = os.environ.get("SPARK_TOOL_EVAL_BENCH", "/opt/tool-eval-bench/bin/tool-eval-bench")
+
+
+def workdir() -> str:
+    """A writable directory to run the benchmark from, created on demand.
+
+    tool-eval-bench opens a run database at `Path.cwd() / "data" /
+    "benchmarks.sqlite"` — a path relative to wherever the CLI is invoked, with
+    no flag and no environment variable to override it. The portal's working
+    directory is the read-only application directory, so the very first thing
+    the tool did was `mkdir /app/backend/data` and die with EACCES.
+
+    It surfaced only when someone ran an eval: `available()` probes with
+    `--help`, which never constructs the repository, so the feature reported
+    itself healthy right up to the moment it was used.
+
+    Under the data directory rather than a temp dir so the run history the tool
+    keeps survives a restart, and because that volume is writable by
+    definition — the portal's own database lives there.
+    """
+    from ..config import get_settings
+
+    path = Path(get_settings().data_dir) / "tool-eval-bench"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 # A scenario run is long; this is a backstop against a hung CLI holding a job
 # open forever, not an expected duration.
@@ -283,6 +308,7 @@ async def run_bench(
         stdout=asyncio.subprocess.DEVNULL,   # empty when --json-file is used
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        cwd=workdir(),
         start_new_session=True,
     )
 
