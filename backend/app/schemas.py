@@ -1123,6 +1123,11 @@ class GatewayInfo(BaseModel):
     routes: list[GatewayRoute] = []
     # Names that exist but are not servable right now, with why.
     unavailable: list[GatewayRoute] = []
+    # alias -> the running instances advertising it, when more than one does.
+    # Surfaced rather than only logged: the gateway still answers (refusing
+    # would take the endpoint down over a config ambiguity) but it is serving
+    # from ONE of them, and which one is not something to leave implicit.
+    alias_conflicts: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # --- Gateway API keys + traffic ------------------------------------------
