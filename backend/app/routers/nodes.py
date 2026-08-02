@@ -6,11 +6,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
 from ..crypto import encrypt
-from ..db import get_session
+from ..db import get_session, get_setting
 from ..models import MAX_NODES, Node
-from ..schemas import ConnectionTest, InterfaceInfo, JobAccepted, NodeIn, NodeOut, NodeUpdate
-from ..services import cluster
+from ..schemas import (
+    ConnectionTest,
+    InterfaceInfo,
+    JobAccepted,
+    NodeCertIn,
+    NodeIn,
+    NodeOut,
+    NodeUpdate,
+)
+from ..services import cluster, nodeops
 from ..services.jobs import jobs
 from ..ssh import pool, ssh_for_node
 
@@ -44,6 +54,7 @@ async def create_node(payload: NodeIn, session: AsyncSession = Depends(get_sessi
         role=payload.role,
         name=payload.name,
         lan_ip=payload.lan_ip,
+        fqdn=payload.fqdn,
         qsfp_ip=payload.qsfp_ip,
         qsfp_iface=payload.qsfp_iface,
         ssh_user=payload.ssh_user,
@@ -187,6 +198,120 @@ async def forget_host_key(node_id: int, session: AsyncSession = Depends(get_sess
     await pool.drop(node_id)  # force a fresh connect that re-pins
     log.warning("cleared the pinned SSH host key for %s", node.name)
     return NodeOut.of(node)
+
+
+@router.post("/{node_id}/certificate/csr")
+async def create_csr(node_id: int, session: AsyncSession = Depends(get_session)):
+    """Generate a key ON the node and return its certificate signing request.
+
+    The key never comes back — only stdout does, and stdout is the CSR. Take
+    the request to whatever CA you run, then POST the signed certificate to
+    `/certificate`. This is the same path the OpenBao renewal uses; the only
+    difference is who signs.
+
+    The new key is staged beside the live one and promoted only when a
+    certificate arrives, so generating a request never disturbs a running
+    proxy — which matters when signing takes days.
+    """
+    from ..config import get_settings
+    from ..services import nodecert
+
+    node = await session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, "Node not found")
+    if not node.fqdn:
+        raise HTTPException(
+            400,
+            "Set this node's DNS name first. The cluster proxy verifies the "
+            "certificate against that name, so it has to be decided before "
+            "the request is generated.",
+        )
+    ssh = await ssh_for_node(session, node)
+    res = await ssh.run(
+        nodecert.csr_command(get_settings().node_install_dir, node.fqdn)
+    )
+    csr = (res.stdout or "").strip()
+    if "BEGIN CERTIFICATE REQUEST" not in csr:
+        raise HTTPException(
+            502,
+            f"{node.name} did not produce a signing request. Is openssl "
+            f"installed on the node? It said: {(res.stderr or '').strip()[:300]}",
+        )
+    node.tls_csr_pem = csr
+    await session.commit()
+    return {"node": node.name, "fqdn": node.fqdn, "csr": csr}
+
+
+@router.post("/{node_id}/certificate", response_model=NodeOut)
+async def upload_certificate(
+    node_id: int, payload: NodeCertIn, session: AsyncSession = Depends(get_session)
+):
+    """Install a signed certificate on the node.
+
+    Works for a certificate signed from this node's CSR (the key is already
+    there and gets promoted) and for one an operator holds as a cert+key pair.
+    The pair path is supported but weaker, and deliberately not the default:
+    `nodes` travels in the backup bundle, so a key the portal handles is a key
+    written to an S3 object on a schedule.
+    """
+    from ..config import get_settings
+    from ..services import nodecert
+
+    node = await session.get(Node, node_id)
+    if node is None:
+        raise HTTPException(404, "Node not found")
+
+    check = nodecert.check_certificate(payload.certificate, node)
+    if not check.ok:
+        raise HTTPException(400, check.error)
+    if not payload.private_key and not node.tls_csr_pem:
+        raise HTTPException(
+            400,
+            "There is no pending signing request for this node, so the node "
+            "has no matching private key. Generate a request first, or supply "
+            "the private key alongside the certificate.",
+        )
+
+    install_dir = get_settings().node_install_dir
+    ssh = await ssh_for_node(session, node)
+    if payload.private_key:
+        _cert, key_path, _ca = nodecert.node_cert_paths(install_dir)
+        await nodeops.install_file(ssh, key_path + ".new", payload.private_key, mode="600")
+    await nodecert.install(ssh, install_dir, payload.certificate, payload.ca_certificate)
+
+    reloaded = await nodecert.reload_sidecars(
+        ssh, install_dir, await _sidecars_on(session, node)
+    )
+
+    info = check.info
+    node.tls_cert_pem = payload.certificate
+    node.tls_csr_pem = None
+    node.tls_fingerprint = info.fingerprint_sha256 if info else None
+    node.tls_not_after = info.not_after.replace(tzinfo=None) if info and info.not_after else None
+    node.tls_issued_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    node.tls_last_error = None
+    if payload.ca_certificate:
+        setting = await get_setting(session)
+        setting.node_ca_pem = payload.ca_certificate
+    await session.commit()
+    log.info("installed certificate on %s (reloaded: %s)", node.name, reloaded or "none")
+    return NodeOut.of(node)
+
+
+async def _sidecars_on(session: AsyncSession, node: Node) -> list[str]:
+    from ..models import Instance
+
+    rows = (await session.execute(select(Instance))).scalars().all()
+    out = []
+    for inst in rows:
+        if not inst.tls_enabled:
+            continue
+        if inst.topology == "single" and inst.node_id != node.id:
+            continue
+        if inst.topology != "single" and node.role != "head":
+            continue
+        out.append(inst.name)
+    return out
 
 
 @router.post("/{node_id}/harden", response_model=JobAccepted)

@@ -11,6 +11,7 @@ const EMPTY: NodeInput = {
   role: "head",
   name: "",
   lan_ip: "",
+  fqdn: "",
   qsfp_ip: "",
   qsfp_iface: "enp1s0f1np1",
   ssh_user: "",
@@ -94,6 +95,7 @@ function NodeForm({
       </div>
       <div className="row-2">
         <Field label="LAN IP" hint="Management IP used for SSH"><input value={n.lan_ip} placeholder="192.168.1.160" onChange={(e) => set("lan_ip", e.target.value)} /></Field>
+        <Field label="DNS name" hint="Fully-qualified, e.g. dgx-01.example.net. Needed only for node TLS: it is the name the cluster proxy verifies the node's certificate against."><input value={n.fqdn ?? ""} placeholder="dgx-01.example.net" onChange={(e) => set("fqdn", e.target.value)} /></Field>
         <Field label="QSFP IP" hint="Private high-speed link IP. The head node's is the master-addr for distributed instances."><input value={n.qsfp_ip} placeholder="10.0.0.1" onChange={(e) => set("qsfp_ip", e.target.value)} /></Field>
       </div>
       <div className="row-2">

@@ -187,3 +187,99 @@ def test_a_certificate_installed_outside_the_portal_is_still_judged():
     portal-side record of when it issued one."""
     n = _aged(160)
     assert renewal_due(n, 168)
+
+
+# --- the API an operator without OpenBao actually uses --------------------
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    import app.main as main
+
+    importlib.reload(main)
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app) as c:
+        yield c
+    config.get_settings.cache_clear()
+
+
+def _add_node(client, fqdn="dgx-md-01.example.net"):
+    body = {"role": "head", "name": "dgx-md-01", "lan_ip": "10.0.0.11",
+            "qsfp_ip": "10.10.10.1", "ssh_user": "u", "ssh_password": "p"}
+    if fqdn:
+        body["fqdn"] = fqdn
+    return client.post("/api/nodes", json=body)
+
+
+def test_the_dns_name_round_trips_through_the_api(client):
+    r = _add_node(client, "DGX-MD-01.Example.NET")
+    assert r.status_code == 201, r.text
+    assert r.json()["fqdn"] == "dgx-md-01.example.net"
+
+
+def test_an_ip_in_the_dns_name_field_is_rejected_by_the_api(client):
+    r = _add_node(client, "10.0.0.11")
+    assert r.status_code == 422, r.text
+
+
+def test_a_node_without_a_dns_name_cannot_request_a_csr(client):
+    """Decided before the request is generated: the name is what the CSR
+    attests to and what the cluster later checks."""
+    _add_node(client, fqdn=None)
+    nid = client.get("/api/nodes").json()[0]["id"]
+    r = client.post(f"/api/nodes/{nid}/certificate/csr")
+    assert r.status_code == 400
+    assert "DNS name" in r.text
+
+
+def test_a_certificate_for_the_wrong_host_is_refused_by_the_api(client):
+    _add_node(client)
+    nid = client.get("/api/nodes").json()[0]["id"]
+    r = client.post(f"/api/nodes/{nid}/certificate", json={
+        "certificate": _cert(sans=("other.example.net",)),
+    })
+    assert r.status_code == 400
+    assert "does not cover" in r.text
+
+
+def test_a_certificate_with_no_pending_request_and_no_key_is_refused(client):
+    """Installing it would leave nginx holding a certificate with no matching
+    key — the proxy fails to start and the endpoint is down."""
+    _add_node(client)
+    nid = client.get("/api/nodes").json()[0]["id"]
+    r = client.post(f"/api/nodes/{nid}/certificate", json={"certificate": _cert()})
+    assert r.status_code == 400
+    assert "no matching private key" in r.text
+
+
+def test_the_host_key_flag_is_actually_populated(client):
+    """Declared since v1.29.0 and never set, so the UI always reported every
+    node unpinned and hid the Forget-host-key control — the re-trust action a
+    node rebuild depends on."""
+    import asyncio
+
+    import app.db as db
+    from sqlalchemy import select
+
+    from app.models import Node as N
+
+    _add_node(client)
+    assert client.get("/api/nodes").json()[0]["has_host_key"] is False
+
+    async def _pin():
+        async with db.SessionLocal() as s:
+            node = (await s.execute(select(N))).scalars().one()
+            node.host_key = "ssh-ed25519 AAAAC3Nz"
+            await s.commit()
+
+    asyncio.run(_pin())
+    assert client.get("/api/nodes").json()[0]["has_host_key"] is True

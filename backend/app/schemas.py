@@ -203,10 +203,25 @@ class InterfaceInfo(BaseModel):
     qsfp_candidate: bool = False
 
 
+def _v_fqdn(v):
+    from .services.pki import normalise_fqdn
+
+    return normalise_fqdn(v)
+
+
 class NodeIn(BaseModel):
     role: Literal["head", "worker"]
     name: str
     lan_ip: str
+    # The node's TLS identity: the name the cluster proxy verifies its
+    # certificate against. Optional — a fleet without node certificates has
+    # no use for it.
+    fqdn: str | None = None
+
+    @field_validator("fqdn")
+    @classmethod
+    def _fqdn(cls, v):
+        return _v_fqdn(v)
     qsfp_ip: str
     qsfp_iface: str = "enp1s0f1np1"
     ssh_user: str
@@ -234,9 +249,30 @@ class NodeIn(BaseModel):
         return _v_ip(v)
 
 
+class NodeCertIn(BaseModel):
+    """A signed certificate for a node, and optionally the CA that signed it.
+
+    `private_key` exists for operators who already hold a cert+key pair. It is
+    the weaker path and not the default: `nodes` travels in the backup bundle,
+    so a key the portal handles is a key written to an S3 object on a schedule.
+    The CSR flow avoids it entirely — the key is generated on the node and only
+    the request travels.
+    """
+
+    certificate: str
+    ca_certificate: str | None = None
+    private_key: str | None = None
+
+
 class NodeUpdate(BaseModel):
     name: str | None = None
     lan_ip: str | None = None
+    fqdn: str | None = None
+
+    @field_validator("fqdn")
+    @classmethod
+    def _fqdn(cls, v):
+        return _v_fqdn(v)
     qsfp_ip: str | None = None
     qsfp_iface: str | None = None
     mac_address: str | None = None
@@ -282,6 +318,7 @@ class NodeOut(BaseModel):
     role: str
     name: str
     lan_ip: str
+    fqdn: str | None = None
     qsfp_ip: str
     qsfp_iface: str
     mac_address: str | None = None
@@ -291,6 +328,13 @@ class NodeOut(BaseModel):
     sudo_mode: str
     hardened: bool
     has_host_key: bool = False
+    # Node certificate state, for the Nodes page. The certificate itself is
+    # public; the key is on the node and the portal never has it.
+    cert_fqdn: str | None = None
+    has_certificate: bool = False
+    cert_not_after: datetime | None = None
+    cert_fingerprint: str | None = None
+    cert_error: str | None = None
     has_ssh_password: bool
     has_ssh_key: bool
     has_sudo_password: bool
@@ -304,6 +348,7 @@ class NodeOut(BaseModel):
             role=n.role,
             name=n.name,
             lan_ip=n.lan_ip,
+            fqdn=n.fqdn,
             qsfp_ip=n.qsfp_ip,
             qsfp_iface=n.qsfp_iface,
             mac_address=n.mac_address,
@@ -315,6 +360,16 @@ class NodeOut(BaseModel):
             has_ssh_password=bool(n.ssh_password_enc),
             has_ssh_key=bool(n.ssh_private_key_enc),
             has_sudo_password=bool(n.sudo_password_enc),
+            # Declared since v1.29.0 and never populated, so the Nodes page
+            # always reported every node unpinned and hid the Forget-host-key
+            # control — the deliberate re-trust action after a rebuild, which
+            # node certificates now also depend on.
+            has_host_key=bool(n.host_key),
+            cert_fqdn=n.fqdn,
+            has_certificate=bool(n.tls_cert_pem),
+            cert_not_after=n.tls_not_after,
+            cert_fingerprint=n.tls_fingerprint,
+            cert_error=n.tls_last_error,
             created_at=n.created_at,
             updated_at=n.updated_at,
         )
