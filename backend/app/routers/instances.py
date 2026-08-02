@@ -175,7 +175,8 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
     else:
         port = payload.port
         conflict = await ports_svc.port_conflict(
-            session, port, payload.topology, payload.node_id
+            session, port, payload.topology, payload.node_id,
+            endpoint_id=payload.endpoint_id,
         )
         if conflict:
             raise HTTPException(409, conflict)
@@ -192,6 +193,11 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
             raise HTTPException(400, "tls_enabled requires both tls_cert and tls_key (PEM).")
         if payload.tls_port == port:
             raise HTTPException(400, "tls_port must differ from the vLLM port.")
+    if payload.endpoint_id is not None:
+        from ..models import Endpoint
+
+        if await session.get(Endpoint, payload.endpoint_id) is None:
+            raise HTTPException(404, f"Endpoint {payload.endpoint_id} not found")
     inst = Instance(
         name=payload.name,
         model_id=payload.model_id,
@@ -223,6 +229,11 @@ async def create_instance(payload: InstanceIn, session: AsyncSession = Depends(g
         tls_port=payload.tls_port,
         tls_cert_enc=encrypt(payload.tls_cert),
         tls_key_enc=encrypt(payload.tls_key),
+        # Accepted by the schema since #77 but never written, so membership was
+        # only reachable through a follow-up PATCH — and an instance created
+        # without it launched with its own aliases and its own port instead of
+        # the endpoint's.
+        endpoint_id=payload.endpoint_id,
         autostart=payload.autostart,
     )
     session.add(inst)
@@ -267,7 +278,8 @@ async def update_instance(
         from ..services import ports as ports_svc
 
         conflict = await ports_svc.port_conflict(
-            session, data["port"], inst.topology, inst.node_id, exclude_id=inst.id
+            session, data["port"], inst.topology, inst.node_id, exclude_id=inst.id,
+            endpoint_id=data.get("endpoint_id", inst.endpoint_id),
         )
         if conflict:
             raise HTTPException(409, conflict)

@@ -1,5 +1,75 @@
 # Changelog
 
+## v1.35.0 — terminate an endpoint's TLS in Kubernetes instead of on the DGX (#86)
+
+The nginx sidecar, moved off the box. Same job — terminate HTTPS for a public
+hostname and reverse-proxy to vLLM — running in the cluster instead, with a
+cert-manager/ACME certificate the portal never sees and never pushes over SSH.
+
+An endpoint now chooses where HTTPS is terminated:
+
+- `onbox` (**default, and what every existing endpoint keeps**) — the nginx
+  sidecar on the serving node, unchanged.
+- `k8s` — a proxy in Kubernetes. No sidecar is installed, no key is pushed on
+  promote, and vLLM binds a routable address rather than loopback.
+
+**The portal needs no Kubernetes credentials, and the manifests never change
+when you promote.** `GET /api/endpoints/{name}/manifests` returns the YAML —
+a selectorless Service, an EndpointSlice pointing at the head node, a
+cert-manager Certificate and an Ingress — for you to commit. The portal
+describes what it wants; your GitOps applies it.
+
+That works because a promotion is invisible from outside the box. Every member
+of an endpoint serves from the **head** node for both cluster and distributed
+topologies, and the new `upstream_port` pins the port they all bind, so
+promoting changes which process is listening on `head-ip:port` and nothing a
+proxy can observe. There is no ConfigMap to patch, no RBAC to grant, and
+nothing that breaks when the Kubernetes API is unreachable.
+
+### Fixed: a backup could not be restored onto a fresh box
+
+**Anyone using named endpoints should take a fresh backup after upgrading.**
+Bundles from v1.34.x are still accepted, but they do not contain the endpoints.
+
+`endpoints`, `endpoint_aliases` and `endpoint_promotions` were never in the
+backup bundle, while `instances` carried an `endpoint_id` referencing them. On
+a **fresh** database that foreign key had nothing to point at, so the restore
+aborted on a FOREIGN KEY violation — losing every other table with it, not just
+the endpoints. Restoring over an existing database masked it completely,
+because the endpoint rows were still on disk.
+
+Bundle version is now 3. Promotion history travels too (without its job id,
+since `jobs` never travels), because the active promotion row is what rollback
+reads to find the previous instance — a restored endpoint without it cannot
+roll back. An older bundle with no endpoints now drops the membership and
+restores everything else instead of failing.
+
+### Also in this release, all found while building the above
+
+- **Fixed: `endpoint_id` was accepted when creating an instance and never
+  written.** Membership was only reachable through a follow-up PATCH, so an
+  instance created as an endpoint member launched with its own aliases instead
+  of the endpoint's.
+- **Fixed: an endpoint that owned a certificate never used it.** A member with
+  TLS enabled served its own cert, which is the hand-copying #77 exists to
+  remove. It now uses the endpoint's.
+- Auto port assignment and conflict detection understand a pinned upstream
+  port: two members of one endpoint may declare it (they are mutually
+  exclusive — promote stops the outgoing instance first), nothing else may, and
+  it is never handed out by auto-assignment.
+- Health probes and status read the effective port. Left alone, a member would
+  have been probed on the port its row records rather than the one it binds,
+  and a healthy instance would have read as down.
+- Endpoint hostnames are validated as DNS names and lowercased. They end up in
+  an ACME order and in generated YAML, so a value that cannot work is refused
+  at entry rather than at `kubectl apply`.
+
+**Known gap, stated rather than fixed:** moving nginx off the box turns the
+proxy→vLLM hop from loopback into a real LAN hop carrying every prompt and
+completion. For an instance without on-box TLS that traffic is plaintext on the
+management network. This is the same weakness as the portal→node hop, now on
+the production data path — tracked for a follow-up alongside #86.
+
 ## v1.34.2 — the Ray dashboard stops listening on the management LAN
 
 **Security. Anyone running a Ray cluster set up by this portal should upgrade

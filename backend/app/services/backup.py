@@ -29,6 +29,9 @@ from ..models import (
     EvalRun,
     PerfResult,
     ClusterConfig,
+    Endpoint,
+    EndpointAlias,
+    EndpointPromotion,
     Instance,
     InstanceSchedule,
     ServeProfile,
@@ -41,10 +44,15 @@ from .s3lite import S3Client, S3Config
 
 log = logging.getLogger("spark.backup")
 
-# 2: restore no longer empties tables the bundle does not carry. Bundles are
-# compatible in both directions — the version is informational, recorded so a
-# support question can be answered without guessing.
-BUNDLE_VERSION = 2
+# 2: restore no longer empties tables the bundle does not carry.
+# 3: named endpoints travel. Before this, a bundle from v1.34.x carried
+#    instances whose `endpoint_id` referenced a table the bundle did not
+#    contain — so restoring onto a FRESH box (the case a backup exists for)
+#    aborted the ENTIRE restore on a FOREIGN KEY violation, not just the
+#    endpoints. Restoring over the existing database masked it, because the
+#    endpoint rows were still there.
+# Bundles remain compatible in both directions; the version is informational.
+BUNDLE_VERSION = 3
 
 # Parent-first order; singletons (id=1) are updated in place on restore.
 _TABLES: list[tuple[str, type]] = [
@@ -53,7 +61,18 @@ _TABLES: list[tuple[str, type]] = [
     ("settings", Setting),
     ("models", ModelRegistry),
     ("model_node_states", ModelNodeState),
+    # Before instances: an instance's `endpoint_id` points here. The reverse
+    # reference (`endpoints.current_instance_id`) is the circular half of the
+    # pair — it is nulled on insert and patched once instances exist, which is
+    # also why the table is declared with use_alter=True.
+    ("endpoints", Endpoint),
     ("instances", Instance),
+    ("endpoint_aliases", EndpointAlias),
+    # After instances: promotions reference both ends of a handoff. This is
+    # history rather than configuration, but it is the ONLY record of what
+    # served an endpoint before the current instance, which is what rollback
+    # reads. Losing it turns a restored endpoint into one that cannot roll back.
+    ("endpoint_promotions", EndpointPromotion),
     ("instance_schedules", InstanceSchedule),
     # Serve profiles: configuration worth a bring-up, so it belongs in a backup.
     # Built-in rows travel too, which is harmless — a restore replaces the table
@@ -80,6 +99,9 @@ _SINGLETONS = {"cluster_config", "settings"}
 _DANGLING_FK_COLUMNS: dict[str, tuple[str, ...]] = {
     "model_node_states": ("last_job_id",),
     "eval_runs": ("job_id",),
+    # The job that ran the promotion. `jobs` is run history and never travels,
+    # so keeping the id would fail the FK and abort the restore.
+    "endpoint_promotions": ("job_id",),
 }
 
 
@@ -113,6 +135,30 @@ def _dict_to_kwargs(model: type, data: dict) -> dict:
                 v = None
         out[col.name] = v
     return out
+
+
+# A referencing column whose target table may be absent from an older bundle.
+# Restoring such a row raises FOREIGN KEY and aborts the WHOLE restore — every
+# other table with it — so the reference is dropped instead. Losing an
+# instance's endpoint membership is recoverable; losing the restore is not.
+_FK_DEPENDENCIES: dict[str, dict[str, str]] = {
+    "instances": {"endpoint_id": "endpoints"},
+}
+
+
+def _null_orphan_fks(name: str, rows: list[dict], tables: dict) -> None:
+    for column, target in _FK_DEPENDENCIES.get(name, {}).items():
+        if target in tables:
+            continue
+        n = sum(1 for r in rows if r.get(column) is not None)
+        for r in rows:
+            r[column] = None
+        if n:
+            log.warning(
+                "restore: bundle has no '%s' table, so %s.%s was dropped on %d "
+                "row(s) — re-assign them after restoring",
+                target, name, column, n,
+            )
 
 
 async def build_bundle() -> dict:
@@ -169,6 +215,19 @@ async def apply_bundle(bundle: dict) -> dict:
         covered = [(n, m) for n, m in _TABLES if n in tables]
         skipped = [n for n, _ in _TABLES if n not in tables]
 
+        # The circular half of endpoints <-> instances, in both directions.
+        # Deleting instances while an endpoint still points at one violates the
+        # FK, and inserting an endpoint before its instance exists violates it
+        # the other way. Null it here, restore it at the end.
+        current_by_endpoint: dict[str, int] = {}
+        for row in tables.get("endpoints") or []:
+            if row.get("current_instance_id") is not None:
+                current_by_endpoint[row["name"]] = row["current_instance_id"]
+                row["current_instance_id"] = None
+        await session.execute(
+            Endpoint.__table__.update().values(current_instance_id=None)
+        )
+
         # children first
         for name, model in reversed(covered):
             if name in _SINGLETONS:
@@ -189,9 +248,22 @@ async def apply_bundle(bundle: dict) -> dict:
                             setattr(current, k, v)
                 counts[name] = min(1, len(rows))
                 continue
+            _null_orphan_fks(name, rows, tables)
             for row in rows:
                 session.add(model(**_dict_to_kwargs(model, row)))
+            # Flush per table so the parent-first order declared in `_TABLES`
+            # is the order the database actually sees. Without it SQLAlchemy
+            # sorts the whole batch by its own mapper dependency graph, which
+            # cannot resolve the endpoints <-> instances cycle and put
+            # endpoint_promotions after the instances it references.
+            await session.flush()
             counts[name] = len(rows)
+        await session.flush()
+
+        # Now that instances exist, point each endpoint back at its server.
+        for ep in (await session.execute(select(Endpoint))).scalars():
+            if ep.name in current_by_endpoint:
+                ep.current_instance_id = current_by_endpoint[ep.name]
         await session.commit()
     log.warning("backup restored: %s (cleared secrets: %d)", counts, len(cleared))
     if skipped:

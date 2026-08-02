@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_node_by_role
 from ..models import TOPO_SINGLE, Instance
+from .binding import effective_port
 
 API_PORT_START = 8000
 MASTER_PORT_START = 29500
@@ -35,6 +36,10 @@ async def allocate_api_port(session: AsyncSession) -> int:
     taken = set(RESERVED)
     for inst in (await session.execute(select(Instance))).scalars():
         taken.add(inst.port)
+        # An endpoint member binds the endpoint's pinned port, not its own, so
+        # that is the number an auto-assignment must avoid. Skipping it would
+        # hand a fresh instance a port a member already listens on.
+        taken.add(effective_port(inst))
         if inst.tls_enabled:
             taken.add(inst.tls_port)
     port = API_PORT_START
@@ -63,17 +68,38 @@ async def port_conflict(
     topology: str,
     node_id: int | None,
     exclude_id: int | None = None,
+    endpoint_id: int | None = None,
 ) -> str | None:
     """Human-readable conflict message when an explicit port collides with
-    another instance's vLLM or TLS port on the same serving node, else None."""
+    another instance's vLLM or TLS port on the same serving node, else None.
+
+    ``endpoint_id`` is the endpoint the candidate belongs to. On an edit it is
+    read from the row; on a create there is no row yet, so the caller passes
+    the value from the payload. Without it a new member would be rejected for
+    colliding with the very instance it is meant to replace.
+    """
     scope = await _serving_node_id(session, topology, node_id)
+    my_endpoint = endpoint_id
+    if my_endpoint is None and exclude_id:
+        mine = await session.get(Instance, exclude_id)
+        my_endpoint = mine.endpoint_id if mine is not None else None
     for other in (await session.execute(select(Instance))).scalars():
         if other.id == exclude_id:
+            continue
+        # Two members of the same endpoint may claim the same port. They are
+        # mutually exclusive by construction — an endpoint has one serving
+        # instance and promote stops the outgoing one before starting the
+        # incoming one — and sharing the port is the whole point: it lets an
+        # external proxy keep a static upstream across a promotion.
+        if (
+            my_endpoint is not None
+            and other.endpoint_id == my_endpoint
+        ):
             continue
         other_scope = await _serving_node_id(session, other.topology, other.node_id)
         if scope != other_scope and -1 not in (scope, other_scope):
             continue
-        if other.port == port:
+        if effective_port(other) == port:
             return f"Port {port} is already used by instance '{other.name}'."
         if other.tls_enabled and other.tls_port == port:
             return f"Port {port} is already used as the TLS port of instance '{other.name}'."
