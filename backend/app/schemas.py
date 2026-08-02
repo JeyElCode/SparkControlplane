@@ -443,6 +443,26 @@ class SettingsIn(BaseModel):
     backup_retention: int | None = None
     gateway_token: str | None = None  # write-only; "" clears
 
+    # --- node certificates -------------------------------------------------
+    node_cert_source: str | None = Field(default=None, pattern=r"^(none|openbao|manual)$")
+    node_cert_ttl_hours: float | None = None
+    node_ca_pem: str | None = None      # "" clears
+    pki_url: str | None = None
+    pki_mount: str | None = None
+    pki_role: str | None = None
+    pki_token: str | None = None        # write-only; "" clears
+
+    @field_validator("node_cert_ttl_hours")
+    @classmethod
+    def _ttl(cls, v):
+        if v is None:
+            return None
+        from .services.pki import validate_ttl_hours
+
+        # Refused here with the reason, so the operator sees it in the form
+        # rather than discovering it in a renewal job at 3am.
+        return validate_ttl_hours(v)
+
 
 class SettingsOut(BaseModel):
     has_hf_token: bool
@@ -459,6 +479,20 @@ class SettingsOut(BaseModel):
     has_backup_s3_secret: bool = False
     backup_interval_hours: float = 24.0
     backup_retention: int = 14
+
+    # --- node certificates -------------------------------------------------
+    node_cert_source: str = "none"
+    node_cert_ttl_hours: float | None = None
+    # Derived, so the form can show the schedule the chosen lifetime implies
+    # rather than making the operator work it out.
+    cert_renew_after_hours: float | None = None
+    cert_retry_window_hours: float | None = None
+    has_node_ca: bool = False
+    node_ca_subject: str | None = None
+    pki_url: str | None = None
+    pki_mount: str = "pki"
+    pki_role: str | None = None
+    has_pki_token: bool = False
     has_gateway_token: bool = False
 
 

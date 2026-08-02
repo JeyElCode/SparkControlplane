@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.36.1 — promote/rollback returned 500 on a successful promotion (#94)
+
+**Fixed: `POST /api/endpoints/{name}/promote` and `/rollback` returned 500
+while the promotion ran to completion.** `JobAccepted` requires a `message`,
+and these two handlers were the only ones of twenty that did not pass it — so
+FastAPI raised building the response, *after* the background job had already
+been dispatched.
+
+That is the worst shape this bug could take. The operator sees a 500, has no
+`job_id` to follow, concludes the promotion failed, and takes a recovery action
+against an endpoint that in fact already swapped correctly. Reported against a
+real `termination=k8s` promotion. Present since v1.34.0.
+
+It survived because the promote tests call the service directly with
+`start_instance`/`stop_instance` stubbed — thorough coverage of what promote
+*decides*, none of what the router *returns*. There are now HTTP-level tests for
+both handlers, plus a static sweep asserting no handler anywhere constructs
+`JobAccepted` without a message, which covers the endpoints that are awkward to
+drive in a test (a teardown, a power cycle) without needing a reachable node.
+
+### Settings UI for node certificates
+
+The v1.36.0 certificate settings were API-only. Settings now has a **Node
+certificates** section: pick the source (none / manual / OpenBao), set the
+lifetime, paste the CA, and — for OpenBao — the URL, mount, role and token.
+
+The form shows the schedule your chosen lifetime implies rather than making you
+work it out ("renewal starts after 16h, leaving 8h of retries"), and refuses an
+unusable lifetime with the reason at save time instead of at 3am in a renewal
+job. The token is write-only like every other secret in this API. OpenBao fields
+appear only when that source is selected.
+
 ## v1.36.0 — TLS on the hop from the cluster proxy to the DGX nodes
 
 Closes the gap #86 opened. Moving nginx into Kubernetes turned the proxy→vLLM
