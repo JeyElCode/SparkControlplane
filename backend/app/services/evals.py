@@ -31,7 +31,9 @@ from ..models import (
     EvalRun,
     PerfResult,
 )
-from . import eval_suites
+from pathlib import Path
+
+from . import eval_suites, toolbench
 from .instances import load_instance
 from .jobs import JobHandle
 from .llm_client import chat_stream
@@ -169,6 +171,98 @@ async def _run_perf(session, handle, run, pt, target, concurrency, reps, cfg) ->
     )
 
 
+# --- quality suite (tool-eval-bench) -------------------------------------
+async def _run_quality(
+    session: AsyncSession, handle: JobHandle, run: EvalRun, target: Endpoint, cfg: dict
+) -> None:
+    """Run the pinned external suite and persist its result.
+
+    Per-scenario rows go into EvalResult, which is what relights the existing
+    by-category breakdown and task table on the run detail — both already read
+    that table and self-hide when it is empty.
+    """
+    import tempfile
+
+    ok, why = toolbench.available()
+    if not ok:
+        raise RuntimeError(why)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = str(Path(tmp) / "result.json")
+        argv = toolbench.build_argv(
+            base_url=target.base_url.rstrip("/"),
+            model=target.model,
+            json_file=out_path,
+            seed=int(cfg.get("seed", 42)),
+            short=bool(cfg.get("short")),
+            hardmode=bool(cfg.get("hardmode")),
+        )
+        await handle.log(f"tool-eval-bench @ {toolbench.PINNED_SHA[:12]} — {len(argv)} args")
+
+        seen = {"n": 0}
+
+        async def on_event(ev: dict) -> None:
+            if ev.get("event") == "scenario_result":
+                seen["n"] += 1
+                total = ev.get("total") or 0
+                if total:
+                    await handle.set_progress(min(seen["n"] / float(total), 1.0))
+                await handle.log(
+                    f"[{ev.get('scenario_id')}] {ev.get('status')}"
+                )
+
+        code, events, tail = await toolbench.run_bench(
+            argv, api_key=target.api_key, on_event=on_event
+        )
+
+        try:
+            document = json.loads(Path(out_path).read_text())
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"tool-eval-bench exited {code} and left no readable result. {tail}"
+            ) from exc
+
+    result = toolbench.parse_envelope(document, events)
+    if not result.ok:
+        raise RuntimeError(f"{result.error} (exit {code}). {tail}")
+
+    run.quality = True
+    run.composite_score = result.composite_score
+    run.completion_rate = result.completion_rate
+    run.suite_version = result.version
+    run.suite_sha = toolbench.PINNED_SHA
+
+    for sc in result.scenarios:
+        session.add(EvalResult(
+            run_id=run.id,
+            category=sc.category or "?",
+            task_id=sc.scenario_id,
+            task_name=sc.summary[:255] or sc.scenario_id,
+            scorer="tool-eval-bench",
+            # 2/1/0 -> 0..1 so the existing 0..1 renderers stay correct.
+            score=sc.points / 2.0,
+            passed=sc.status == "pass",
+            error=sc.failure_kind,
+            latency_ms=(sc.duration_seconds or 0) * 1000 or None,
+        ))
+    await _commit(session, handle)
+
+    await handle.log(f"Quality: {result.summary_line()}")
+    if not result.trustworthy:
+        # The single most misleading thing this suite can produce. Infra
+        # failures leave the denominator, so a high score on a broken endpoint
+        # is the expected output, not an anomaly.
+        await handle.log(
+            f"WARNING: only {result.completion_rate:.0f}% of scenarios were graded "
+            f"({len(result.excluded_scenarios)} excluded: "
+            f"{', '.join(result.excluded_scenarios[:6])}). The score is computed over "
+            "what ran, so treat it as unmeasured rather than good.",
+            "error",
+        )
+    for w in result.safety_warnings:
+        await handle.log(f"SAFETY: {w}", "error")
+
+
 # --- orchestration -------------------------------------------------------
 async def run_eval(handle: JobHandle, run_id: int) -> str:
     async with SessionLocal() as session:
@@ -186,8 +280,12 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
         await handle.log(f"Target: {target.desc} @ {target.base_url} (model {target.model})")
 
         try:
-            ptasks = eval_suites.perf_tasks(categories)
-            if not ptasks:
+            if cfg.get("quality"):
+                await handle.log("Running the tool-eval-bench quality suite…")
+                await _run_quality(session, handle, run, target, cfg)
+
+            ptasks = eval_suites.perf_tasks(categories) if categories else []
+            if not ptasks and not cfg.get("quality"):
                 # Refuse rather than finish green having measured nothing. The
                 # obvious way to hit this is Re-run on a historical row whose
                 # categories predate the current prompts.

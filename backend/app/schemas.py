@@ -1254,6 +1254,12 @@ class EvalRunRequest(BaseModel):
     categories: list[str] = Field(
         default_factory=lambda: ["predictable", "code", "creative"]
     )
+    # Run the pinned tool-eval-bench suite alongside (or instead of) the speed
+    # prompts. Off by default: it takes far longer than a speed run.
+    quality: bool = False
+    short: bool = False      # tool-eval-bench --short (15 scenarios, for a smoke check)
+    hardmode: bool = False   # + the 15 Hard Mode scenarios
+    seed: int = Field(default=42, ge=0, le=2**31 - 1)
     # Bounded because these two multiply into real load against a LIVE serving
     # instance, from a single-replica portal, and the Sparks have no
     # out-of-band recovery. Unbounded, `{"concurrency": [512], "perf_reps": 50}`
@@ -1349,6 +1355,12 @@ class EvalRunOut(BaseModel):
     # and concurrency level — which is precisely the number eval_suites.py
     # argues is misleading. Derived from summary_json; empty on legacy rows.
     ladder_tps: dict[str, float] = Field(default_factory=dict)
+    # Quality (tool-eval-bench). composite_score is 0-100 and MUST be read with
+    # completion_rate beside it — see the note on the model column.
+    quality: bool = False
+    composite_score: float | None = None
+    completion_rate: float | None = None
+    suite_sha: str | None = None
     judge_desc: str | None
     job_id: int | None
     created_at: datetime
@@ -1377,6 +1389,8 @@ class EvalRunOut(BaseModel):
             instance_label=run.instance_label, categories=run.categories.split(",") if run.categories else [],
             capability=run.capability, performance=run.performance, status=run.status,
             overall_score=run.overall_score, peak_throughput_tps=peak, ladder_tps=ladder,
+            quality=run.quality, composite_score=run.composite_score,
+            completion_rate=run.completion_rate, suite_sha=run.suite_sha,
             judge_desc=run.judge_desc,
             job_id=run.job_id, created_at=run.created_at, started_at=run.started_at,
             finished_at=run.finished_at,

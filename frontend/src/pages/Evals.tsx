@@ -33,6 +33,54 @@ function CatGroup({ title, cats, sel, onToggle }: { title: string; cats: string[
   );
 }
 
+/** The quality half. Deliberately shows the pinned commit: a score is only
+ *  comparable to another run of the SAME suite revision, and to the numbers
+ *  other people publish, so the revision is part of the result. */
+function QualityToggle({
+  enabled, available, sha, short, onToggle, onShort,
+}: {
+  enabled: boolean; available: boolean; sha?: string | null;
+  short: boolean; onToggle: (v: boolean) => void; onShort: (v: boolean) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <label className="checkbox">
+        <input type="checkbox" checked={enabled} disabled={!available} onChange={(e) => onToggle(e.target.checked)} />
+        <span>
+          <span className="cb-label">Quality — tool-eval-bench</span>
+          <div className="cb-sub">
+            {available
+              ? <>69 tool-calling scenarios scored 0–100, comparable to published numbers. Pinned at <code>{(sha ?? "").slice(0, 12)}</code>. Takes considerably longer than a speed run.</>
+              : <>Not installed in this image — speed runs still work.</>}
+          </div>
+        </span>
+      </label>
+      {enabled && (
+        <label className="checkbox" style={{ marginLeft: 24 }}>
+          <input type="checkbox" checked={short} onChange={(e) => onShort(e.target.checked)} />
+          <span><span className="cb-label">Short suite (15 scenarios)</span><div className="cb-sub">A smoke check rather than a result worth comparing.</div></span>
+        </label>
+      )}
+    </div>
+  );
+}
+
+/** A composite score is NOT interpretable on its own: infrastructure failures
+ *  leave the denominator and the exit code stays 0, so a nearly-broken endpoint
+ *  scores HIGH. Measured: 46.7% graded still reported a normal-looking score.
+ *  This component exists so the two can never be rendered apart. */
+function QualityScore({ score, rate }: { score?: number | null; rate?: number | null }) {
+  if (score == null) return <span className="faint">—</span>;
+  const degraded = rate != null && rate < 95;
+  return (
+    <span title={rate != null ? `${rate.toFixed(0)}% of scenarios graded` : undefined}>
+      <strong style={degraded ? { color: "var(--amber)" } : undefined}>{Math.round(score)}</strong>
+      <span className="faint">/100</span>
+      {degraded && <span className="badge-note" style={{ marginLeft: 6, color: "var(--amber)" }}>only {rate!.toFixed(0)}% graded</span>}
+    </span>
+  );
+}
+
 // ---------- New eval modal ----------
 function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobId: number, label: string) => void }) {
   const instances = usePoll(() => api.listInstances(), 0);
@@ -102,6 +150,14 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
 
       <Field label="Categories" help="Each prompt is measured for tokens/sec and TTFT. The three ladder prompts differ in how PREDICTABLE their output is — speculative decoding speeds up predictable text and slows down creative text, so measuring all three shows which way an instance trades. A single average hides it.">
         <div className="flex-col" style={{ gap: 10 }}>
+          <QualityToggle
+            enabled={!!f.quality}
+            available={!!catalog.data?.quality_available}
+            sha={catalog.data?.quality_suite_sha}
+            short={!!f.short}
+            onToggle={(v) => set("quality", v)}
+            onShort={(v) => set("short", v)}
+          />
           <CatGroup title="Predictability ladder (default)" cats={perfCats.filter((c) => SPEED_LADDER.includes(c))} sel={f.categories} onToggle={toggleCat} />
           <CatGroup title="Other prompts" cats={perfCats.filter((c) => !SPEED_LADDER.includes(c))} sel={f.categories} onToggle={toggleCat} />
           
@@ -333,7 +389,7 @@ export default function Evals() {
         ) : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th></th><th>Run</th><th>Model</th><th>Status</th><th title="predictable / code / creative tok/s">Speed (p/c/c)</th><th>Peak tok/s</th><th>When</th><th></th></tr></thead>
+              <thead><tr><th></th><th>Run</th><th>Model</th><th>Status</th><th>Quality</th><th title="predictable / code / creative tok/s">Speed (p/c/c)</th><th>Peak tok/s</th><th>When</th><th></th></tr></thead>
               <tbody>
                 {runs.map((r) => (
                   <tr key={r.id}>
@@ -341,6 +397,7 @@ export default function Evals() {
                     <td><strong>{r.name}</strong><div className="faint" style={{ fontSize: 11 }}>{r.categories.join(", ")}</div></td>
                     <td>{r.model_name}</td>
                     <td><Badge kind={statusKind(r.status)}>{r.status}</Badge></td>
+                    <td><QualityScore score={r.composite_score} rate={r.completion_rate} /></td>
                     <td className="mono">
                       {SPEED_LADDER.some((k) => r.ladder_tps?.[k] != null)
                         ? SPEED_LADDER.map((k) => (r.ladder_tps?.[k] != null ? Math.round(r.ladder_tps[k]) : "—")).join(" / ")

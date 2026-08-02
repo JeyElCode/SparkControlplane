@@ -228,12 +228,21 @@ export interface AlertRecord {
 
 export interface Catalog {
   perf_categories: string[];
+  speed_ladder?: string[];
+  quality_available?: boolean;
+  /** The pinned tool-eval-bench commit. Part of the result: a score is only
+   *  comparable to another run of the same suite revision. */
+  quality_suite_sha?: string | null;
 }
 
 export interface EvalRunRequest {
   instance_id: number;
   name?: string;
   categories: string[];
+  quality?: boolean;
+  short?: boolean;
+  hardmode?: boolean;
+  seed?: number;
   perf_reps: number;
   concurrency: number[];
   temperature: number;
@@ -256,6 +265,12 @@ export interface EvalRunSummary {
   peak_throughput_tps?: number | null;
   /** Best tok/s per predictability regime; empty on legacy runs. */
   ladder_tps?: Record<string, number>;
+  /** Quality (tool-eval-bench): 0-100. Meaningless without completion_rate —
+   *  infra failures leave the denominator, so a broken endpoint scores HIGH. */
+  quality?: boolean;
+  composite_score?: number | null;
+  completion_rate?: number | null;
+  suite_sha?: string | null;
   judge_desc?: string | null;
   job_id?: number | null;
   created_at: string;

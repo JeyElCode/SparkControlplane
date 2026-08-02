@@ -58,6 +58,26 @@ WORKDIR /app/backend
 COPY backend/ ./
 RUN pip install --no-cache-dir .
 
+# --- tool-eval-bench: the quality half of the Evals page --------------------
+# Pinned to an exact commit. Scores are only comparable across runs of the same
+# revision, so a floating ref would silently invalidate every trend line — and
+# this is a single-maintainer GitHub project, not a PyPI package with
+# attestations, going into the image that holds SSH root on the appliance.
+#
+# Tarball rather than `pip install git+…`: the runtime image has no git.
+# Its own venv rather than the app environment: its four deps are pure-Python
+# and overlap ours (httpx, pyyaml), and an isolated venv means a future upgrade
+# of either side cannot silently resolve the other's pins.
+# CORE EXTRAS ONLY — never `[perf]`, which pulls llama-benchy -> tokenizers
+# (Rust/PyO3). That would put a compiled build on the arm64 leg, which is the
+# hazard class the frontend note above exists to prevent.
+ARG TOOL_EVAL_BENCH_SHA=5df1e9e0cbde8d5805ef4c70e3fe2a13cec5ab9c
+RUN python -m venv /opt/tool-eval-bench \
+    && SETUPTOOLS_SCM_PRETEND_VERSION="0+${TOOL_EVAL_BENCH_SHA}" \
+       /opt/tool-eval-bench/bin/pip install --no-cache-dir \
+       "https://codeload.github.com/SeraphimSerapis/tool-eval-bench/tar.gz/${TOOL_EVAL_BENCH_SHA}" \
+    && /opt/tool-eval-bench/bin/tool-eval-bench --help >/dev/null
+
 # Built SPA served by the API
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 

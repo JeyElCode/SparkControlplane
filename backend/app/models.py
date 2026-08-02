@@ -533,6 +533,22 @@ class EvalRun(Base):
     judge_desc: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=JOB_PENDING)
     overall_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0..1 capability mean
+    # --- quality suite (tool-eval-bench) ---------------------------------
+    # A separate flag from `capability`, which now means "a legacy run from
+    # before the custom-task half was removed". Overloading it would make a
+    # legacy run and a quality run indistinguishable.
+    quality: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 0-100, on its own column. NEVER folded into overall_score, which is
+    # documented 0..1 and multiplied by 100 by every consumer — writing 78
+    # there renders as "7800%".
+    composite_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Percentage of scenarios actually graded. Load-bearing, not decoration:
+    # infra failures leave the DENOMINATOR and the exit code stays 0, so a
+    # nearly-broken endpoint that passes its few gradable scenarios scores
+    # HIGH. A composite without this beside it is not interpretable.
+    completion_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    suite_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    suite_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)      # aggregates
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

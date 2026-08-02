@@ -16,7 +16,7 @@ from ..schemas import (
     EvalRunRequest,
     EvalStarted,
 )
-from ..services import eval_suites, evals
+from ..services import eval_suites, evals, toolbench
 from ..services.instances import load_instance
 from ..services.jobs import jobs
 
@@ -33,6 +33,8 @@ async def catalog(session: AsyncSession = Depends(get_session)):
     return CatalogOut(
         perf_categories=eval_suites.perf_categories(),
         speed_ladder=list(eval_suites.SPEED_LADDER),
+        quality_available=toolbench.available()[0],
+        quality_suite_sha=toolbench.PINNED_SHA,
     )
 
 
@@ -41,8 +43,12 @@ async def create_eval(payload: EvalRunRequest, session: AsyncSession = Depends(g
     inst = await load_instance(session, payload.instance_id)
     if inst is None:
         raise HTTPException(404, "Instance not found")
-    if not payload.categories:
-        raise HTTPException(400, "Select at least one category.")
+    if not payload.categories and not payload.quality:
+        raise HTTPException(400, "Select at least one speed category, or enable the quality suite.")
+    if payload.quality:
+        ok, why = toolbench.available()
+        if not ok:
+            raise HTTPException(400, why)
     # Reject unknown categories rather than accepting them and finishing a
     # green run that measured nothing. This is the Re-run path for every
     # historical row: those runs carry categories like `coding` or `security`
@@ -64,6 +70,10 @@ async def create_eval(payload: EvalRunRequest, session: AsyncSession = Depends(g
         "perf_reps": payload.perf_reps,
         "concurrency": payload.concurrency,
         "temperature": payload.temperature,
+        "quality": payload.quality,
+        "short": payload.short,
+        "hardmode": payload.hardmode,
+        "seed": payload.seed,
     }
     run = EvalRun(
         name=name, instance_id=inst.id, model_name=model_name, instance_label=label,
