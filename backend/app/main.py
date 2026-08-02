@@ -68,12 +68,8 @@ elif settings.mcp_enabled:
 
 
 async def _startup_discover() -> None:
-    """Best-effort background work a few seconds after boot.
-
-    Deliberately deferred and deliberately in a task: it touches the database
-    and must not sit in the startup path, where it delays readiness and shares
-    a connection with the first requests.
-    """
+    """Best-effort: import any on-disk models into the registry shortly after
+    boot, so the registry mirrors what's actually on the nodes."""
     try:
         await asyncio.sleep(5)
         from .db import SessionLocal
@@ -84,17 +80,6 @@ async def _startup_discover() -> None:
     except Exception:  # noqa: BLE001 - nodes may be unset/unreachable at boot
         log.warning("Startup model discovery skipped", exc_info=True)
 
-    # Recover safety findings that were measured before there were columns to
-    # hold them. The result envelope is on the row, so re-running an
-    # 84-scenario suite to surface something already measured is not required.
-    try:
-        from .db import SessionLocal
-        from .services.evals import backfill_from_envelopes
-
-        async with SessionLocal() as session:
-            await backfill_from_envelopes(session)
-    except Exception:  # noqa: BLE001 - tidying history must never break a boot
-        log.warning("Eval safety backfill skipped", exc_info=True)
 
 
 @asynccontextmanager

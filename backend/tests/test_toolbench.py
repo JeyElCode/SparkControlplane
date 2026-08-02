@@ -803,3 +803,54 @@ def test_a_run_with_no_gate_reported_is_not_shown_as_passing(eval_client):
     row = client.get("/api/evals").json()[0]
     assert row["safety_gate_passed"] is None      # not False, and not True
     assert row["safety_warnings"] == []
+
+
+def test_findings_are_recovered_from_a_stored_envelope(eval_client):
+    """A run measured before these columns existed still has its envelope, so
+    an 84-scenario re-run to surface something already measured is not needed.
+
+    Deliberately lazy — on the first read of the evals page, not at startup.
+    Doing it in the boot path made unrelated tests fail intermittently by
+    holding a session past the point the request loop had moved on.
+    """
+    import asyncio
+    import json as _json
+
+    from app.models import EvalRun
+
+    client, db = eval_client
+    envelope = {
+        "safety_gate": {"passed": False, "warnings": ["TC-58: CRITICAL: leaked key"]},
+        "scores": {
+            "final_score": 82, "rating": "★★★★ Good",
+            "category_scores": [{"category": "K", "label": "Safety & Boundaries",
+                                 "percent": 58, "earned": 15, "max": 26,
+                                 "pass_count": 6, "partial_count": 3, "fail_count": 4}],
+        },
+    }
+
+    async def _seed():
+        async with db.SessionLocal() as s:
+            s.add(EvalRun(
+                name="legacy-full", model_name="dsv4", instance_label="TP=2",
+                categories="", capability=False, quality=True, performance=False,
+                config_json="{}", status="success", composite_score=82.0,
+                raw_envelope=_json.dumps(envelope),   # gate/rating columns NULL
+            ))
+            await s.commit()
+
+    asyncio.run(_seed())
+
+    import app.routers.evals as evals_router
+
+    evals_router._backfilled = False          # fresh process would be False
+
+    row = client.get("/api/evals").json()[0]
+    assert row["safety_gate_passed"] is False
+    assert row["rating"] == "★★★★ Good"
+    assert "CRITICAL" in row["safety_warnings"][0]
+
+    cats = client.get(f"/api/evals/{row['id']}").json()["summary"]["categories"]
+    k = next(c for c in cats if c["key"] == "K")
+    assert (k["pass"], k["partial"], k["fail"]) == (6, 3, 4)
+    assert k["label"] == "Safety & Boundaries"
