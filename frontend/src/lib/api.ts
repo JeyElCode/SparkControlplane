@@ -150,9 +150,6 @@ export interface Settings {
   has_hf_token: boolean;
   status_poll_seconds: number;
   setup_complete: boolean;
-  judge_base_url?: string | null;
-  judge_model?: string | null;
-  has_judge_api_key?: boolean;
   // MCP server status — populated by Track C. Absent on builds without MCP.
   mcp_enabled?: boolean;
   mcp_path?: string | null;
@@ -231,66 +228,34 @@ export interface AlertRecord {
 
 export interface Catalog {
   perf_categories: string[];
-  custom_categories: string[];
-}
-
-export interface CustomTask {
-  id: number;
-  category: string;
-  name: string;
-  prompt: string;
-  scorer: string;
-  system?: string | null;
-  answer?: string | null;
-  contains: string[];
-  numeric_answer?: number | null;
-  numeric_tol: number;
-  choices: string[];
-  correct?: string | null;
-  rubric?: string | null;
-  entry_point?: string | null;
-  test_code?: string | null;
-  code_prefix?: string | null;
-  tools: any[];
-  expected_tool?: string | null;
-  expected_args: Record<string, any>;
-  forbid_tool_call: boolean;
-  max_tokens: number;
-  enabled: boolean;
-}
-
-export type CustomTaskInput = Omit<CustomTask, "id">;
-
-export interface JudgeConfig {
-  type: "none" | "instance" | "external";
-  instance_id?: number | null;
 }
 
 export interface EvalRunRequest {
   instance_id: number;
   name?: string;
   categories: string[];
-  capability: boolean;
-  performance: boolean;
   perf_reps: number;
   concurrency: number[];
   temperature: number;
-  judge?: JudgeConfig | null;
-  sandbox_image: string;
 }
 
 export interface EvalRunSummary {
   id: number;
+  /** True only for runs from before the quality half was replaced — the
+   *  detail view uses it to decide whether to render the historical
+   *  by-category and per-task blocks. New speed runs are false. */
+  capability?: boolean;
   name: string;
   instance_id?: number | null;
   model_name: string;
   instance_label: string;
   categories: string[];
-  capability: boolean;
   performance: boolean;
   status: string;
   overall_score?: number | null;
   peak_throughput_tps?: number | null;
+  /** Best tok/s per predictability regime; empty on legacy runs. */
+  ladder_tps?: Record<string, number>;
   judge_desc?: string | null;
   job_id?: number | null;
   created_at: string;
@@ -823,9 +788,6 @@ export const api = {
   updateSettings: (s: {
     hf_token?: string;
     status_poll_seconds?: number;
-    judge_base_url?: string;
-    judge_model?: string;
-    judge_api_key?: string;
     alerts?: Partial<AlertConfig>;
     alert_webhook_url?: string;
     backup_enabled?: boolean;
@@ -932,12 +894,6 @@ export const api = {
 
   // evals
   evalCatalog: () => j<Catalog>("/api/evals/catalog"),
-  listEvalTasks: () => j<CustomTask[]>("/api/evals/tasks"),
-  createEvalTask: (t: CustomTaskInput) =>
-    j<CustomTask>("/api/evals/tasks", { method: "POST", body: JSON.stringify(t) }),
-  updateEvalTask: (id: number, t: CustomTaskInput) =>
-    j<CustomTask>(`/api/evals/tasks/${id}`, { method: "PATCH", body: JSON.stringify(t) }),
-  deleteEvalTask: (id: number) => j<void>(`/api/evals/tasks/${id}`, { method: "DELETE" }),
   listEvals: () => j<EvalRunSummary[]>("/api/evals"),
   getEval: (id: number) => j<EvalRunDetail>(`/api/evals/${id}`),
   createEval: (req: EvalRunRequest) =>

@@ -29,7 +29,6 @@ from ..models import (
     EvalRun,
     PerfResult,
     ClusterConfig,
-    CustomTask,
     Instance,
     InstanceSchedule,
     ServeProfile,
@@ -53,7 +52,6 @@ _TABLES: list[tuple[str, type]] = [
     ("model_node_states", ModelNodeState),
     ("instances", Instance),
     ("instance_schedules", InstanceSchedule),
-    ("custom_tasks", CustomTask),
     # Serve profiles: configuration worth a bring-up, so it belongs in a backup.
     # Built-in rows travel too, which is harmless — a restore replaces the table
     # wholesale and the next start re-seeds built-ins by name, so they converge

@@ -45,9 +45,6 @@ def _settings_out(s) -> SettingsOut:
         has_hf_token=bool(s.hf_token_enc),
         status_poll_seconds=s.status_poll_seconds,
         setup_complete=s.setup_complete,
-        judge_base_url=s.judge_base_url,
-        judge_model=s.judge_model,
-        has_judge_api_key=bool(s.judge_api_key_enc),
         alerts=merged_config(s.alerts_json),
         has_alert_webhook=bool(s.alert_webhook_url_enc),
         backup_enabled=s.backup_enabled,
@@ -75,12 +72,6 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.hf_token_enc = encrypt(payload.hf_token)
     if payload.status_poll_seconds is not None:
         s.status_poll_seconds = payload.status_poll_seconds
-    if payload.judge_base_url is not None:
-        s.judge_base_url = payload.judge_base_url or None
-    if payload.judge_model is not None:
-        s.judge_model = payload.judge_model or None
-    if payload.judge_api_key is not None:
-        s.judge_api_key_enc = encrypt(payload.judge_api_key)
     if payload.alerts is not None:
         import json as _json
 

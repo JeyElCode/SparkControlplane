@@ -1,42 +1,20 @@
-"""Task schema for evaluations.
+"""Prompts for the speed benchmark.
 
-Capability tasks are now entirely **user-authored** (see custom_tasks.py); this
-module defines the shared :class:`CapabilityTask` shape they map to, plus the
-built-in **performance** prompts used to measure throughput (tokens/sec, TTFT)
-per category.
+Defines the :class:`PerfTask` shape and the built-in prompts used to measure
+tokens/sec and TTFT. The three that form :data:`SPEED_LADDER` are the default
+and the reason this module exists in its current form — see the note above
+``PERF_TASKS``.
 
-Scorers a capability task may use: ``exact``, ``contains``, ``numeric``, ``mcq``,
-``judge`` (LLM rubric), ``code_exec`` (sandboxed pass@1), ``tool_call`` (tool use).
+This is the seam an additional QUALITY suite attaches to: add
+``quality_tasks()`` / ``quality_categories()`` alongside ``perf_tasks()`` /
+``perf_categories()``, and write ``EvalResult`` rows. The run detail's
+by-category breakdown and task table already read those and self-hide when the
+set is empty, so nothing else has to change to relight them.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-
-@dataclass
-class CapabilityTask:
-    id: str
-    category: str
-    name: str
-    prompt: str
-    scorer: str
-    system: str | None = None
-    answer: str | None = None
-    contains: list[str] = field(default_factory=list)
-    numeric_answer: float | None = None
-    numeric_tol: float = 0.01
-    choices: list[str] = field(default_factory=list)
-    correct: str | None = None
-    rubric: str | None = None
-    entry_point: str | None = None
-    test_code: str | None = None
-    code_prefix: str | None = None
-    tools: list[dict] = field(default_factory=list)
-    expected_tool: str | None = None
-    expected_args: dict = field(default_factory=dict)
-    forbid_tool_call: bool = False
-    max_tokens: int = 1024
+from dataclasses import dataclass
 
 
 @dataclass

@@ -1,13 +1,17 @@
-"""Evaluation engine: runs capability tasks (deterministic / judge / sandboxed
-code) and performance benchmarks (single-stream + concurrency sweep) against a
-model instance, scores them, and persists results for later comparison.
+"""Evaluation engine: measures serving speed across the predictability ladder.
+
+Runs each prompt through a concurrency sweep against a model instance,
+recording TTFT, per-stream tok/s and aggregate throughput, and persists the
+results for comparison across instances and over time.
+
+The quality half is a separate suite (see docs/EVALS.md); this module owns
+speed. `_finalize`'s EvalResult aggregation is the seam it attaches to.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,7 +22,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import decrypt
-from ..db import SessionLocal, get_node_by_role, get_setting
+from ..db import SessionLocal, get_node_by_role
 from ..models import (
     JOB_ERROR,
     JOB_RUNNING,
@@ -27,11 +31,10 @@ from ..models import (
     EvalRun,
     PerfResult,
 )
-from ..ssh import ssh_for_node
-from . import custom_tasks, eval_suites
+from . import eval_suites
 from .instances import load_instance
 from .jobs import JobHandle
-from .llm_client import ToolCall, chat_once, chat_stream
+from .llm_client import chat_stream
 
 
 @dataclass
@@ -112,223 +115,6 @@ async def _instance_endpoint(session: AsyncSession, instance_id: int) -> Endpoin
     )
 
 
-async def _resolve_judge(session: AsyncSession, cfg: dict) -> Endpoint | None:
-    judge = cfg.get("judge") or {}
-    jtype = judge.get("type")
-    if jtype == "instance" and judge.get("instance_id"):
-        return await _instance_endpoint(session, int(judge["instance_id"]))
-    if jtype == "external":
-        s = await get_setting(session)
-        base = getattr(s, "judge_base_url", None)
-        model = getattr(s, "judge_model", None)
-        key = decrypt(getattr(s, "judge_api_key_enc", None))
-        if not base or not model:
-            return None
-        return Endpoint(base.rstrip("/"), model, key, f"external:{model}")
-    return None
-
-
-# --- deterministic scorers ----------------------------------------------
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s.strip().lower())
-
-
-def _score_exact(resp: str, answer: str) -> float:
-    return 1.0 if _norm(answer) in _norm(resp) else 0.0
-
-
-def _score_contains(resp: str, subs: list[str]) -> float:
-    low = resp.lower()
-    return 1.0 if subs and all(s.lower() in low for s in subs) else 0.0
-
-
-def _score_numeric(resp: str, target: float, tol: float) -> tuple[float, str | None]:
-    nums = re.findall(r"-?\d+(?:\.\d+)?", resp.replace(",", ""))
-    for n in nums:
-        try:
-            if abs(float(n) - target) <= tol:
-                return 1.0, n
-        except ValueError:
-            continue
-    return 0.0, (nums[-1] if nums else None)
-
-
-def _score_mcq(resp: str, choices: list[str], correct: str) -> tuple[float, str | None]:
-    lines = [ln.strip() for ln in resp.splitlines() if ln.strip()]
-    cand: str | None = None
-    if lines:  # prefer a bare choice on the last line
-        last = lines[-1]
-        for ch in choices:
-            if re.fullmatch(rf"[^A-Za-z0-9]*{re.escape(ch)}[^A-Za-z0-9]*", last, re.I):
-                cand = ch
-                break
-    if cand is None:
-        m = re.search(r"\b(" + "|".join(re.escape(c) for c in choices) + r")\b", resp, re.I)
-        if m:
-            cand = m.group(1)
-    ok = cand is not None and cand.upper() == correct.upper()
-    return (1.0 if ok else 0.0), cand
-
-
-# --- judge ---------------------------------------------------------------
-_JUDGE_SYS = (
-    "You are a strict grader. Score the answer from 0 to 10 against the rubric. "
-    'Respond with ONLY a JSON object: {"score": <0-10 number>, "reason": "<one sentence>"}.'
-)
-
-
-async def _judge_score(judge: Endpoint, task_prompt: str, response: str, rubric: str):
-    user = (
-        f"TASK:\n{task_prompt}\n\nRUBRIC:\n{rubric}\n\nANSWER:\n{response}\n\n"
-        "Return only the JSON object."
-    )
-    res = await chat_stream(
-        judge.base_url,
-        judge.model,
-        [{"role": "system", "content": _JUDGE_SYS}, {"role": "user", "content": user}],
-        max_tokens=300,
-        temperature=0.0,
-        api_key=judge.api_key,
-        verify=judge.verify,
-    )
-    if not res.ok:
-        return None, f"judge error: {res.error}"
-    m = re.search(r"\{.*\}", res.content, re.DOTALL)
-    if not m:
-        return None, f"unparseable judge output: {res.content[:160]}"
-    try:
-        data = json.loads(m.group(0))
-        score = float(data.get("score"))
-        score = max(0.0, min(10.0, score))
-        return score / 10.0, str(data.get("reason", ""))[:500]
-    except (ValueError, TypeError):
-        return None, f"bad judge json: {res.content[:160]}"
-
-
-# --- tool-use scoring ----------------------------------------------------
-def _score_tool_call(calls: list[ToolCall], expected_tool, expected_args, forbid):
-    if forbid:
-        if not calls:
-            return 1.0, "no tool call — refused (correct)"
-        return 0.0, f"called {calls[0].name} (should have refused)"
-    if not calls:
-        return 0.0, "no tool call emitted"
-    call = calls[0]
-    if expected_tool and call.name != expected_tool:
-        return 0.0, f"called {call.name}, expected {expected_tool}"
-    try:
-        args = json.loads(call.arguments) if call.arguments else {}
-    except (ValueError, TypeError):
-        args = {}
-    for k, exp in (expected_args or {}).items():
-        if str(exp).lower() not in str(args.get(k, "")).lower():
-            return 0.0, f"arg {k}={args.get(k)!r} missing '{exp}'"
-    return 1.0, f"called {call.name}({call.arguments})"
-
-
-async def _run_tool_task(session, handle, run, task, target, cfg) -> float:
-    er = EvalResult(
-        run_id=run.id, category=task.category, task_id=task.id, task_name=task.name,
-        scorer="tool_call", prompt=task.prompt,
-    )
-    res = await chat_once(
-        target.base_url, target.model, [{"role": "user", "content": task.prompt}],
-        tools=task.tools, tool_choice="auto", max_tokens=task.max_tokens,
-        temperature=float(cfg.get("temperature", 0.2)), api_key=target.api_key,
-        verify=target.verify,
-    )
-    er.latency_ms = res.latency_ms
-    er.prompt_tokens, er.completion_tokens = res.prompt_tokens, res.completion_tokens
-    calls_txt = "; ".join(f"{c.name}({c.arguments})" for c in res.tool_calls) or "(none)"
-    er.response = ((res.content or "") + f"\n[tool_calls] {calls_txt}")[:8000]
-    if not res.ok:
-        er.error, er.score, er.passed = res.error, 0.0, False
-    else:
-        er.score, reason = _score_tool_call(
-            res.tool_calls, task.expected_tool, task.expected_args, task.forbid_tool_call
-        )
-        er.judge_reason, er.passed = reason, er.score >= 0.5
-    session.add(er)
-    await _commit(session, handle)
-    await handle.log(f"[tools/{task.id}] {task.name}: score={er.score:.2f} — {er.judge_reason or er.error}")
-    return er.score
-
-
-# --- capability ----------------------------------------------------------
-async def _run_capability_task(session, handle, run, task, target, judge, code_ssh, cfg) -> float:
-    if task.scorer == "tool_call":
-        return await _run_tool_task(session, handle, run, task, target, cfg)
-    er = EvalResult(
-        run_id=run.id, category=task.category, task_id=task.id, task_name=task.name,
-        scorer=task.scorer, prompt=task.prompt,
-    )
-    messages = ([{"role": "system", "content": task.system}] if task.system else []) + [
-        {"role": "user", "content": task.prompt}
-    ]
-    res = await chat_stream(
-        target.base_url, target.model, messages,
-        max_tokens=task.max_tokens, temperature=float(cfg.get("temperature", 0.2)),
-        api_key=target.api_key, verify=target.verify,
-    )
-    er.response = (res.content or "")[:8000]
-    if not res.ok:
-        er.error, er.score, er.passed = res.error, 0.0, False
-        session.add(er)
-        await _commit(session, handle)
-        await handle.log(f"[{task.category}/{task.id}] request error: {res.error}", "error")
-        return 0.0
-
-    m = res.metrics
-    er.latency_ms, er.ttft_ms = m.total_ms, m.ttft_ms
-    er.prompt_tokens, er.completion_tokens, er.tokens_per_sec = (
-        m.prompt_tokens, m.completion_tokens, m.tokens_per_sec,
-    )
-
-    try:
-        if task.scorer == "exact":
-            er.score = _score_exact(res.content, task.answer or "")
-        elif task.scorer == "contains":
-            er.score = _score_contains(res.content, task.contains)
-        elif task.scorer == "numeric":
-            er.score, picked = _score_numeric(res.content, task.numeric_answer or 0.0, task.numeric_tol)
-            er.judge_reason = f"extracted {picked}"
-        elif task.scorer == "mcq":
-            er.score, picked = _score_mcq(res.content, task.choices, task.correct or "")
-            er.judge_reason = f"picked {picked} (correct {task.correct})"
-        elif task.scorer == "judge":
-            if judge is None:
-                er.error, er.score = "no judge configured", 0.0
-            else:
-                s, reason = await _judge_score(judge, task.prompt, res.content, task.rubric or "")
-                er.score = s or 0.0
-                er.judge_reason = reason
-                if s is None:
-                    er.error = reason
-        elif task.scorer == "code_exec":
-            from .sandbox import extract_code, run_code_tests
-
-            code = extract_code(res.content)
-            if task.code_prefix:  # e.g. HumanEval signature the completion attaches to
-                code = task.code_prefix.rstrip() + "\n" + code
-            passed, detail = await run_code_tests(
-                code_ssh, code=code, test_code=task.test_code or "",
-                entry_point=task.entry_point or "", image=cfg.get("sandbox_image", "python:3.12-slim"),
-            )
-            er.score, er.passed, er.judge_reason = (1.0 if passed else 0.0), passed, detail[:1500]
-        else:
-            er.error, er.score = f"unknown scorer {task.scorer}", 0.0
-    except Exception as exc:  # noqa: BLE001 - a scorer failure shouldn't kill the run
-        er.error, er.score = f"scoring error: {exc}", 0.0
-
-    if er.passed is None:
-        er.passed = er.score >= 0.5
-    session.add(er)
-    await _commit(session, handle)
-    tps = f"{m.tokens_per_sec:.0f} tok/s" if m.tokens_per_sec else "n/a"
-    await handle.log(f"[{task.category}/{task.id}] {task.name}: score={er.score:.2f} ({tps})")
-    return er.score
-
-
 # --- performance ---------------------------------------------------------
 async def _run_perf(session, handle, run, pt, target, concurrency, reps, cfg) -> None:
     messages = ([{"role": "system", "content": pt.system}] if pt.system else []) + [
@@ -398,48 +184,39 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
 
         target = await _instance_endpoint(session, cfg["instance_id"])
         await handle.log(f"Target: {target.desc} @ {target.base_url} (model {target.model})")
-        judge = await _resolve_judge(session, cfg)
-        if judge:
-            run.judge_desc = judge.desc
-            await handle.log(f"Judge: {judge.desc}")
-
-        head = await get_node_by_role(session, "head")
-        code_ssh = None
-        if head:
-            try:
-                code_ssh = await ssh_for_node(session, head)
-            except Exception as exc:  # noqa: BLE001 - code-exec tasks will just skip
-                await handle.log(f"code execution unavailable (no SSH to head): {exc}", "error")
 
         try:
-            if run.capability:
-                tasks = await custom_tasks.load_custom(session, categories)
-                await handle.log(f"Running {len(tasks)} custom capability tasks…")
-                for i, task in enumerate(tasks):
-                    if task.scorer == "code_exec" and code_ssh is None:
-                        await handle.log(f"[{task.id}] skipped: no node for code execution", "error")
-                        continue
-                    await _run_capability_task(session, handle, run, task, target, judge, code_ssh, cfg)
-                    await handle.set_progress((i + 1) / max(len(tasks), 1) * (0.6 if run.performance else 1.0))
+            ptasks = eval_suites.perf_tasks(categories)
+            if not ptasks:
+                # Refuse rather than finish green having measured nothing. The
+                # obvious way to hit this is Re-run on a historical row whose
+                # categories predate the current prompts.
+                raise RuntimeError(
+                    f"No speed prompts match {categories!r}. "
+                    f"Available: {', '.join(eval_suites.perf_categories())}."
+                )
+            conc = cfg.get("concurrency") or [1]
+            reps = int(cfg.get("perf_reps", 3))
+            total = max(len(ptasks) * len(conc), 1)
+            done = 0
+            await handle.log(f"Measuring speed ({len(ptasks)} prompts × {conc})…")
+            for pt in ptasks:
+                for c in conc:
+                    await _run_perf(session, handle, run, pt, target, int(c), reps, cfg)
+                    done += 1
+                    # Speed is now the whole run, so the bar spans 0..1. It used
+                    # to start at 0.6 because the capability half owned the rest.
+                    await handle.set_progress(done / total)
 
-            if run.performance:
-                ptasks = eval_suites.perf_tasks(categories)
-                conc = cfg.get("concurrency") or [1]
-                reps = int(cfg.get("perf_reps", 3))
-                total = max(len(ptasks) * len(conc), 1)
-                done = 0
-                await handle.log(f"Running performance benchmarks ({len(ptasks)} prompts × {conc})…")
-                for pt in ptasks:
-                    for c in conc:
-                        await _run_perf(session, handle, run, pt, target, int(c), reps, cfg)
-                        done += 1
-                        await handle.set_progress(0.6 + done / total * 0.4)
-
-            await _finalize(session, handle, run)
+            peak = await _finalize(session, handle, run)
             run.status = JOB_SUCCESS
             run.finished_at = _now()
             await _commit(session, handle)
-            return f"Eval '{run.name}' complete (overall {(run.overall_score or 0) * 100:.0f}%)"
+            return (
+                f"Eval '{run.name}' complete — peak {peak:.0f} tok/s"
+                if peak is not None
+                else f"Eval '{run.name}' complete"
+            )
         except Exception:
             run.status = JOB_ERROR
             run.finished_at = _now()
@@ -447,7 +224,15 @@ async def run_eval(handle: JobHandle, run_id: int) -> str:
             raise
 
 
-async def _finalize(session: AsyncSession, handle: JobHandle, run: EvalRun) -> None:
+async def _finalize(session: AsyncSession, handle: JobHandle, run: EvalRun) -> float | None:
+    """Roll the per-measurement rows into the run summary. Returns peak tok/s.
+
+    The EvalResult query stays even though nothing writes those rows today: it
+    is the seam an additional quality suite attaches to. Writing EvalResult
+    rows is all it takes to relight the by-category breakdown and the task
+    table, both of which self-hide when the set is empty. It costs one indexed
+    query on an empty set.
+    """
     res = (await session.execute(select(EvalResult).where(EvalResult.run_id == run.id))).scalars().all()
     perf = (await session.execute(select(PerfResult).where(PerfResult.run_id == run.id))).scalars().all()
 
@@ -458,12 +243,34 @@ async def _finalize(session: AsyncSession, handle: JobHandle, run: EvalRun) -> N
     all_scores = [er.score for er in res]
     run.overall_score = round(sum(all_scores) / len(all_scores), 4) if all_scores else None
 
-    peak = max((p.throughput_tps or 0) for p in perf) if perf else None
+    # Every measurement failed is a FAILED run, not a successful one reporting
+    # zero. `_run_perf` records the error on the row and returns normally, so
+    # with speed as the only half nothing else would ever fail the run — a
+    # benchmark against a dead endpoint would finish green.
+    if perf and all(p.error for p in perf):
+        raise RuntimeError(
+            "Every measurement failed — the instance did not answer. "
+            f"First error: {perf[0].error}"
+        )
+
+    # None rather than 0.0 when nothing produced a throughput: the UI tests for
+    # null in one place and truthiness in another, and 0.0 renders as both
+    # "no data" and "zero tok/s" on the same screen.
+    tputs = [p.throughput_tps for p in perf if p.throughput_tps]
+    peak = max(tputs) if tputs else None
+
+    # Best per regime, which is the comparison that actually distinguishes two
+    # builds — see the predictability-ladder note in eval_suites.py.
+    ladder: dict[str, float] = {}
+    for p in perf:
+        if p.throughput_tps:
+            ladder[p.category] = max(ladder.get(p.category, 0.0), p.throughput_tps)
+
     summary = {
         "category_scores": cat_scores,
         "overall": run.overall_score,
-        "capability_tasks": len(res),
         "peak_throughput_tps": peak,
+        "ladder_tps": {k: round(v, 1) for k, v in ladder.items()},
         "perf": [
             {
                 "category": p.category, "concurrency": p.concurrency,
@@ -475,4 +282,6 @@ async def _finalize(session: AsyncSession, handle: JobHandle, run: EvalRun) -> N
     }
     run.summary_json = json.dumps(summary)
     await _commit(session, handle)
-    await handle.log(f"Done. Overall capability {(run.overall_score or 0) * 100:.0f}%, peak {peak or 0:.0f} tok/s")
+    rungs = " / ".join(f"{k} {ladder[k]:.0f}" for k in eval_suites.SPEED_LADDER if k in ladder)
+    await handle.log(f"Done. {rungs or 'no measurements'}" + (f" — peak {peak:.0f} tok/s" if peak else ""))
+    return peak

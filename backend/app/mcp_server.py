@@ -57,8 +57,6 @@ from .schemas import (
     ClusterConfigIn,
     ClusterConfigOut,
     ConnectionTest,
-    CustomTaskIn,
-    CustomTaskOut,
     EvalRunDetail,
     EvalRunOut,
     EvalRunRequest,
@@ -519,12 +517,12 @@ def build_mcp_server() -> "FastMCP":
 
     @mcp.tool()
     async def cluster_settings_get() -> SettingsOut:
-        """Get global settings (HF token presence, poll interval, judge config)."""
+        """Get global settings (HF token presence and poll interval)."""
         return await _with_session(cluster_router.get_settings_ep)
 
     @mcp.tool()
     async def cluster_settings_patch(payload: SettingsIn) -> SettingsOut:
-        """Patch global settings (HF token, poll interval, judge endpoint)."""
+        """Patch global settings (HF token and poll interval)."""
         return await _with_session(cluster_router.update_settings_ep, payload=payload)
 
     @mcp.tool()
@@ -547,27 +545,6 @@ def build_mcp_server() -> "FastMCP":
     async def eval_catalog() -> dict[str, Any]:
         """Available eval categories (built-in performance + custom task categories)."""
         return await _with_session(evals_router.catalog)
-
-    @mcp.tool()
-    async def eval_task_list() -> list[CustomTaskOut]:
-        """List user-authored custom eval tasks."""
-        return await _with_session(evals_router.list_tasks)
-
-    @mcp.tool()
-    async def eval_task_create(payload: CustomTaskIn) -> CustomTaskOut:
-        """Create a custom eval task."""
-        return await _with_session(evals_router.create_task, payload=payload)
-
-    @mcp.tool()
-    async def eval_task_update(task_id: int, payload: CustomTaskIn) -> CustomTaskOut:
-        """Update a custom eval task."""
-        return await _with_session(evals_router.update_task, task_id=task_id, payload=payload)
-
-    @mcp.tool()
-    async def eval_task_delete(task_id: int) -> dict[str, bool]:
-        """Delete a custom eval task."""
-        await _with_session(evals_router.delete_task, task_id=task_id)
-        return {"deleted": True}
 
     @mcp.tool()
     async def eval_run(payload: EvalRunRequest) -> EvalStarted:
