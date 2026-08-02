@@ -57,7 +57,37 @@ def _settings_out(s) -> SettingsOut:
         backup_interval_hours=s.backup_interval_hours,
         backup_retention=s.backup_retention,
         has_gateway_token=bool(s.gateway_token_enc),
+        **_cert_settings(s),
     )
+
+
+def _cert_settings(s) -> dict:
+    from ..services.endpoints import parse_certificate
+    from ..services.pki import lifetime_policy
+
+    policy = None
+    try:
+        policy = lifetime_policy(s.node_cert_ttl_hours)
+    except ValueError:
+        # A lifetime stored before the rails existed, or hand-edited. Show the
+        # settings rather than refusing to render the whole page.
+        pass
+    subject = None
+    if s.node_ca_pem:
+        info = parse_certificate(s.node_ca_pem)
+        subject = info.subject if info.ok else None
+    return {
+        "node_cert_source": s.node_cert_source or "none",
+        "node_cert_ttl_hours": s.node_cert_ttl_hours,
+        "cert_renew_after_hours": policy.renew_after_hours if policy else None,
+        "cert_retry_window_hours": policy.retry_window_hours if policy else None,
+        "has_node_ca": bool(s.node_ca_pem),
+        "node_ca_subject": subject,
+        "pki_url": s.pki_url,
+        "pki_mount": s.pki_mount or "pki",
+        "pki_role": s.pki_role,
+        "has_pki_token": bool(s.pki_token_enc),
+    }
 
 
 @router.get("/settings", response_model=SettingsOut)
@@ -101,6 +131,30 @@ async def update_settings_ep(payload: SettingsIn, session: AsyncSession = Depend
         s.backup_s3_prefix = payload.backup_s3_prefix.strip()
     if payload.backup_s3_region is not None and payload.backup_s3_region.strip():
         s.backup_s3_region = payload.backup_s3_region.strip()
+    if payload.node_cert_source is not None:
+        s.node_cert_source = payload.node_cert_source
+    if payload.node_cert_ttl_hours is not None:
+        s.node_cert_ttl_hours = payload.node_cert_ttl_hours
+    for field in ("pki_url", "pki_role"):
+        val = getattr(payload, field)
+        if val is not None:
+            setattr(s, field, val.strip() or None)
+    if payload.pki_mount is not None and payload.pki_mount.strip():
+        s.pki_mount = payload.pki_mount.strip()
+    if payload.pki_token is not None:
+        s.pki_token_enc = encrypt(payload.pki_token) if payload.pki_token else None
+    if payload.node_ca_pem is not None:
+        ca = payload.node_ca_pem.strip()
+        if ca and "BEGIN CERTIFICATE" not in ca:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                422,
+                "That does not look like a PEM certificate. This is the CA the "
+                "cluster proxy checks node certificates against, and a bad one "
+                "means the proxy rejects every connection.",
+            )
+        s.node_ca_pem = ca or None
     if payload.backup_s3_secret is not None:
         s.backup_s3_secret_enc = (
             encrypt(payload.backup_s3_secret) if payload.backup_s3_secret else None

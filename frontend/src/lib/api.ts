@@ -175,6 +175,19 @@ export interface Settings {
   backup_interval_hours?: number;
   backup_retention?: number;
   has_gateway_token?: boolean;
+
+  /** Node certificates for the proxy -> node hop. */
+  node_cert_source?: "none" | "manual" | "openbao";
+  node_cert_ttl_hours?: number | null;
+  /** Derived from the chosen lifetime, so the form can show the schedule it implies. */
+  cert_renew_after_hours?: number | null;
+  cert_retry_window_hours?: number | null;
+  has_node_ca?: boolean;
+  node_ca_subject?: string | null;
+  pki_url?: string | null;
+  pki_mount?: string;
+  pki_role?: string | null;
+  has_pki_token?: boolean;
 }
 
 export interface NodeStorage {
@@ -827,6 +840,13 @@ export const api = {
     backup_interval_hours?: number;
     backup_retention?: number;
     gateway_token?: string;
+    node_cert_source?: "none" | "manual" | "openbao";
+    node_cert_ttl_hours?: number | null;
+    node_ca_pem?: string;
+    pki_url?: string;
+    pki_mount?: string;
+    pki_role?: string;
+    pki_token?: string;
   }) => j<Settings>("/api/cluster/settings", { method: "PATCH", body: JSON.stringify(s) }),
   getStorage: () => j<NodeStorage[]>("/api/storage"),
   deleteOrphan: (node_id: number, name: string) =>

@@ -55,6 +55,29 @@ export default function SettingsPage() {
   );
   const bkv = (k: string) => bk[k] ?? (settings.data as any)?.[k];
 
+  // Node certificates. Separate draft state from the backup form so saving one
+  // never silently writes the other's half-edited fields.
+  const [pki, setPki] = useState<Record<string, any>>({});
+  const [pkiToken, setPkiToken] = useState("");
+  const [pkiBusy, setPkiBusy] = useState(false);
+  const pv = (k: string) => pki[k] ?? (settings.data as any)?.[k];
+  const certSource = (pv("node_cert_source") ?? "none") as string;
+
+  const savePki = async () => {
+    setPkiBusy(true);
+    try {
+      await api.updateSettings({ ...pki, ...(pkiToken ? { pki_token: pkiToken } : {}) });
+      setPki({});
+      setPkiToken("");
+      settings.reload();
+      toast("Certificate settings saved", "success");
+    } catch (e: any) {
+      toast(String(e?.message ?? e), "error");
+    } finally {
+      setPkiBusy(false);
+    }
+  };
+
   const saveBackup = async () => {
     setBkBusy(true);
     try {
@@ -451,6 +474,77 @@ export default function SettingsPage() {
                 </table>
               </div>
             )}
+          </div>
+
+          <div className="card">
+            <h2>Node certificates</h2>
+            <p className="faint" style={{ marginTop: -6 }}>
+              TLS for the hop between the proxy that terminates public HTTPS and
+              vLLM on the boxes. Off by default. Set each node's DNS name on the
+              Nodes page first — it is the identity the proxy verifies.
+            </p>
+            <div className="row-2">
+              <Field label="Certificate source" hint="manual works with any CA you already run">
+                <select value={certSource} onChange={(e) => setPki((p) => ({ ...p, node_cert_source: e.target.value }))}>
+                  <option value="none">None — the hop stays plaintext</option>
+                  <option value="manual">Manual — your own CA</option>
+                  <option value="openbao">OpenBao — issued and renewed automatically</option>
+                </select>
+              </Field>
+              <Field label="Certificate lifetime (hours)"
+                     hint={pv("cert_retry_window_hours")
+                       ? `Renewal starts after ${Math.round(pv("cert_renew_after_hours"))}h, leaving ${Math.round(pv("cert_retry_window_hours"))}h of retries.`
+                       : "Blank = 7 days. Minimum 6 hours."}>
+                <input type="number" placeholder="168" value={pki.node_cert_ttl_hours ?? (settings.data as any)?.node_cert_ttl_hours ?? ""}
+                       onChange={(e) => setPki((p) => ({ ...p, node_cert_ttl_hours: e.target.value === "" ? null : Number(e.target.value) }))} />
+              </Field>
+            </div>
+            {certSource !== "none" && (
+              <p className="faint" style={{ marginTop: -4 }}>
+                This hop has no revocation — the proxy checks no CRL and no OCSP —
+                so the lifetime you pick is how long a stolen key stays useful.
+              </p>
+            )}
+            {certSource === "openbao" && (
+              <>
+                <div className="row-2">
+                  <Field label="OpenBao URL" hint="e.g. https://bao.example.net">
+                    <input value={pv("pki_url") ?? ""} onChange={(e) => setPki((p) => ({ ...p, pki_url: e.target.value }))} />
+                  </Field>
+                  <Field label="PKI mount" hint="the secrets engine path">
+                    <input placeholder="pki" value={pv("pki_mount") ?? ""} onChange={(e) => setPki((p) => ({ ...p, pki_mount: e.target.value }))} />
+                  </Field>
+                </div>
+                <div className="row-2">
+                  <Field label="Role" hint="wants use_csr_sans=false and allowed_domains covering your node domain">
+                    <input value={pv("pki_role") ?? ""} onChange={(e) => setPki((p) => ({ ...p, pki_role: e.target.value }))} />
+                  </Field>
+                  <Field label="Token" hint={settings.data?.has_pki_token ? "Stored. Enter a new one to replace." : "needs update on the role's sign path; stored encrypted"}>
+                    <input type="password" placeholder={settings.data?.has_pki_token ? "•••••• (stored)" : ""} value={pkiToken} onChange={(e) => setPkiToken(e.target.value)} />
+                  </Field>
+                </div>
+                <p className="faint" style={{ marginTop: -4 }}>
+                  The portal calls <code>sign</code>, never <code>issue</code> — the
+                  private key is generated on each node and never travels.
+                </p>
+              </>
+            )}
+            {certSource !== "none" && (
+              <Field label="CA certificate (PEM)"
+                     hint={settings.data?.has_node_ca
+                       ? `Stored${settings.data?.node_ca_subject ? `: ${settings.data.node_ca_subject}` : ""}. This becomes the ca.crt in the generated Kubernetes Secret.`
+                       : "The CA the proxy checks node certificates against. Without it the manifests emit no verification at all."}>
+                <textarea rows={4} placeholder="-----BEGIN CERTIFICATE-----"
+                          value={pki.node_ca_pem ?? ""}
+                          onChange={(e) => setPki((p) => ({ ...p, node_ca_pem: e.target.value }))} />
+              </Field>
+            )}
+            <div className="btn-row">
+              <button className="btn btn-primary" onClick={savePki}
+                      disabled={pkiBusy || (Object.keys(pki).length === 0 && !pkiToken)}>
+                {pkiBusy ? <Spinner /> : "Save certificate settings"}
+              </button>
+            </div>
           </div>
 
           <div className="card">

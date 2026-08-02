@@ -303,7 +303,9 @@ async def promote_endpoint(
     job_id = await jobs.start(
         "endpoint.promote", f"Promote {target.name} to {name}", coro, target=name
     )
-    return JobAccepted(job_id=job_id)
+    return JobAccepted(
+        job_id=job_id, message=f"Promoting '{target.name}' to '{name}'"
+    )
 
 
 @router.post("/{name}/rollback", response_model=JobAccepted)
@@ -333,4 +335,6 @@ async def rollback_endpoint(name: str, session: AsyncSession = Depends(get_sessi
     job_id = await jobs.start(
         "endpoint.promote", f"Roll {name} back to {previous.name}", coro, target=name
     )
-    return JobAccepted(job_id=job_id)
+    return JobAccepted(
+        job_id=job_id, message=f"Rolling '{name}' back to '{previous.name}'"
+    )
