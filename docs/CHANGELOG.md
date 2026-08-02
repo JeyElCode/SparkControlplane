@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.33.2 — a restore stops deleting what the backup never carried
+
+- **Fixed: restoring a backup could silently destroy data, in both
+  directions.** `apply_bundle` cleared every table it manages and then
+  reinserted from the bundle — so a table the bundle did not *mention* was
+  emptied and "restored" as zero rows, and the restore reported success.
+  Restoring a pre-v1.32.0 bundle onto a current build wiped the eval history;
+  restoring a current bundle onto v1.31.0 wiped the custom tasks. Both
+  reproduced.
+- The distinction that fixes it: `build_bundle` writes a key for **every** table
+  it manages, so an empty list genuinely means "there were no rows", while a
+  **missing** key means the version that produced the bundle did not know the
+  table existed. A restore now clears only what the bundle actually covers, and
+  reports anything it left alone as `not_in_bundle` rather than omitting it
+  silently.
+- `bundle_version` is 2. Bundles remain compatible in both directions; the
+  version is recorded so a bundle's origin can be established later.
+
+**If you are upgrading from v1.31.0**, two things are worth knowing, both
+established by running the upgrade against a seeded copy of a v1.31.0 database
+rather than by reading the code:
+
+- The schema migration is safe and reversible — five nullable columns on
+  `eval_runs`, no new tables, and v1.31.0 still starts cleanly against the
+  upgraded database, so rollback is intact.
+- **Backups taken before v1.32.0 can only be restored in place.** They carry a
+  `model_node_states.last_job_id` referencing the deliberately-excluded `jobs`
+  table, so applying one to a *fresh* database fails the foreign-key check and
+  aborts. Take a fresh backup after upgrading.
+
 ## v1.33.1 — the gateway stops routing to the wrong instance
 
 - **Fixed: two running instances sharing a served-model alias routed to the

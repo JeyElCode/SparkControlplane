@@ -234,3 +234,141 @@ def test_no_quality_scenarios_are_authored_here():
         # A TC-nn literal is only legitimate inside the id-shape regex.
         if "TC-" in body and path.name != "toolbench.py":
             raise AssertionError(f"{path.name} appears to define benchmark scenarios")
+
+
+# --- cross-version restore ------------------------------------------------
+
+async def test_a_bundle_that_predates_a_table_does_not_empty_it(tmp_path, monkeypatch):
+    """The data-loss bug, in the direction that bit first.
+
+    `apply_bundle` cleared every table it manages before reinserting. A bundle
+    made before v1.32.0 has no `eval_runs` key at all, so the table was emptied
+    and "restored" as zero rows — reported as a successful restore. Restoring
+    nothing over something is never what the operator meant.
+
+    A missing key is distinguishable from an empty one: `build_bundle` writes a
+    key for every table it manages, so `[]` means "no rows" and absence means
+    "the producing version did not know this table".
+    """
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    await db.init_db()
+
+    import app.services.backup as backup_mod
+
+    importlib.reload(backup_mod)
+    monkeypatch.setattr(backup_mod, "_db", db)
+
+    from sqlalchemy import select
+
+    from app.models import EvalRun
+
+    async with db.SessionLocal() as s:
+        s.add(EvalRun(name="historical", model_name="m", instance_label="l",
+                      categories="code", config_json="{}", status="success"))
+        await s.commit()
+
+    bundle = await backup_mod.build_bundle()
+    # An older producer: the key simply is not there.
+    del bundle["tables"]["eval_runs"]
+
+    result = await backup_mod.apply_bundle(bundle)
+
+    async with db.SessionLocal() as s:
+        rows = (await s.execute(select(EvalRun))).scalars().all()
+        assert len(rows) == 1, "the restore emptied a table the bundle never covered"
+        assert rows[0].name == "historical"
+
+    assert "eval_runs" in result["not_in_bundle"], "the omission must be reported"
+    config.get_settings.cache_clear()
+
+
+async def test_an_empty_list_still_means_empty(tmp_path, monkeypatch):
+    """The other half of the distinction. A table the bundle says is empty MUST
+    be emptied, or a restore could never remove anything."""
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    await db.init_db()
+
+    import app.services.backup as backup_mod
+
+    importlib.reload(backup_mod)
+    monkeypatch.setattr(backup_mod, "_db", db)
+
+    from sqlalchemy import select
+
+    from app.models import EvalRun
+
+    async with db.SessionLocal() as s:
+        s.add(EvalRun(name="doomed", model_name="m", instance_label="l",
+                      categories="code", config_json="{}", status="success"))
+        await s.commit()
+
+    bundle = await backup_mod.build_bundle()
+    bundle["tables"]["eval_runs"] = []   # explicitly: there were no rows
+
+    result = await backup_mod.apply_bundle(bundle)
+
+    async with db.SessionLocal() as s:
+        assert (await s.execute(select(EvalRun))).scalars().all() == []
+    assert "eval_runs" not in result["not_in_bundle"]
+    config.get_settings.cache_clear()
+
+
+async def test_a_newer_bundle_does_not_empty_a_table_only_the_old_build_knows(
+    tmp_path, monkeypatch
+):
+    """The mirror case, which matters because rollback is the only escape
+    hatch: a v1.33.x bundle has no `custom_tasks`, and restoring it on an older
+    build used to wipe them."""
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    await db.init_db()
+
+    import app.services.backup as backup_mod
+
+    importlib.reload(backup_mod)
+    monkeypatch.setattr(backup_mod, "_db", db)
+
+    from sqlalchemy import select
+
+    from app.models import Node
+
+    async with db.SessionLocal() as s:
+        s.add(Node(role="head", name="keepme", lan_ip="10.0.0.1",
+                   qsfp_ip="10.10.10.1", ssh_user="u"))
+        await s.commit()
+
+    bundle = await backup_mod.build_bundle()
+    del bundle["tables"]["nodes"]        # a table this build manages, bundle does not
+
+    result = await backup_mod.apply_bundle(bundle)
+
+    async with db.SessionLocal() as s:
+        names = [n.name for n in (await s.execute(select(Node))).scalars().all()]
+        assert names == ["keepme"], "a table absent from the bundle was emptied"
+    assert "nodes" in result["not_in_bundle"]
+    config.get_settings.cache_clear()
+
+
+def test_the_bundle_version_was_bumped():
+    """The table set changed in both directions; the version records which
+    producer a bundle came from so a support question has an answer."""
+    from app.services.backup import BUNDLE_VERSION
+
+    assert BUNDLE_VERSION >= 2

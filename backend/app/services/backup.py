@@ -41,7 +41,10 @@ from .s3lite import S3Client, S3Config
 
 log = logging.getLogger("spark.backup")
 
-BUNDLE_VERSION = 1
+# 2: restore no longer empties tables the bundle does not carry. Bundles are
+# compatible in both directions — the version is informational, recorded so a
+# support question can be answered without guessing.
+BUNDLE_VERSION = 2
 
 # Parent-first order; singletons (id=1) are updated in place on restore.
 _TABLES: list[tuple[str, type]] = [
@@ -150,12 +153,28 @@ async def apply_bundle(bundle: dict) -> dict:
     counts: dict[str, int] = {}
 
     async with _db.SessionLocal() as session:
+        # A table the bundle does not mention is NOT the same as a table the
+        # bundle says is empty, and conflating them silently destroys data.
+        #
+        # `build_bundle` writes a key for every table it manages, so an empty
+        # list genuinely means "there were no rows". A MISSING key means the
+        # version that produced the bundle did not know the table existed. That
+        # happens in both directions: a bundle from before v1.32.0 has no
+        # eval_runs, and a bundle from v1.32.0 onward has no custom_tasks.
+        #
+        # Deleting on a missing key wiped eval history when restoring an older
+        # bundle onto a newer build, and wiped custom tasks going the other way
+        # — in both cases reported as a successful restore with a count of 0.
+        # Restoring nothing over something is never what the operator meant.
+        covered = [(n, m) for n, m in _TABLES if n in tables]
+        skipped = [n for n, _ in _TABLES if n not in tables]
+
         # children first
-        for name, model in reversed(_TABLES):
+        for name, model in reversed(covered):
             if name in _SINGLETONS:
                 continue
             await session.execute(delete(model))
-        for name, model in _TABLES:
+        for name, model in covered:
             rows = tables.get(name) or []
             _clear_undecryptable(rows, model, cleared)
             if name in _SINGLETONS:
@@ -175,7 +194,17 @@ async def apply_bundle(bundle: dict) -> dict:
             counts[name] = len(rows)
         await session.commit()
     log.warning("backup restored: %s (cleared secrets: %d)", counts, len(cleared))
+    if skipped:
+        log.warning(
+            "restore: bundle does not cover %s; existing rows left untouched",
+            ", ".join(skipped),
+        )
     return {"restored": counts, "cleared_secrets": sorted(set(cleared)),
+            # Named explicitly so the operator sees that these were PRESERVED
+            # rather than restored — a silent omission here is what made the
+            # old behaviour dangerous.
+            "not_in_bundle": skipped,
+            "bundle_version": bundle.get("bundle_version"),
             "app_version": bundle.get("app_version"), "created_at": bundle.get("created_at")}
 
 
