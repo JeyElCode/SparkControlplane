@@ -124,6 +124,58 @@ A cluster instance is owned by the head node; a single instance by its target
 node. Starting an instance whose model is missing on a required node fails
 early with a clear *"Download and sync the model to all required nodes first."*
 
+### Named endpoints, and where their HTTPS terminates
+
+An **endpoint** is a stable public identity — a hostname, a set of model
+aliases, and a certificate — that points at whichever instance currently serves
+it. Promoting a new model onto it is one guarded action instead of editing
+aliases and hand-copying a certificate you then have to remember to rotate.
+Rollback is a promote in the other direction, which is why the outgoing
+instance is stopped and never deleted.
+
+Members of one endpoint are **mutually exclusive**: TP=2 is the whole box, so
+only one can run at a time, and promote stops the outgoing instance before it
+starts the incoming one. The endpoint is unavailable for as long as the new
+model takes to load — minutes, not seconds.
+
+`termination` decides where HTTPS is handled:
+
+| | `onbox` (default) | `k8s` |
+| --- | --- | --- |
+| What terminates TLS | nginx sidecar on the serving node | a proxy in your cluster |
+| Certificate | uploaded to the portal, pushed on promote | cert-manager / ACME; the portal never sees it |
+| vLLM binds | loopback, behind the sidecar | the pinned `upstream_port` |
+| On promote | the cert is pushed to the new node | nothing outside the box changes |
+
+**Moving an endpoint into Kubernetes.** Set `termination` to `k8s` and pin an
+`upstream_port` — the port every member binds. Then:
+
+```bash
+curl -s https://spark.example.net/api/endpoints/prod/manifests \
+  -H "Cookie: $SESSION" \
+  --get --data-urlencode namespace=llm --data-urlencode issuer=letsencrypt-prod
+```
+
+That returns a Service, an EndpointSlice, a cert-manager Certificate and an
+Ingress. Commit them and let your GitOps apply them — **the portal holds no
+cluster credentials and applies nothing.**
+
+The manifests do **not** need regenerating when you promote. Every member of an
+endpoint serves from the head node (the API node for both cluster and
+distributed topologies) on the same pinned port, so a promotion changes which
+process is listening there and nothing the cluster can observe. Regenerate only
+if the hostname, the upstream port, or the head node's address changes.
+
+The generated Ingress sets `proxy-buffering: off` and a one-hour read timeout.
+Both matter: with the defaults, a streamed response is held in the proxy and
+delivered in chunks rather than token by token, and any generation longer than
+60 seconds is cut off mid-stream.
+
+> **The hop from the proxy to vLLM is not encrypted.** On-box, that hop was
+> loopback. In the cluster it is a real LAN hop carrying every prompt and
+> completion, in plaintext for an instance without its own TLS. Treat the
+> management network accordingly until this is closed.
+
 ### Teardown options
 
 Teardown is **granular** — pick exactly what to remove (each is independent):

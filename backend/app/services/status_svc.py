@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..crypto import decrypt
 from ..db import get_setting
 from ..models import INST_RUNNING, TOPO_CLUSTER, TOPO_DISTRIBUTED, Instance, Node
+from .binding import effective_port, effective_tls
 from ..schemas import (
     GpuStatus,
     InstanceRuntimeStatus,
@@ -196,13 +197,18 @@ def instance_base_url(inst: Instance, head: Node | None) -> tuple[str, bool] | N
 
     TLS instances bind vLLM to loopback, so all probes must go through the
     nginx sidecar on ``tls_port`` (verify=False: the cert is for the public
-    name, not the node IP)."""
+    name, not the node IP).
+
+    Asks `effective_tls`, not `inst.tls_enabled`: a member of a `k8s` endpoint
+    has TLS requested but no sidecar on the box — HTTPS is terminated in the
+    cluster — so probing https://node:tls_port would hit a closed port and
+    report a healthy instance as down."""
     node = instance_api_node(inst, head)
     if node is None:
         return None
-    if inst.tls_enabled:
+    if effective_tls(inst)[0]:
         return (f"https://{node.lan_ip}:{inst.tls_port}", False)
-    return (f"http://{node.lan_ip}:{inst.port}", True)
+    return (f"http://{node.lan_ip}:{effective_port(inst)}", True)
 
 
 def instance_auth_headers(inst: Instance) -> dict[str, str]:

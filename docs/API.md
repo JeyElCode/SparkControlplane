@@ -203,6 +203,45 @@ for cluster, 1 for single), `max_model_len`, `gpu_memory_utilization` (default
 
 ---
 
+## Endpoints
+
+`app/routers/endpoints.py` — prefix `/api/endpoints`. A named endpoint is a
+stable public identity (hostname + aliases + certificate) that points at
+whichever instance currently serves it.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/endpoints` | List, with certificate metadata and members. |
+| POST | `/api/endpoints` | Create. |
+| PATCH | `/api/endpoints/{name}` | Edit. Alias changes take effect on the next **start**. |
+| DELETE | `/api/endpoints/{name}` | Refused while an instance serves it. |
+| POST | `/api/endpoints/{name}/tls` | Replace the certificate. The key is write-only. |
+| GET | `/api/endpoints/{name}/history` | Promotion history (last 100). |
+| GET | `/api/endpoints/{name}/manifests` | **Kubernetes YAML.** `k8s` termination only. |
+| POST | `/api/endpoints/{name}/promote` | → job. Stops the incumbent, starts the target. |
+| POST | `/api/endpoints/{name}/rollback` | → job. A promote aimed backwards. |
+
+**`EndpointIn`** — `name` (`^[a-z0-9][a-z0-9-]{0,63}$`), `hostname` (validated
+as a DNS name, lowercased), `port` (public, default 443), `termination`
+(`onbox` | `k8s`), `upstream_port`, `description`, `aliases`, and write-only
+`tls_cert` / `tls_key`.
+
+`termination=k8s` **requires** `upstream_port`: it is the port every member
+binds, and pinning it is what lets the generated manifests stay correct across
+a promotion.
+
+**`GET /manifests`** returns `text/plain` YAML — a selectorless `Service`, an
+`EndpointSlice` addressing the head node, a cert-manager `Certificate` and an
+`Ingress`. Query parameters: `namespace` (`default`), `issuer`
+(`letsencrypt-prod`), `issuer_kind` (`ClusterIssuer` | `Issuer`),
+`ingress_class` (`nginx`). Every value is validated as an RFC 1123 name and
+**rejected**, not sanitised, if it is not one.
+
+The portal never applies these. `409` if the endpoint is `onbox`-terminated or
+no head node is registered.
+
+---
+
 ## Gateway
 
 `app/routers/gateway.py` — prefix `/v1` (no `/api`). OpenAI-compatible proxy:

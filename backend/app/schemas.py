@@ -681,10 +681,41 @@ def _parse_env_json(raw: str | None) -> dict[str, str] | None:
 
 
 # --- Named endpoints ------------------------------------------------------
+_HOSTNAME_RE = re.compile(
+    r"\A[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*\Z"
+)
+
+
+def _v_hostname(v: str | None) -> str | None:
+    """A public DNS name, lowercased.
+
+    Enforced rather than accepted-as-typed because this value ends up in a TLS
+    certificate request and in generated Kubernetes manifests. Anything that is
+    not a DNS name cannot work in either place, so it is refused at the point
+    of entry instead of failing later at `kubectl apply` or in an ACME order.
+    """
+    if v is None:
+        return None
+    v = v.strip().lower().rstrip(".")
+    if not v or len(v) > 255 or not _HOSTNAME_RE.match(v):
+        raise ValueError(
+            f"'{v}' is not a DNS hostname. Expected something like "
+            "llm.example.net — letters, digits, dashes and dots."
+        )
+    return v
+
+
 class EndpointIn(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     hostname: str = Field(min_length=1, max_length=255)
     port: int = Field(default=443, ge=1, le=65535)
+    # onbox: an nginx sidecar on the serving node, cert pushed on promote.
+    # k8s:   a proxy in the cluster with a cert-manager certificate. Same nginx,
+    #        moved off the box; the portal never holds the key.
+    termination: str = Field(default="onbox", pattern=r"^(onbox|k8s)$")
+    # The port on the serving node an external proxy targets. Pinning it is
+    # what lets the k8s manifests stay static across a promotion.
+    upstream_port: int | None = Field(default=None, ge=1, le=65535)
     description: str | None = None
     aliases: list[str] = Field(default_factory=list)
     # Write-only, both of them. The certificate is readable back only as
@@ -693,12 +724,35 @@ class EndpointIn(BaseModel):
     tls_key: str | None = None
 
 
+    @field_validator("hostname")
+    @classmethod
+    def _host(cls, v):
+        return _v_hostname(v)
+
+    @model_validator(mode="after")
+    def _k8s_needs_a_pinned_port(self):
+        if self.termination == "k8s" and not self.upstream_port:
+            raise ValueError(
+                "A Kubernetes-terminated endpoint needs an upstream_port: it is "
+                "the port every member binds, and pinning it is what keeps the "
+                "cluster manifests correct across a promotion."
+            )
+        return self
+
+
 class EndpointUpdate(BaseModel):
     hostname: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
+    termination: str | None = Field(default=None, pattern=r"^(onbox|k8s)$")
+    upstream_port: int | None = Field(default=None, ge=1, le=65535)
     description: str | None = None
     enabled: bool | None = None
     aliases: list[str] | None = None
+
+    @field_validator("hostname")
+    @classmethod
+    def _host(cls, v):
+        return _v_hostname(v)
 
 
 class TlsUploadIn(BaseModel):
@@ -738,6 +792,8 @@ class EndpointOut(BaseModel):
     name: str
     hostname: str
     port: int
+    termination: str = "onbox"
+    upstream_port: int | None = None
     description: str | None = None
     enabled: bool = True
     aliases: list[str] = Field(default_factory=list)
@@ -779,6 +835,7 @@ class EndpointOut(BaseModel):
                 sans = []
         return cls(
             id=ep.id, name=ep.name, hostname=ep.hostname, port=ep.port,
+            termination=ep.termination, upstream_port=ep.upstream_port,
             description=ep.description, enabled=ep.enabled,
             aliases=[a.alias for a in ep.aliases],
             current_instance_id=ep.current_instance_id,

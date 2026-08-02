@@ -40,7 +40,9 @@ from ..models import (
     Node,
 )
 from ..ssh import ssh_for_node
+from ..models import TERM_K8S
 from . import inst_state, nodeops, templates
+from .binding import effective_port, effective_tls
 from .jobs import JobHandle
 from .paths import hf_cache_host_path, model_container_path, models_host_dir
 from .parsers import tool_parser_for
@@ -123,7 +125,7 @@ def _serve_kwargs(inst: Instance, model_path: str, api_key: str | None) -> dict:
         # be a separate field from "is currently serving" — a promotion
         # candidate must launch with the production names before it is current.
         served_model_names=_effective_aliases(inst),
-        port=inst.port,
+        port=effective_port(inst),
         tensor_parallel_size=inst.tensor_parallel_size,
         max_model_len=inst.max_model_len,
         gpu_memory_utilization=inst.gpu_memory_utilization,
@@ -143,7 +145,7 @@ def _serve_kwargs(inst: Instance, model_path: str, api_key: str | None) -> dict:
         extra_args=inst.extra_args,
         # With TLS on, the nginx sidecar (same host) is the only front door, so
         # bind vLLM to loopback — the OpenAI port is not network-exposed.
-        api_host="127.0.0.1" if inst.tls_enabled else "0.0.0.0",
+        api_host="127.0.0.1" if effective_tls(inst)[0] else "0.0.0.0",
     )
 
 
@@ -162,11 +164,19 @@ async def _deploy_tls_proxy(
     install_dir = settings.node_install_dir
     ssh = await ssh_for_node(session, node)
     unit = templates.tls_unit_name(inst.name)
-    if not inst.tls_enabled:
+    tls_on, cert_enc, key_enc = effective_tls(inst)
+    if not tls_on:
+        ep = getattr(inst, "endpoint", None)
+        if ep is not None and ep.termination == TERM_K8S and inst.tls_enabled:
+            await handle.log(
+                f"'{ep.name}' terminates TLS in Kubernetes, so no proxy is "
+                f"installed on {node.name} and vLLM binds :{effective_port(inst)} "
+                "directly. The cluster proxy is the only thing that should reach it."
+            )
         await nodeops.remove_systemd_unit(ssh, unit, log_cb=handle.ssh_log_cb())
         return
-    cert = decrypt(inst.tls_cert_enc)
-    key = decrypt(inst.tls_key_enc)
+    cert = decrypt(cert_enc)
+    key = decrypt(key_enc)
     if not (cert and key):
         raise RuntimeError("TLS is enabled but the cert/key are not set.")
     conf_dir = templates.tls_dir(install_dir, inst.name)
@@ -340,7 +350,7 @@ async def _start_instance(session: AsyncSession, handle: JobHandle, instance_id:
         if inst.tls_enabled:
             health_url = f"https://{host}:{inst.tls_port}/health"
         else:
-            health_url = f"http://{host}:{inst.port}/health"
+            health_url = f"http://{host}:{effective_port(inst)}/health"
         healthy = await _stream_startup_logs(
             handle, ssh, unit_name, health_url, verify=not inst.tls_enabled
         )

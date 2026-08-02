@@ -648,9 +648,35 @@ class Endpoint(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)   # "prod"
     hostname: Mapped[str] = mapped_column(String(255))           # llm.example.net
-    port: Mapped[int] = mapped_column(Integer, default=443)
+    port: Mapped[int] = mapped_column(Integer, default=443)   # the PUBLIC port
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Where HTTPS is terminated for this endpoint.
+    #
+    #   onbox  an nginx sidecar on the serving node, using a certificate this
+    #          endpoint owns and pushes over SSH on every promote.
+    #   k8s    a proxy in Kubernetes, with a cert-manager/ACME certificate the
+    #          portal never sees. It is the same nginx, moved off the box.
+    #
+    # The `k8s` mode needs NO Kubernetes credentials, and the reason is
+    # `upstream_port` below.
+    termination: Mapped[str] = mapped_column(String(16), default="onbox")
+
+    # The port on the serving node that an external proxy targets. Pinning it
+    # is what makes `k8s` mode static.
+    #
+    # `instance_api_node` returns the HEAD for both cluster and distributed
+    # topologies, so every candidate for an endpoint serves from the same
+    # address — only the port differs. Pin the port, have members bind it, and
+    # a promotion changes nothing the proxy can observe: it still targets
+    # head-ip:upstream_port, and a different process is listening there. No
+    # manifest patching, no RBAC, nothing to break when the Kubernetes API is
+    # unreachable.
+    #
+    # Safe because endpoint members are mutually exclusive by construction —
+    # TP=2 is the whole box, and promote is stop-current-then-start-target.
+    upstream_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # The private key stays WRITE-ONLY, like the per-instance one it replaces.
     # The operator's actual need is a HANDOFF — move the cert to another
@@ -754,6 +780,9 @@ class EndpointPromotion(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+
+TERM_ONBOX = "onbox"
+TERM_K8S = "k8s"
 
 PROMO_PENDING = "pending"
 PROMO_ACTIVE = "active"

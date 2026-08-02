@@ -231,6 +231,7 @@ async def promote(handle, endpoint_id: int, instance_id: int, reason: str | None
         PROMO_FAILED,
         PROMO_PENDING,
         PROMO_SUPERSEDED,
+        TERM_K8S,
         Endpoint,
         EndpointPromotion,
         Instance,
@@ -286,7 +287,11 @@ async def promote(handle, endpoint_id: int, instance_id: int, reason: str | None
                 f"'{previous.name if previous else previous_id}' is busy with "
                 "another operation."
             )
-        if not endpoint.tls_cert_enc and endpoint.port == 443:
+        if (
+            endpoint.termination != TERM_K8S
+            and not endpoint.tls_cert_enc
+            and endpoint.port == 443
+        ):
             raise RuntimeError(
                 f"Endpoint '{endpoint.name}' has no certificate, so it cannot "
                 "serve HTTPS on :443. Upload one first."

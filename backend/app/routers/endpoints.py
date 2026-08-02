@@ -9,6 +9,7 @@ production endpoint.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,10 +17,12 @@ from sqlalchemy.orm import selectinload
 from ..crypto import encrypt
 from ..db import get_session
 from ..models import (
+    TERM_K8S,
     Endpoint,
     EndpointAlias,
     EndpointPromotion,
     Instance,
+    Node,
 )
 from ..schemas import (
     EndpointIn,
@@ -30,7 +33,7 @@ from ..schemas import (
     PromoteIn,
     TlsUploadIn,
 )
-from ..services import endpoints as ep_svc
+from ..services import endpoints as ep_svc, k8sman
 from ..services.jobs import jobs
 
 router = APIRouter(prefix="/api/endpoints", tags=["endpoints"])
@@ -146,6 +149,7 @@ async def create_endpoint(payload: EndpointIn, session: AsyncSession = Depends(g
 
     endpoint = Endpoint(
         name=payload.name, hostname=payload.hostname, port=payload.port,
+        termination=payload.termination, upstream_port=payload.upstream_port,
         description=payload.description,
     )
     session.add(endpoint)
@@ -166,6 +170,13 @@ async def update_endpoint(
     aliases = data.pop("aliases", None)
     for field, value in data.items():
         setattr(endpoint, field, value)
+    if endpoint.termination == TERM_K8S and not endpoint.upstream_port:
+        raise HTTPException(
+            400,
+            "A Kubernetes-terminated endpoint needs an upstream_port — it is "
+            "the port every member binds, and pinning it is what keeps the "
+            "cluster manifests correct across a promotion.",
+        )
     if aliases is not None:
         # Aliases reach vLLM via --served-model-name at LAUNCH, so an edit does
         # not take effect until the serving instance restarts. Said plainly
@@ -212,6 +223,61 @@ async def endpoint_history(name: str, session: AsyncSession = Depends(get_sessio
         )
     ).scalars().all()
     return [EndpointPromotionOut.model_validate(r, from_attributes=True) for r in rows]
+
+
+@router.get("/{name}/manifests", response_class=PlainTextResponse)
+async def endpoint_manifests(
+    name: str,
+    namespace: str = "default",
+    issuer: str = "letsencrypt-prod",
+    issuer_kind: str = "ClusterIssuer",
+    ingress_class: str = "nginx",
+    session: AsyncSession = Depends(get_session),
+):
+    """The Kubernetes manifests for a `k8s`-terminated endpoint, as YAML.
+
+    Returned for the operator to commit, NOT applied. The portal holds no
+    cluster credentials by design — it describes what it wants and existing
+    GitOps applies it. Nothing here needs re-applying after a promotion: every
+    member serves from the head node on the same pinned port, so a handoff is
+    invisible from the cluster's side.
+    """
+    endpoint = await _load(session, name)
+    if endpoint.termination != TERM_K8S:
+        raise HTTPException(
+            409,
+            f"'{name}' terminates TLS on the serving node, so it needs no "
+            "Kubernetes manifests. Set termination to 'k8s' to move HTTPS into "
+            "the cluster.",
+        )
+    head = (
+        await session.execute(select(Node).where(Node.role == "head"))
+    ).scalar_one_or_none()
+    if head is None:
+        raise HTTPException(
+            409,
+            "No head node is configured, so there is no upstream address to "
+            "point the cluster at.",
+        )
+    try:
+        return k8sman.render(
+            k8sman.ManifestInput(
+                endpoint=endpoint.name,
+                hostname=endpoint.hostname,
+                # The head serves the API for cluster and distributed
+                # topologies, and a single-node member of an endpoint is
+                # pinned to it as well — one address for every member is what
+                # makes the manifest static.
+                upstream_ip=head.lan_ip,
+                upstream_port=endpoint.upstream_port or endpoint.port,
+                namespace=namespace,
+                issuer=issuer,
+                issuer_kind=issuer_kind,
+                ingress_class=ingress_class,
+            )
+        )
+    except k8sman.ManifestError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/{name}/promote", response_model=JobAccepted)
