@@ -203,3 +203,34 @@ async def test_a_bundle_can_be_restored_after_an_eval_has_run(tmp_path, monkeypa
         assert len((await s.execute(select(EvalRun))).scalars().all()) == 1
 
     config.get_settings.cache_clear()
+
+
+def test_the_speed_benchmark_is_exactly_the_ladder():
+    """No prompts beyond the three regimes.
+
+    Three prompts from the previous system (reasoning, textgen, judging)
+    survived the rewrite and shipped as equal peers in the category picker,
+    which is not what was asked for and makes the default ambiguous. The speed
+    benchmark is the ladder; anything else is a different feature.
+    """
+    assert set(perf_categories()) == set(SPEED_LADDER)
+    assert len(PERF_TASKS) == len(SPEED_LADDER)
+
+
+def test_no_quality_scenarios_are_authored_here():
+    """The 69 tool-calling scenarios come from tool-eval-bench, pinned. If a
+    scenario were ever defined in this repo it would silently stop the scores
+    being comparable to the published ones, which is the whole reason for
+    depending on the suite."""
+    import pathlib
+
+    services = pathlib.Path(__file__).resolve().parents[1] / "app" / "services"
+    for path in services.glob("*.py"):
+        body = "\n".join(
+            ln for ln in path.read_text().splitlines()
+            if not ln.lstrip().startswith("#")
+        )
+        assert "ScenarioDefinition" not in body
+        # A TC-nn literal is only legitimate inside the id-shape regex.
+        if "TC-" in body and path.name != "toolbench.py":
+            raise AssertionError(f"{path.name} appears to define benchmark scenarios")

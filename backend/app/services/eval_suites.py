@@ -82,33 +82,6 @@ PERF_TASKS: list[PerfTask] = [
         # unpredictable, so the same run config still compares like for like.
         max_tokens=768,
     ),
-    PerfTask(
-        id="perf_reasoning",
-        category="reasoning",
-        name="Multi-step reasoning",
-        prompt="A factory has three machines. Machine A makes 120 units/hour, B makes 90, "
-        "C makes 75. They run 7.5 hours/day with a 30-minute shared maintenance stop. "
-        "Walk through, step by step, the total daily output, then the weekly output for a "
-        "6-day week. Show your reasoning.",
-        max_tokens=512,
-    ),
-    PerfTask(
-        id="perf_textgen",
-        category="textgen",
-        name="Free-form generation",
-        prompt="Write a detailed 500-word technical overview of how a tensor-parallel LLM "
-        "inference server distributes work across multiple GPUs.",
-        max_tokens=768,
-    ),
-    PerfTask(
-        id="perf_judging",
-        category="judging",
-        name="Short structured verdict",
-        prompt="Given two short answers to a trivia question, respond ONLY with a compact "
-        "JSON object {\"winner\": 1|2, \"reason\": \"...\"}. Question: 'capital of France?' "
-        "Answer 1: 'Paris'. Answer 2: 'Lyon'.",
-        max_tokens=128,
-    ),
 ]
 
 # The three that form the predictability ladder, in ceiling -> floor order.

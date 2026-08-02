@@ -508,11 +508,11 @@ class JobLog(Base):
 
 
 # --- Evaluation / benchmarking -------------------------------------------
-# Ceiling -> floor on the predictability ladder first (see eval_suites.py:
-# SPEED_LADDER), then the older mixed prompts. "code" replaced "coding" when
-# the ladder landed; historical PerfResult rows keep their original category
-# string, which is correct — they measured a different prompt.
-PERF_CATEGORIES = ("predictable", "code", "creative", "reasoning", "textgen", "judging")
+# The predictability ladder, ceiling -> floor (see eval_suites.py SPEED_LADDER).
+# These three ARE the speed benchmark; there is nothing else. Historical
+# PerfResult rows keep whatever category they were measured under, which is
+# correct — those were different prompts.
+PERF_CATEGORIES = ("predictable", "code", "creative")
 
 
 class EvalRun(Base):
