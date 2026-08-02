@@ -95,13 +95,23 @@ function QualityToggle({
  *  leave the denominator and the exit code stays 0, so a nearly-broken endpoint
  *  scores HIGH. Measured: 46.7% graded still reported a normal-looking score.
  *  This component exists so the two can never be rendered apart. */
-function QualityScore({ score, rate }: { score?: number | null; rate?: number | null }) {
+function QualityScore({ score, rate, gate }: {
+  score?: number | null; rate?: number | null; gate?: boolean | null;
+}) {
   if (score == null) return <span className="faint">—</span>;
   const degraded = rate != null && rate < 95;
+  // A failed safety gate has to be visible from the list. A model that scores
+  // well and obeys injected instructions is precisely the one nobody opens the
+  // detail view for, because the number looks fine.
+  const failedGate = gate === false;
   return (
-    <span title={rate != null ? `${rate.toFixed(0)}% of scenarios graded` : undefined}>
-      <strong style={degraded ? { color: "var(--amber)" } : undefined}>{Math.round(score)}</strong>
+    <span title={[
+      rate != null ? `${rate.toFixed(0)}% of scenarios graded` : null,
+      failedGate ? "Failed the suite's safety gate — the score is capability only." : null,
+    ].filter(Boolean).join(" · ") || undefined}>
+      <strong style={degraded || failedGate ? { color: "var(--amber)" } : undefined}>{Math.round(score)}</strong>
       <span className="faint">/100</span>
+      {failedGate && <span className="badge-note" style={{ marginLeft: 6, color: "var(--amber)" }}>⚠ safety gate failed</span>}
       {degraded && <span className="badge-note" style={{ marginLeft: 6, color: "var(--amber)" }}>only {rate!.toFixed(0)}% graded</span>}
     </span>
   );
@@ -255,6 +265,9 @@ function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
   // the API resolves them. Falling back to the key means an unfamiliar
   // category from a newer suite shows as itself rather than vanishing.
   const catLabel = (k: string) => d.category_labels?.[k] ?? k;
+  // The suite's own per-category detail when the run recorded it; older runs
+  // fall back to the flat percentages.
+  const catDetails: any[] = (d.summary?.categories as any[]) ?? [];
 
   const tally = d.results.reduce(
     (acc, r) => {
@@ -291,9 +304,39 @@ function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
         </div>
       </div>
 
+      {d.safety_gate_passed === false && (
+        <div className="banner banner-warn mb" style={{ borderLeftWidth: 4 }}>
+          <strong>⚠ This model failed the suite's safety gate.</strong>
+          <div style={{ marginTop: 4, fontSize: 13 }}>
+            It answered well and still obeyed instructions embedded in tool output.
+            The score below is a capability score and does not account for this —
+            the suite can rate a run "Good" and fail the gate in the same breath.
+          </div>
+          {(d.safety_warnings ?? []).length > 0 && (
+            <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 13 }}>
+              {(d.safety_warnings ?? []).map((w, i) => (
+                <li key={i} style={{ marginBottom: 2 }}>
+                  {w.includes("CRITICAL") ? <strong>{w}</strong> : w}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       <div className="scorecard mb">
         {d.overall_score != null && (
           <div className="sc"><div className="v">{pct(d.overall_score)}</div><div className="k">overall</div></div>
+        )}
+        {d.rating && (
+          <div className="sc" title={d.safety_gate_passed === false
+            ? "The suite's own rating. It reflects capability only — this run failed the safety gate."
+            : "The suite's own rating."}>
+            <div className="v" style={{ fontSize: "0.7em" }}>{d.rating}</div>
+            <div className="k">
+              rating{d.safety_gate_passed === false ? <span style={{ color: "var(--warn, #e0a030)" }}> · gate failed</span> : ""}
+            </div>
+          </div>
         )}
         {d.scenarios_run != null && (
           <div className="sc" title={d.scenarios_available && d.scenarios_available > d.scenarios_run
@@ -312,10 +355,24 @@ function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
         {d.peak_throughput_tps != null && <div className="sc"><div className="v">{Math.round(d.peak_throughput_tps)}</div><div className="k">peak tok/s</div></div>}
       </div>
 
-      {Object.keys(catScores).length > 0 && (
+      {(catDetails.length > 0 || Object.keys(catScores).length > 0) && (
         <div className="mb">
           <h3>Quality by category</h3>
-          <BarList data={Object.entries(catScores).map(([c, s]) => ({ label: catLabel(c), value: s, valueLabel: pct(s) }))} max={1} />
+          <BarList
+            max={1}
+            data={catDetails.length > 0
+              ? catDetails.map((c) => ({
+                  label: c.label || catLabel(c.key),
+                  value: (c.percent ?? 0) / 100,
+                  // The split matters: three partials and one hard failure are
+                  // the same percentage and very different results.
+                  valueLabel: `${Math.round(c.percent ?? 0)}%  ${c.pass}/${c.partial}/${c.fail}`,
+                }))
+              : Object.entries(catScores).map(([c, v]) => ({ label: catLabel(c), value: v, valueLabel: pct(v) }))}
+          />
+          {catDetails.length > 0 && (
+            <div className="faint" style={{ fontSize: 11, marginTop: 4 }}>passed / partial / failed</div>
+          )}
         </div>
       )}
 
@@ -506,7 +563,7 @@ export default function Evals() {
                     <td><strong>{r.name}</strong><div className="faint" style={{ fontSize: 11 }}>{r.categories.join(", ")}</div></td>
                     <td>{r.model_name}</td>
                     <td><Badge kind={statusKind(r.status)}>{r.status}</Badge></td>
-                    <td><QualityScore score={r.composite_score} rate={r.completion_rate} /></td>
+                    <td><QualityScore score={r.composite_score} rate={r.completion_rate} gate={r.safety_gate_passed} /></td>
                     <td className="mono">
                       {SPEED_LADDER.some((k) => r.ladder_tps?.[k] != null)
                         ? SPEED_LADDER.map((k) => (r.ladder_tps?.[k] != null ? Math.round(r.ladder_tps[k]) : "—")).join(" / ")

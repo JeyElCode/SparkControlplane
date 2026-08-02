@@ -286,6 +286,11 @@ export interface EvalRunSummary {
   peak_throughput_tps?: number | null;
   /** Best tok/s per predictability regime; empty on legacy runs. */
   ladder_tps?: Record<string, number>;
+  /** The suite's deploy verdict. `null`/undefined means NO gate was reported —
+   *  which is not the same as passing and must not render as one. */
+  safety_gate_passed?: boolean | null;
+  safety_warnings?: string[];
+  rating?: string | null;
   /** Quality (tool-eval-bench): 0-100. Meaningless without completion_rate —
    *  infra failures leave the denominator, so a broken endpoint scores HIGH. */
   quality?: boolean;

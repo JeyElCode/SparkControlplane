@@ -48,6 +48,7 @@ log = logging.getLogger("spark.toolbench")
 __all__ = [
     "CATEGORY_LABELS",
     "PINNED_SHA",
+    "CategoryDetail",
     "category_label",
     "workdir",
     "BenchResult",
@@ -134,6 +135,25 @@ def category_label(key: str | None) -> str:
 
 
 @dataclass
+class CategoryDetail:
+    """One category's result, as the suite reports it.
+
+    The label ships in the payload; the pinned CATEGORY_LABELS table is only a
+    fallback for an envelope that omits it. Reading the payload first means a
+    suite that renames a category stays correct without a portal release.
+    """
+
+    key: str
+    label: str
+    percent: float                  # 0..100
+    earned: int = 0
+    max_points: int = 0
+    pass_count: int = 0
+    partial_count: int = 0
+    fail_count: int = 0
+
+
+@dataclass
 class ScenarioOutcome:
     scenario_id: str
     status: str                 # pass | partial | fail
@@ -168,6 +188,10 @@ class BenchResult:
     excluded_scenarios: list[str] = field(default_factory=list)
     safety_warnings: list[str] = field(default_factory=list)
     category_scores: dict[str, float] = field(default_factory=dict)
+    categories: list[CategoryDetail] = field(default_factory=list)
+    # The suite's own verdict on whether the run is safe to deploy. None means
+    # the envelope carried no gate — NOT that it passed.
+    safety_gate_passed: bool | None = None
     scenarios: list[ScenarioOutcome] = field(default_factory=list)
     version: str | None = None
     config_fingerprint: str | None = None
@@ -289,11 +313,35 @@ def parse_envelope(document: dict, stderr_events: list[dict] | None = None) -> B
     warn = scores.get("safety_warnings", document.get("safety_warnings"))
     out.safety_warnings = [str(w) for w in warn] if isinstance(warn, list) else []
 
+    # The gate is the suite's verdict, and it is separate from the score: a
+    # run can be rated "Good" and fail the gate in the same breath, which is
+    # exactly what a model that answers well and obeys injected instructions
+    # looks like. `is` checks, not truthiness — a missing gate is unknown, not
+    # a pass.
+    gate = document.get("safety_gate")
+    if isinstance(gate, dict) and isinstance(gate.get("passed"), bool):
+        out.safety_gate_passed = gate["passed"]
+    if not out.safety_warnings and isinstance(gate, dict):
+        gw = gate.get("warnings")
+        out.safety_warnings = [str(w) for w in gw] if isinstance(gw, list) else []
+
     for entry in scores.get("category_scores") or []:
         if isinstance(entry, dict) and entry.get("category") is not None:
+            key = str(entry["category"])
             pct = entry.get("percent")
             if isinstance(pct, (int, float)):
-                out.category_scores[str(entry["category"])] = float(pct)
+                out.category_scores[key] = float(pct)
+            out.categories.append(CategoryDetail(
+                key=key,
+                # The payload's own label wins; the pinned table is a fallback.
+                label=_str_or_none(entry.get("label")) or category_label(key),
+                percent=float(pct) if isinstance(pct, (int, float)) else 0.0,
+                earned=_int_or_none(entry.get("earned")) or 0,
+                max_points=_int_or_none(entry.get("max") or entry.get("max_points")) or 0,
+                pass_count=_int_or_none(entry.get("pass_count")) or 0,
+                partial_count=_int_or_none(entry.get("partial_count")) or 0,
+                fail_count=_int_or_none(entry.get("fail_count")) or 0,
+            ))
 
     # Category comes from the stderr stream, not the document (fact 3).
     cat_by_id: dict[str, str] = {}

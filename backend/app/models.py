@@ -609,6 +609,12 @@ class EvalRun(Base):
     # over a 15-of-69 subset is not the same measurement as a full run, and
     # presenting "93/100" without saying which is how a partial result gets
     # mistaken for a complete one.
+    # The suite's own deploy verdict. NULL means no gate was reported — which
+    # is not the same as passing, and must never be rendered as if it were.
+    safety_gate_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    safety_warnings_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rating: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    categories_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     scenarios_run: Mapped[int | None] = mapped_column(Integer, nullable=True)
     scenarios_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The suite's own output, kept so a bad run is diagnosable after the fact.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -234,6 +235,19 @@ async def _run_quality(
 
     run.quality = True
     run.composite_score = result.composite_score
+    run.rating = result.rating
+    run.safety_gate_passed = result.safety_gate_passed
+    run.safety_warnings_json = (
+        json.dumps(result.safety_warnings) if result.safety_warnings else None
+    )
+    run.categories_json = json.dumps([
+        {
+            "key": c.key, "label": c.label, "percent": c.percent,
+            "earned": c.earned, "max": c.max_points,
+            "pass": c.pass_count, "partial": c.partial_count, "fail": c.fail_count,
+        }
+        for c in result.categories
+    ]) if result.categories else None
     run.completion_rate = result.completion_rate
     run.suite_version = result.version
     run.suite_sha = toolbench.PINNED_SHA
@@ -293,6 +307,71 @@ async def _run_quality(
         )
     for w in result.safety_warnings:
         await handle.log(f"SAFETY: {w}", "error")
+
+
+async def backfill_from_envelopes(session) -> int:
+    """Recover the safety gate, rating and category detail from stored output.
+
+    A run made before these columns existed still has its result envelope on
+    the row, and re-running an 84-scenario suite to surface a finding that was
+    already measured would be an absurd thing to ask. Parses what is on disk;
+    changes no score.
+
+    Only touches rows where the gate is unknown AND an envelope exists, so it
+    is a no-op on every subsequent boot.
+    """
+    from sqlalchemy import select
+
+    from ..models import EvalRun
+
+    rows = (
+        await session.execute(
+            select(EvalRun).where(
+                EvalRun.safety_gate_passed.is_(None),
+                EvalRun.raw_envelope.is_not(None),
+            )
+        )
+    ).scalars().all()
+
+    filled = 0
+    for run in rows:
+        try:
+            document = json.loads(run.raw_envelope)
+        except ValueError:
+            continue
+        result = toolbench.parse_envelope(document, [])
+        if not result.ok:
+            continue
+        if result.safety_gate_passed is None and not result.categories:
+            continue
+        run.safety_gate_passed = result.safety_gate_passed
+        run.rating = run.rating or result.rating
+        if result.safety_warnings and not run.safety_warnings_json:
+            run.safety_warnings_json = json.dumps(result.safety_warnings)
+        if result.categories and not run.categories_json:
+            run.categories_json = json.dumps([
+                {
+                    "key": c.key, "label": c.label, "percent": c.percent,
+                    "earned": c.earned, "max": c.max_points,
+                    "pass": c.pass_count, "partial": c.partial_count, "fail": c.fail_count,
+                }
+                for c in result.categories
+            ])
+            # The summary is what the detail view reads; refresh its copy too.
+            try:
+                summary = json.loads(run.summary_json) if run.summary_json else {}
+            except ValueError:
+                summary = {}
+            if isinstance(summary, dict):
+                summary["categories"] = json.loads(run.categories_json)
+                run.summary_json = json.dumps(summary)
+        filled += 1
+    if filled:
+        await session.commit()
+        logging.getLogger("spark.evals").warning(
+            "backfilled safety gate / category detail on %d eval run(s)", filled
+        )
+    return filled
 
 
 # --- orchestration -------------------------------------------------------
@@ -398,6 +477,11 @@ async def _finalize(session: AsyncSession, handle: JobHandle, run: EvalRun) -> f
 
     summary = {
         "category_scores": cat_scores,
+        # The suite's own per-category detail — label, points, and the
+        # pass/partial/fail split — recorded by the quality half. A percentage
+        # cannot distinguish "three partials" from "one hard failure", and
+        # this summary is rebuilt from the database where that detail is gone.
+        "categories": json.loads(run.categories_json) if run.categories_json else [],
         "overall": run.overall_score,
         "peak_throughput_tps": peak,
         "ladder_tps": {k: round(v, 1) for k, v in ladder.items()},

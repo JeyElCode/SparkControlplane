@@ -81,6 +81,7 @@ async def _startup_discover() -> None:
         log.warning("Startup model discovery skipped", exc_info=True)
 
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()

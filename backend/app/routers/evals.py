@@ -23,6 +23,28 @@ from ..services.jobs import jobs
 
 router = APIRouter(prefix="/api/evals", tags=["evals"])
 
+# Recovering findings from stored envelopes happens the first time anyone looks
+# at an eval, not at startup. Startup is the wrong place: it delays readiness,
+# and doing it in the deferred background task left a session that could open
+# after the request loop had moved on — which showed up as unrelated tests
+# failing intermittently.
+_backfilled = False
+
+
+async def _ensure_backfilled(session: AsyncSession) -> None:
+    global _backfilled
+    if _backfilled:
+        return
+    _backfilled = True          # set first: one attempt, never a retry storm
+    try:
+        await evals.backfill_from_envelopes(session)
+    except Exception:  # noqa: BLE001 - reading history must never fail the page
+        import logging
+
+        logging.getLogger("spark.evals").warning(
+            "could not backfill eval safety findings", exc_info=True
+        )
+
 
 @router.get("/catalog", response_model=CatalogOut)
 async def catalog(session: AsyncSession = Depends(get_session)):
@@ -99,12 +121,14 @@ async def create_eval(payload: EvalRunRequest, session: AsyncSession = Depends(g
 
 @router.get("", response_model=list[EvalRunOut])
 async def list_evals(session: AsyncSession = Depends(get_session)):
+    await _ensure_backfilled(session)
     rows = (await session.execute(select(EvalRun).order_by(EvalRun.id.desc()))).scalars().all()
     return [EvalRunOut.of(r) for r in rows]
 
 
 @router.get("/{run_id}", response_model=EvalRunDetail)
 async def get_eval(run_id: int, session: AsyncSession = Depends(get_session)):
+    await _ensure_backfilled(session)
     res = await session.execute(
         select(EvalRun)
         .options(selectinload(EvalRun.results), selectinload(EvalRun.perf))
