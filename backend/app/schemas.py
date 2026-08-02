@@ -1360,8 +1360,19 @@ class JobAccepted(BaseModel):
 
 # --- Evaluations ---------------------------------------------------------
 class CatalogOut(BaseModel):
-    perf_categories: list[str]   # built-in throughput-test categories
-    speed_ladder: list[str]  # distinct categories of user-authored tasks
+    # extra="forbid" is the point of this model, not decoration. These fields
+    # were passed by the handler and silently dropped for two releases because
+    # they were never declared: Pydantic ignores unknown constructor kwargs, so
+    # the API returned a smaller object than the code plainly said it did, and
+    # the UI reported the quality suite as "not installed" while it was running
+    # evals perfectly well. Forbidding extras turns that class of drift into a
+    # loud failure at the first request instead of a silent wrong answer.
+    model_config = ConfigDict(extra="forbid")
+
+    perf_categories: list[str]        # every prompt category the speed bench offers
+    speed_ladder: list[str]           # the three predictability regimes, in order
+    quality_available: bool = False   # is tool-eval-bench installed in this image
+    quality_suite_sha: str | None = None  # the pinned upstream commit
 
 
 

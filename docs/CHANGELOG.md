@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.34.1 — the Evals page stops claiming the quality suite is missing
+
+- **Fixed: the Evals page reported "tool-eval-bench is not installed" while the
+  suite was installed and running evals perfectly well.** `GET
+  /api/evals/catalog` set `quality_available` and `quality_suite_sha` in the
+  handler, but `CatalogOut` never declared them — and Pydantic ignores unknown
+  constructor kwargs, so both were silently discarded. The API returned a
+  smaller object than the code plainly said it did. Present since v1.33.0.
+  (Thanks for the precise diagnosis in #87 — it named the exact cause.)
+- `CatalogOut` now forbids undeclared fields, so this class of drift fails at
+  the first request instead of quietly returning a wrong answer. The regression
+  test goes through HTTP rather than constructing the model, because the drop
+  happened at response serialisation and a model-level assertion would have
+  missed it.
+
 ## v1.34.0 — the production endpoint is a thing you can point
 
 Closes #77. Promoting a model to production was hand-copying a certificate you

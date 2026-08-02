@@ -302,3 +302,48 @@ def test_the_result_document_round_trips_through_json():
     """Guards the parser against being handed a str instead of a dict."""
     doc = envelope()
     assert toolbench.parse_envelope(json.loads(json.dumps(doc)), STDERR_EVENTS).ok
+
+
+def test_the_catalog_actually_returns_the_quality_fields(tmp_path, monkeypatch):
+    """The endpoint must SERVE what the handler passes.
+
+    For two releases the handler set quality_available and quality_suite_sha
+    while CatalogOut did not declare them, so Pydantic dropped them silently
+    and the UI reported the suite as "not installed" while it was happily
+    running evals. Asserting the model in isolation would not have caught it —
+    the drop happens at response serialisation, so this goes through HTTP.
+    """
+    import importlib
+
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    import app.main as main
+
+    importlib.reload(main)
+
+    with TestClient(main.app) as c:
+        body = c.get("/api/evals/catalog").json()
+
+    assert "quality_available" in body, "the API dropped quality_available again"
+    assert "quality_suite_sha" in body
+    assert body["quality_suite_sha"] == toolbench.PINNED_SHA
+    assert isinstance(body["quality_available"], bool)
+    config.get_settings.cache_clear()
+
+
+def test_the_catalog_model_refuses_undeclared_fields():
+    """The guard against the whole class of drift: a handler passing a field
+    the model does not declare now raises instead of being ignored."""
+    import pytest as _pytest
+
+    from app.schemas import CatalogOut
+
+    with _pytest.raises(Exception):
+        CatalogOut(perf_categories=[], speed_ladder=[], not_a_real_field=1)
