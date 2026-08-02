@@ -347,3 +347,70 @@ def test_the_catalog_model_refuses_undeclared_fields():
 
     with _pytest.raises(Exception):
         CatalogOut(perf_categories=[], speed_ladder=[], not_a_real_field=1)
+
+
+# --- where the benchmark actually runs ------------------------------------
+#
+# tool-eval-bench opens a run database at `Path.cwd() / "data" /
+# "benchmarks.sqlite"`, with no flag and no environment variable to point it
+# anywhere else. Invoked from the portal's own working directory — the
+# read-only application directory — its first act is a mkdir that fails with
+# EACCES, and the eval dies before contacting the model at all.
+
+def test_the_benchmark_runs_from_a_writable_directory(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    from app.services import toolbench
+
+    w = toolbench.workdir()
+    assert os.path.isdir(w)
+    assert os.access(w, os.W_OK)
+    config.get_settings.cache_clear()
+
+
+def test_the_working_directory_is_not_the_application_directory(tmp_path, monkeypatch):
+    """The bug: cwd was /app/backend, so the tool tried to create
+    /app/backend/data on a read-only filesystem."""
+    from pathlib import Path
+
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    from app.services import toolbench
+
+    app_dir = Path(toolbench.__file__).resolve().parents[2]
+    assert not Path(toolbench.workdir()).resolve().is_relative_to(app_dir)
+    config.get_settings.cache_clear()
+
+
+def test_the_run_is_launched_with_that_directory_as_cwd():
+    """A writable directory that is never passed to the subprocess fixes
+    nothing — the tool resolves its path from ITS cwd, not from ours."""
+    import inspect
+
+    from app.services import toolbench
+
+    src = inspect.getsource(toolbench.run_bench)
+    assert "cwd=workdir()" in src
+
+
+def test_the_working_directory_survives_a_restart(tmp_path, monkeypatch):
+    """Deliberately under the data volume rather than a temp dir, so the run
+    history the tool keeps is not thrown away on every deploy."""
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    from app.services import toolbench
+
+    first = toolbench.workdir()
+    (tmp_path / "tool-eval-bench" / "marker").write_text("x")
+    config.get_settings.cache_clear()
+    assert toolbench.workdir() == first
+    assert (tmp_path / "tool-eval-bench" / "marker").exists()
+    config.get_settings.cache_clear()
