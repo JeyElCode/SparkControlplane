@@ -414,3 +414,213 @@ def test_the_working_directory_survives_a_restart(tmp_path, monkeypatch):
     assert toolbench.workdir() == first
     assert (tmp_path / "tool-eval-bench" / "marker").exists()
     config.get_settings.cache_clear()
+
+
+# --- making a run legible -------------------------------------------------
+#
+# An operator saw "93/100 · A 100% · B 100% · C 100% · D 83% · E 83%" and said,
+# correctly, that it told them nothing they could act on. Everything below was
+# already in the envelope and was being discarded or rendered as a raw key.
+
+def test_category_keys_resolve_to_the_names_the_suite_ships():
+    from app.services.toolbench import category_label
+
+    assert category_label("D") == "Restraint & Refusal"
+    assert category_label("E") == "Error Recovery"
+    assert category_label("K") == "Safety & Boundaries"
+
+
+def test_an_unknown_category_renders_as_itself():
+    """A suite bump adding a category must look unfamiliar, not vanish and not
+    be silently mislabelled as something it isn't."""
+    from app.services.toolbench import category_label
+
+    assert category_label("Z") == "Z"
+    assert category_label(None) == "?"
+
+
+def test_category_lookup_is_case_and_space_insensitive():
+    from app.services.toolbench import category_label
+
+    assert category_label(" d ") == "Restraint & Refusal"
+
+
+def test_the_scenario_title_is_captured_from_the_progress_stream():
+    """The envelope rows carry an id and a summary of what HAPPENED; the name
+    of the test ("Distractor Resistance") appears only in the stderr event."""
+    from app.services.toolbench import parse_envelope
+
+    doc = {
+        "scores": {
+            "final_score": 93,
+            "scenario_results": [
+                {"scenario_id": "TC-02", "status": "pass", "points": 2,
+                 "summary": "Used only get_stock_price for AAPL."},
+            ],
+        },
+    }
+    events = [{"event": "scenario_start", "scenario_id": "TC-02",
+               "title": "Distractor Resistance", "category": "A"}]
+    out = parse_envelope(doc, events)
+    sc = out.scenarios[0]
+    assert sc.title == "Distractor Resistance"
+    assert sc.category == "A"
+    assert sc.summary == "Used only get_stock_price for AAPL."
+
+
+def test_the_diagnostic_fields_are_no_longer_dropped():
+    """ttft, turns and the tool calls are what make a row explain itself."""
+    from app.services.toolbench import parse_envelope
+
+    doc = {
+        "scores": {
+            "final_score": 50,
+            "scenario_results": [{
+                "scenario_id": "TC-11", "status": "partial", "points": 1,
+                "summary": "Reached for calculator on 15%x200.",
+                "expected_behavior": "Answer 30 directly with no calculator.",
+                "tool_calls_made": ["calculator(15%*200)"],
+                "ttft_ms": 582.0, "turn_count": 2,
+                "prompt_tokens": 120, "completion_tokens": 8,
+            }],
+        },
+    }
+    sc = parse_envelope(doc, []).scenarios[0]
+    assert sc.status == "partial"
+    assert sc.points == 1
+    assert sc.ttft_ms == 582.0
+    assert sc.turn_count == 2
+    assert sc.tool_calls == ["calculator(15%*200)"]
+    assert "no calculator" in sc.expected_behavior
+
+
+def test_a_partial_is_kept_distinct_from_a_failure():
+    """1/2 is 'right answer, wrong method'. Collapsing it into a boolean is
+    what made D 83% unexplainable."""
+    from app.services.toolbench import parse_envelope
+
+    doc = {"scores": {"final_score": 25, "scenario_results": [
+        {"scenario_id": "TC-11", "status": "partial", "points": 1},
+        {"scenario_id": "TC-12", "status": "fail", "points": 0},
+    ]}}
+    got = {s.scenario_id: (s.status, s.points) for s in parse_envelope(doc, []).scenarios}
+    assert got["TC-11"] == ("partial", 1)
+    assert got["TC-12"] == ("fail", 0)
+
+
+def test_tool_calls_are_bounded():
+    """A pathological run must not write an unbounded blob into every row."""
+    from app.services.toolbench import parse_envelope
+
+    doc = {"scores": {"final_score": 100, "scenario_results": [{
+        "scenario_id": "TC-01", "status": "pass", "points": 2,
+        "tool_calls_made": ["x" * 500] * 50,
+    }]}}
+    sc = parse_envelope(doc, []).scenarios[0]
+    assert len(sc.tool_calls) <= 20
+    assert all(len(c) <= 200 for c in sc.tool_calls)
+
+
+# --- what the run detail API hands the UI ---------------------------------
+
+@pytest.fixture()
+def eval_client(tmp_path, monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("SPARK_DATA_DIR", str(tmp_path))
+    import app.config as config
+
+    config.get_settings.cache_clear()
+    import app.db as db
+
+    importlib.reload(db)
+    import app.main as main
+
+    importlib.reload(main)
+    from fastapi.testclient import TestClient
+
+    with TestClient(main.app) as c:
+        yield c, db
+    config.get_settings.cache_clear()
+
+
+def _seed_quality_run(db, *, with_log=True):
+    import asyncio
+
+    from app.models import EvalResult, EvalRun
+
+    async def _go():
+        async with db.SessionLocal() as s:
+            run = EvalRun(
+                name="qualitytest", model_name="dsv4", instance_label="TP=2",
+                categories="", capability=False, quality=True, performance=False,
+                config_json="{}",
+                status="success", overall_score=0.9333,
+                summary_json='{"category_scores": {"A": 1.0, "D": 0.8333}}',
+                scenarios_run=15, scenarios_available=69,
+                raw_envelope='{"final_score": 93}' if with_log else None,
+                log_tail="progress…" if with_log else None,
+            )
+            s.add(run)
+            await s.flush()
+            s.add(EvalResult(
+                run_id=run.id, category="D", task_id="TC-11",
+                task_name="Simple Math", scorer="tool-eval-bench",
+                score=0.5, passed=False, status="partial", turn_count=2,
+                ttft_ms=582.0, judge_reason="Reached for calculator on 15%x200.",
+                expected="Answer 30 directly with no calculator.",
+                tool_calls='["calculator(15%*200)"]',
+            ))
+            await s.commit()
+            return run.id
+
+    return asyncio.run(_go())
+
+
+def test_the_detail_carries_category_names_so_the_ui_need_not(eval_client):
+    client, db = eval_client
+    rid = _seed_quality_run(db)
+    d = client.get(f"/api/evals/{rid}").json()
+    assert d["category_labels"]["D"] == "Restraint & Refusal"
+    assert d["category_labels"]["A"] == "Tool Selection"
+
+
+def test_the_detail_says_how_much_of_the_suite_ran(eval_client):
+    """A score over 15 of 69 scenarios is not the same measurement as a full
+    run, and presenting 93/100 without saying so invites the wrong conclusion."""
+    client, db = eval_client
+    rid = _seed_quality_run(db)
+    d = client.get(f"/api/evals/{rid}").json()
+    assert (d["scenarios_run"], d["scenarios_available"]) == (15, 69)
+
+
+def test_a_partial_survives_the_round_trip(eval_client):
+    client, db = eval_client
+    rid = _seed_quality_run(db)
+    row = client.get(f"/api/evals/{rid}").json()["results"][0]
+    assert row["status"] == "partial"
+    assert row["passed"] is False        # both true at once — that is the point
+    assert row["category_label"] == "Restraint & Refusal"
+    assert row["task_name"] == "Simple Math"
+    assert row["turn_count"] == 2
+    assert "calculator" in row["tool_calls"][0]
+    assert "no calculator" in row["expected"]
+
+
+def test_the_suite_output_is_retrievable(eval_client):
+    client, db = eval_client
+    rid = _seed_quality_run(db)
+    assert client.get(f"/api/evals/{rid}").json()["has_log"] is True
+    body = client.get(f"/api/evals/{rid}/log").text
+    assert "suite progress" in body and "result envelope" in body
+
+
+def test_a_run_with_no_stored_output_says_so_plainly(eval_client):
+    """Runs from before this release kept nothing; that must read as an
+    explanation rather than a broken button."""
+    client, db = eval_client
+    rid = _seed_quality_run(db, with_log=False)
+    assert client.get(f"/api/evals/{rid}").json()["has_log"] is False
+    r = client.get(f"/api/evals/{rid}/log")
+    assert r.status_code == 404
+    assert "re-run to capture it" in r.text

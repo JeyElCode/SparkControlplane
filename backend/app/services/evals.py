@@ -171,6 +171,12 @@ async def _run_perf(session, handle, run, pt, target, concurrency, reps, cfg) ->
     )
 
 
+# Bounds on what a run keeps. Big enough to hold a full 84-scenario envelope
+# with its notes, small enough that a year of runs is not a storage problem.
+_MAX_ENVELOPE_CHARS = 512_000
+_MAX_LOG_CHARS = 64_000
+
+
 # --- quality suite (tool-eval-bench) -------------------------------------
 async def _run_quality(
     session: AsyncSession, handle: JobHandle, run: EvalRun, target: Endpoint, cfg: dict
@@ -231,19 +237,45 @@ async def _run_quality(
     run.completion_rate = result.completion_rate
     run.suite_version = result.version
     run.suite_sha = toolbench.PINNED_SHA
+    run.scenarios_run = len(result.scenarios) or None
+    run.scenarios_available = result.total_scenarios
+    # The suite's own output, so a run that goes wrong can be examined after
+    # the fact. Bounded: `raw_log` per scenario can be large, and an eval
+    # history is not a place to accumulate megabytes per row.
+    envelope_text = json.dumps(document, separators=(",", ":"))
+    if len(envelope_text) > _MAX_ENVELOPE_CHARS:
+        envelope_text = (
+            envelope_text[:_MAX_ENVELOPE_CHARS]
+            + f"\n\n[truncated at {_MAX_ENVELOPE_CHARS} characters]"
+        )
+    run.raw_envelope = envelope_text
+    run.log_tail = (tail or "")[-_MAX_LOG_CHARS:] or None
 
     for sc in result.scenarios:
         session.add(EvalResult(
             run_id=run.id,
             category=sc.category or "?",
             task_id=sc.scenario_id,
-            task_name=sc.summary[:255] or sc.scenario_id,
+            # The scenario's NAME ("Distractor Resistance"), not a description
+            # of what happened. The summary is the outcome and belongs beside
+            # it, not in place of it.
+            task_name=(sc.title or sc.scenario_id)[:255],
             scorer="tool-eval-bench",
             # 2/1/0 -> 0..1 so the existing 0..1 renderers stay correct.
             score=sc.points / 2.0,
             passed=sc.status == "pass",
+            status=sc.status,
             error=sc.failure_kind,
             latency_ms=(sc.duration_seconds or 0) * 1000 or None,
+            ttft_ms=sc.ttft_ms,
+            turn_count=sc.turn_count,
+            prompt_tokens=sc.prompt_tokens,
+            completion_tokens=sc.completion_tokens,
+            # What happened, and what should have. Together they turn a red
+            # cell into something an operator can act on.
+            judge_reason=sc.summary or sc.note or None,
+            expected=sc.expected_behavior,
+            tool_calls=json.dumps(sc.tool_calls) if sc.tool_calls else None,
         ))
     await _commit(session, handle)
 

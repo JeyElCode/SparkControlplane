@@ -46,7 +46,9 @@ from pathlib import Path
 log = logging.getLogger("spark.toolbench")
 
 __all__ = [
+    "CATEGORY_LABELS",
     "PINNED_SHA",
+    "category_label",
     "workdir",
     "BenchResult",
     "available",
@@ -97,6 +99,40 @@ DEFAULT_TIMEOUT_S = 3600
 _SCENARIO_RE = re.compile(r"\ATC-[0-9]{1,3}\Z")
 
 
+# The suite's category keys are single letters, and the portal was rendering
+# them raw — "D 83%" tells an operator nothing they can act on. The bench ships
+# the names in `domain/scenarios.py::CATEGORY_LABELS`; this is that table,
+# pinned alongside PINNED_SHA because it must move only when the suite does.
+#
+# Unknown keys render as themselves rather than being dropped or guessed at: a
+# new category appearing after a suite bump should look unfamiliar, not absent.
+CATEGORY_LABELS: dict[str, str] = {
+    "A": "Tool Selection",
+    "B": "Parameter Precision",
+    "C": "Multi-Step Chains",
+    "D": "Restraint & Refusal",
+    "E": "Error Recovery",
+    "F": "Localization",
+    "G": "Structured Reasoning",
+    "H": "Instruction Following",
+    "I": "Context & State",
+    "J": "Code Patterns",
+    "K": "Safety & Boundaries",
+    "L": "Toolset Scale",
+    "M": "Autonomous Planning",
+    "N": "Creative Composition",
+    "O": "Structured Output",
+    "P": "Hard Mode",
+}
+
+
+def category_label(key: str | None) -> str:
+    """A human name for a category key, or the key itself."""
+    if not key:
+        return "?"
+    return CATEGORY_LABELS.get(str(key).strip().upper(), str(key))
+
+
 @dataclass
 class ScenarioOutcome:
     scenario_id: str
@@ -107,6 +143,17 @@ class ScenarioOutcome:
     failure_kind: str | None = None
     duration_seconds: float | None = None
     excluded: bool = False       # infra failure: left the denominator
+    # Everything below was already in the envelope and thrown away. It is the
+    # difference between "D 83%" and "TC-11 reached for the calculator on
+    # 15%x200 when mental math was sufficient".
+    title: str | None = None
+    note: str | None = None
+    expected_behavior: str | None = None
+    tool_calls: list[str] = field(default_factory=list)
+    ttft_ms: float | None = None
+    turn_count: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 @dataclass
@@ -250,10 +297,18 @@ def parse_envelope(document: dict, stderr_events: list[dict] | None = None) -> B
 
     # Category comes from the stderr stream, not the document (fact 3).
     cat_by_id: dict[str, str] = {}
+    title_by_id: dict[str, str] = {}
     for ev in stderr_events or []:
         if ev.get("event") == "scenario_start" and ev.get("scenario_id"):
+            sid_ev = str(ev["scenario_id"])
             if ev.get("category"):
-                cat_by_id[str(ev["scenario_id"])] = str(ev["category"])
+                cat_by_id[sid_ev] = str(ev["category"])
+            # The scenario's human title ("Distractor Resistance") rides the
+            # same event and is the only place it appears — the envelope rows
+            # carry an id and a summary of what happened, never the name of
+            # the test.
+            if ev.get("title"):
+                title_by_id[sid_ev] = str(ev["title"])[:255]
 
     excluded_set = set(out.excluded_scenarios)
     for row in scores.get("scenario_results") or []:
@@ -262,6 +317,7 @@ def parse_envelope(document: dict, stderr_events: list[dict] | None = None) -> B
         sid = str(row.get("scenario_id") or "")
         if not sid:
             continue
+        calls = row.get("tool_calls_made")
         out.scenarios.append(ScenarioOutcome(
             scenario_id=sid,
             status=str(row.get("status") or "fail"),
@@ -271,6 +327,14 @@ def parse_envelope(document: dict, stderr_events: list[dict] | None = None) -> B
             failure_kind=_str_or_none(row.get("failure_kind")),
             duration_seconds=_float_or_none(row.get("duration_seconds")),
             excluded=sid in excluded_set,
+            title=title_by_id.get(sid),
+            note=_str_or_none(row.get("note")),
+            expected_behavior=_str_or_none(row.get("expected_behavior")),
+            tool_calls=[str(c)[:200] for c in calls][:20] if isinstance(calls, list) else [],
+            ttft_ms=_float_or_none(row.get("ttft_ms")),
+            turn_count=_int_or_none(row.get("turn_count")),
+            prompt_tokens=_int_or_none(row.get("prompt_tokens")),
+            completion_tokens=_int_or_none(row.get("completion_tokens")),
         ))
 
     out.ok = True

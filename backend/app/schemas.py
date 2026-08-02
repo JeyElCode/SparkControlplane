@@ -1566,6 +1566,22 @@ class EvalStarted(BaseModel):
     message: str
 
 
+def _category_label(key: str | None) -> str:
+    from .services.toolbench import category_label
+
+    return category_label(key)
+
+
+def _json_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+    except ValueError:
+        return []
+    return [str(x) for x in v] if isinstance(v, list) else []
+
+
 class EvalResultOut(BaseModel):
     category: str
     task_id: str
@@ -1581,6 +1597,14 @@ class EvalResultOut(BaseModel):
     completion_tokens: int | None
     tokens_per_sec: float | None
     error: str | None
+    # pass | partial | fail. Kept distinct from `passed`, which is a bool and
+    # collapses PARTIAL — the "right answer, wrong method" result — into a
+    # failure indistinguishable from a real one.
+    status: str | None = None
+    category_label: str = ""
+    turn_count: int | None = None
+    expected: str | None = None
+    tool_calls: list[str] = Field(default_factory=list)
 
     @classmethod
     def of(cls, r: m.EvalResult) -> "EvalResultOut":
@@ -1589,6 +1613,9 @@ class EvalResultOut(BaseModel):
             score=r.score, passed=r.passed, response=r.response, judge_reason=r.judge_reason,
             latency_ms=r.latency_ms, ttft_ms=r.ttft_ms, prompt_tokens=r.prompt_tokens,
             completion_tokens=r.completion_tokens, tokens_per_sec=r.tokens_per_sec, error=r.error,
+            status=r.status, turn_count=r.turn_count, expected=r.expected,
+            category_label=_category_label(r.category),
+            tool_calls=_json_list(r.tool_calls),
         )
 
 
@@ -1678,6 +1705,14 @@ class EvalRunDetail(EvalRunOut):
     summary: dict[str, Any] | None = None
     config: dict[str, Any] | None = None
     results: list[EvalResultOut] = Field(default_factory=list)
+    # key -> human name, so the UI never has to carry its own copy and an
+    # unknown key can be shown as itself rather than silently mislabelled.
+    category_labels: dict[str, str] = Field(default_factory=dict)
+    # A score over a subset is a different measurement from a full run, and
+    # saying so is the difference between a number and a misleading number.
+    scenarios_run: int | None = None
+    scenarios_available: int | None = None
+    has_log: bool = False
     perf: list[PerfResultOut] = Field(default_factory=list)
 
     @classmethod
@@ -1685,8 +1720,16 @@ class EvalRunDetail(EvalRunOut):
         base = EvalRunOut.of(run).model_dump()
         summary = json.loads(run.summary_json) if run.summary_json else None
         config = json.loads(run.config_json) if run.config_json else None
+        # Labels for every category the run actually touched — both the ones
+        # with a score and the ones only a scenario row mentions.
+        keys = set((summary or {}).get("category_scores") or {})
+        keys |= {r.category for r in run.results if r.category}
         return cls(
             **base, summary=summary, config=config,
             results=[EvalResultOut.of(r) for r in run.results],
             perf=[PerfResultOut.of(p) for p in run.perf],
+            category_labels={k: _category_label(k) for k in sorted(keys)},
+            scenarios_run=run.scenarios_run or (len(run.results) or None),
+            scenarios_available=run.scenarios_available,
+            has_log=bool(run.raw_envelope or run.log_tail),
         )

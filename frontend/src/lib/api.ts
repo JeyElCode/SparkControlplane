@@ -314,6 +314,12 @@ export interface EvalResultRow {
   completion_tokens?: number | null;
   tokens_per_sec?: number | null;
   error?: string | null;
+  /** pass | partial | fail. `passed` is a bool and cannot express partial. */
+  status?: string | null;
+  category_label?: string;
+  turn_count?: number | null;
+  expected?: string | null;
+  tool_calls?: string[];
 }
 
 export interface PerfRow {
@@ -334,6 +340,10 @@ export interface EvalRunDetail extends EvalRunSummary {
   config?: Record<string, any> | null;
   results: EvalResultRow[];
   perf: PerfRow[];
+  category_labels?: Record<string, string>;
+  scenarios_run?: number | null;
+  scenarios_available?: number | null;
+  has_log?: boolean;
 }
 
 export interface EvalStarted {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -113,6 +114,31 @@ async def get_eval(run_id: int, session: AsyncSession = Depends(get_session)):
     if run is None:
         raise HTTPException(404, "Eval run not found")
     return EvalRunDetail.of_detail(run)
+
+
+@router.get("/{run_id}/log", response_class=PlainTextResponse)
+async def eval_log(run_id: int, session: AsyncSession = Depends(get_session)):
+    """The suite's own output for a run: its progress log and result envelope.
+
+    Kept because the file it was parsed from lives in a temporary directory
+    deleted when the job ends — so before this, a run that produced a
+    surprising number left nothing behind to examine.
+    """
+    run = await session.get(EvalRun, run_id)
+    if run is None:
+        raise HTTPException(404, "Eval run not found")
+    if not (run.raw_envelope or run.log_tail):
+        raise HTTPException(
+            404,
+            "No suite output was kept for this run. Runs from before v1.37.0 "
+            "did not store it — re-run to capture it.",
+        )
+    parts = []
+    if run.log_tail:
+        parts.append("=== suite progress (stderr) ===\n" + run.log_tail)
+    if run.raw_envelope:
+        parts.append("=== result envelope (--json-file) ===\n" + run.raw_envelope)
+    return "\n\n".join(parts)
 
 
 @router.delete("/{run_id}", status_code=204)

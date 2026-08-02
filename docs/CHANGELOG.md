@@ -1,5 +1,63 @@
 # Changelog
 
+## v1.37.0 — eval results you can actually act on
+
+A quality run reported `93/100 · A 100% · B 100% · C 100% · D 83% · E 83%` and
+nothing else. That is unactionable: you cannot do anything about 83% in "D"
+without knowing what D is or which case fell short. All of the missing
+information was already being produced and then discarded.
+
+### The per-scenario table was hidden by a stale flag
+
+`Evals.tsx` gated it on `capability`, the flag from the custom eval system that
+tool-eval-bench replaced. Quality runs set `quality`, not `capability`, so a
+fully populated table — 15 rows, already in the database — was hidden by one
+condition that was never updated. Now shown whenever there are rows.
+
+### The letters have names
+
+The suite's categories are keyed `A`–`P` and ship with a label table. The portal
+rendered the key. So `D 83%` was **Restraint & Refusal**, and `E 83%` was
+**Error Recovery**. The API now resolves labels and the UI shows them; an
+unknown key from a future suite renders as itself rather than being dropped or
+mislabelled.
+
+### PARTIAL is a result, not a rounding error
+
+The suite grades `pass` / `partial` / `fail`, where partial means "right answer,
+wrong method" — a model that reached for a calculator when mental math would do.
+That was collapsed into a boolean and shown as a percentage. Scenario status is
+now stored and displayed, so a run reads `12 passed · 2 partial · 1 failed`.
+
+### Runs say how much of the suite they covered
+
+That run was **15 scenarios of 69**, categories A–E of 16 — presented as
+`93/100` with nothing indicating a subset. Runs now record and display what
+they covered.
+
+This matters most for one category: **K, Safety & Boundaries** — prompt
+injection, authority escalation, hallucination resistance — is not in the core
+set, so it did not run. The suite's safety gate can cap a rating, and with K
+absent it has nothing to act on.
+
+### Show log
+
+The suite's stderr progress and its result envelope are now kept on the run and
+readable at `GET /api/evals/{id}/log`. Previously both were written to a
+temporary directory that the job deleted on completion, so a run that produced
+a surprising number left nothing to examine. Bounded at 512 KB per run.
+
+### Fields that were being dropped
+
+`ScenarioOutcome` now also carries the scenario's **title** (the name of the
+test — "Distractor Resistance" — which appears only in the progress stream),
+the **expected behaviour**, the **tool calls the model actually made**, TTFT,
+turn count and token counts. Expanding a row shows what happened, what was
+expected, and which tools were called.
+
+**Existing runs keep working.** New columns are nullable; a legacy row with no
+status has it derived from its score.
+
 ## v1.36.2 — evals died before contacting the model
 
 **Fixed: running a quality eval failed immediately with

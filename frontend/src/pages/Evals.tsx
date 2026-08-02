@@ -186,10 +186,29 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
 }
 
 // ---------- Run detail ----------
+/** The suite reports pass | partial | fail. PARTIAL is "right answer, wrong
+ *  method" — the most useful result to see, and the one a boolean `passed`
+ *  erases. Legacy rows have no status, so derive it from the score. */
+function scenarioStatus(r: { status?: string | null; passed?: boolean | null; score: number }): string {
+  if (r.status) return r.status;
+  if (r.passed) return "pass";
+  return r.score > 0 ? "partial" : "fail";
+}
+
+function scenarioKind(r: { status?: string | null; passed?: boolean | null; score: number }) {
+  const st = scenarioStatus(r);
+  return st === "pass" ? "green" : st === "partial" ? "amber" : "red";
+}
+
+function scenarioText(r: { status?: string | null; passed?: boolean | null; score: number }) {
+  return scenarioStatus(r).toUpperCase();
+}
+
 function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
   const [d, setD] = useState<EvalRunDetail | null>(null);
   const [err, setErr] = useState<string>();
   const [openTask, setOpenTask] = useState<string | null>(null);
+  const [onlyProblems, setOnlyProblems] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -202,7 +221,24 @@ function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
   if (err) return <div className="banner banner-warn">⚠ {err}</div>;
   if (!d) return <div className="card center" style={{ padding: 30 }}><Spinner /></div>;
 
+
   const catScores: Record<string, number> = (d.summary?.category_scores as any) ?? {};
+  // The suite's categories are single letters; their names ship with it and
+  // the API resolves them. Falling back to the key means an unfamiliar
+  // category from a newer suite shows as itself rather than vanishing.
+  const catLabel = (k: string) => d.category_labels?.[k] ?? k;
+
+  const tally = d.results.reduce(
+    (acc, r) => {
+      const st = r.status ?? (r.passed ? "pass" : r.score > 0 ? "partial" : "fail");
+      acc[st === "pass" ? "pass" : st === "partial" ? "partial" : "fail"] += 1;
+      return acc;
+    },
+    { pass: 0, partial: 0, fail: 0 }
+  );
+  const shownResults = onlyProblems
+    ? d.results.filter((r) => (r.status ?? (r.passed ? "pass" : "fail")) !== "pass")
+    : d.results;
   // peak throughput per category + throughput-vs-concurrency series
   const byCat: Record<string, { c: number; tput: number }[]> = {};
   for (const p of d.perf) {
@@ -231,14 +267,27 @@ function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
         {d.overall_score != null && (
           <div className="sc"><div className="v">{pct(d.overall_score)}</div><div className="k">overall</div></div>
         )}
-        {Object.entries(catScores).map(([c, s]) => <div className="sc" key={c}><div className="v">{pct(s)}</div><div className="k">{c}</div></div>)}
+        {d.scenarios_run != null && (
+          <div className="sc" title={d.scenarios_available && d.scenarios_available > d.scenarios_run
+            ? "This run covered a subset of the suite. A score over a subset is not the same measurement as a full run."
+            : undefined}>
+            <div className="v">{d.scenarios_run}{d.scenarios_available ? <span className="faint" style={{ fontSize: "0.6em" }}> / {d.scenarios_available}</span> : null}</div>
+            <div className="k">scenarios</div>
+          </div>
+        )}
+        {Object.entries(catScores).map(([c, s]) => (
+          <div className="sc" key={c} title={`Category ${c}`}>
+            <div className="v">{pct(s)}</div>
+            <div className="k">{catLabel(c)}</div>
+          </div>
+        ))}
         {d.peak_throughput_tps != null && <div className="sc"><div className="v">{Math.round(d.peak_throughput_tps)}</div><div className="k">peak tok/s</div></div>}
       </div>
 
-      {d.capability && Object.keys(catScores).length > 0 && (
+      {Object.keys(catScores).length > 0 && (
         <div className="mb">
-          <h3>Capability by category</h3>
-          <BarList data={Object.entries(catScores).map(([c, s]) => ({ label: c, value: s, valueLabel: pct(s) }))} max={1} />
+          <h3>Quality by category</h3>
+          <BarList data={Object.entries(catScores).map(([c, s]) => ({ label: catLabel(c), value: s, valueLabel: pct(s) }))} max={1} />
         </div>
       )}
 
@@ -249,29 +298,61 @@ function RunDetail({ id, onRerun }: { id: number; onRerun?: () => void }) {
         </div>
       )}
 
-      {d.capability && d.results.length > 0 && (
+      {d.results.length > 0 && (
         <div className="mb">
-          <h3>Tasks</h3>
+          <div className="flex gap-sm" style={{ alignItems: "baseline", flexWrap: "wrap" }}>
+            <h3 style={{ marginRight: "auto" }}>
+              Scenarios{" "}
+              <span className="faint" style={{ fontWeight: 400, fontSize: 13 }}>
+                {tally.pass} passed · {tally.partial} partial · {tally.fail} failed
+              </span>
+            </h3>
+            <label className="flex gap-sm" style={{ alignItems: "center", fontSize: 13 }}>
+              <input type="checkbox" checked={onlyProblems} onChange={(e) => setOnlyProblems(e.target.checked)} />
+              only what didn't pass
+            </label>
+            {d.has_log && (
+              <a className="btn btn-sm" href={`/api/evals/${d.id}/log`} target="_blank" rel="noreferrer">Show log</a>
+            )}
+          </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Category</th><th>Task</th><th>Scorer</th><th>Score</th><th>tok/s</th><th>TTFT</th><th>Notes</th></tr></thead>
+              <thead><tr><th>Test</th><th>Category</th><th>Result</th><th>Turns</th><th>TTFT</th><th>What happened</th></tr></thead>
               <tbody>
-                {d.results.map((r) => (
+                {shownResults.map((r) => (
                   <Fragment key={r.task_id}>
                     <tr style={{ cursor: "pointer" }} onClick={() => setOpenTask(openTask === r.task_id ? null : r.task_id)}>
-                      <td className="faint">{r.category}</td>
-                      <td><strong>{r.task_name}</strong></td>
-                      <td><span className="tag">{r.scorer}</span></td>
-                      <td><Badge kind={r.score >= 0.999 ? "green" : r.score > 0 ? "amber" : "red"}>{pct(r.score)}</Badge></td>
-                      <td className="mono faint">{r.tokens_per_sec ? Math.round(r.tokens_per_sec) : "—"}</td>
+                      <td>
+                        <span className="mono faint" style={{ marginRight: 8 }}>{r.task_id}</span>
+                        <strong>{r.task_name}</strong>
+                      </td>
+                      <td className="faint">{r.category_label || r.category}</td>
+                      <td>
+                        <Badge kind={scenarioKind(r)}>{scenarioText(r)}</Badge>
+                        <span className="mono faint" style={{ marginLeft: 6, fontSize: 11 }}>{Math.round(r.score * 2)}/2</span>
+                      </td>
+                      <td className="mono faint">{r.turn_count ? `t${r.turn_count}` : "—"}</td>
                       <td className="mono faint">{r.ttft_ms ? `${Math.round(r.ttft_ms)}ms` : "—"}</td>
-                      <td className="faint" style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.error ? `⚠ ${r.error}` : r.judge_reason}</td>
+                      <td className="faint" style={{ maxWidth: 380, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.error ? `⚠ ${r.error}` : r.judge_reason}</td>
                     </tr>
                     {openTask === r.task_id && (
-                      <tr><td colSpan={7} style={{ background: "var(--bg)" }}>
-                        {r.judge_reason && <div className="faint" style={{ fontSize: 12, marginBottom: 6 }}>{r.judge_reason}</div>}
-                        <div className="faint" style={{ fontSize: 11, margin: "0 0 4px" }}>RESPONSE</div>
-                        <div className="logs" style={{ maxHeight: 280 }}>{r.response || "(no response)"}</div>
+                      <tr><td colSpan={6} style={{ background: "var(--bg)" }}>
+                        {r.judge_reason && (
+                          <><div className="faint" style={{ fontSize: 11, margin: "0 0 2px" }}>WHAT HAPPENED</div>
+                          <div style={{ fontSize: 13, marginBottom: 8 }}>{r.judge_reason}</div></>
+                        )}
+                        {r.expected && (
+                          <><div className="faint" style={{ fontSize: 11, margin: "0 0 2px" }}>WHAT WAS EXPECTED</div>
+                          <div style={{ fontSize: 13, marginBottom: 8 }}>{r.expected}</div></>
+                        )}
+                        {r.tool_calls && r.tool_calls.length > 0 && (
+                          <><div className="faint" style={{ fontSize: 11, margin: "0 0 2px" }}>TOOL CALLS</div>
+                          <div style={{ marginBottom: 8 }}>{r.tool_calls.map((c, i) => <span className="tag mono" key={i} style={{ marginRight: 4 }}>{c}</span>)}</div></>
+                        )}
+                        {r.response && (
+                          <><div className="faint" style={{ fontSize: 11, margin: "0 0 4px" }}>RESPONSE</div>
+                          <div className="logs" style={{ maxHeight: 280 }}>{r.response}</div></>
+                        )}
                       </td></tr>
                     )}
                   </Fragment>
