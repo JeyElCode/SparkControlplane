@@ -37,10 +37,11 @@ function CatGroup({ title, cats, sel, onToggle }: { title: string; cats: string[
  *  comparable to another run of the SAME suite revision, and to the numbers
  *  other people publish, so the revision is part of the result. */
 function QualityToggle({
-  enabled, available, sha, short, onToggle, onShort,
+  enabled, available, sha, short, hardmode, onToggle, onShort, onHardmode,
 }: {
   enabled: boolean; available: boolean; sha?: string | null;
-  short: boolean; onToggle: (v: boolean) => void; onShort: (v: boolean) => void;
+  short: boolean; hardmode: boolean;
+  onToggle: (v: boolean) => void; onShort: (v: boolean) => void; onHardmode: (v: boolean) => void;
 }) {
   return (
     <div style={{ marginBottom: 10 }}>
@@ -56,10 +57,35 @@ function QualityToggle({
         </span>
       </label>
       {enabled && (
-        <label className="checkbox" style={{ marginLeft: 24 }}>
-          <input type="checkbox" checked={short} onChange={(e) => onShort(e.target.checked)} />
-          <span><span className="cb-label">Short suite (15 scenarios)</span><div className="cb-sub">A smoke check rather than a result worth comparing.</div></span>
-        </label>
+        <>
+          <label className="checkbox" style={{ marginLeft: 24 }}>
+            <input type="checkbox" checked={short} onChange={(e) => onShort(e.target.checked)} />
+            <span>
+              <span className="cb-label">Short suite — 15 of 69 scenarios</span>
+              <div className="cb-sub">
+                A smoke check, not a result worth comparing. It covers only categories
+                A–E and <strong>omits Safety &amp; Boundaries entirely</strong> — the
+                13 scenarios for prompt injection, authority escalation and
+                hallucination resistance — so the suite's safety gate has nothing to
+                act on and any rating it reports is unearned in that dimension.
+              </div>
+            </span>
+          </label>
+          <label className="checkbox" style={{ marginLeft: 24 }}>
+            <input type="checkbox" checked={hardmode} disabled={short}
+                   onChange={(e) => onHardmode(e.target.checked)} />
+            <span>
+              <span className="cb-label">Hard Mode — +15 scenarios (84 total)</span>
+              <div className="cb-sub">
+                Ceiling-breaking cases: adversarial, stateful and format-sensitive.
+                Use when the standard suite no longer separates two models.
+              </div>
+            </span>
+          </label>
+          <div className="faint" style={{ marginLeft: 24, fontSize: 12 }}>
+            {short ? "Running 15 scenarios." : hardmode ? "Running 84 scenarios across 16 categories." : "Running the full 69 scenarios across 15 categories."}
+          </div>
+        </>
       )}
     </div>
   );
@@ -155,8 +181,10 @@ function NewEval({ onClose, onStarted }: { onClose: () => void; onStarted: (jobI
             available={!!catalog.data?.quality_available}
             sha={catalog.data?.quality_suite_sha}
             short={!!f.short}
+            hardmode={!!f.hardmode}
             onToggle={(v) => set("quality", v)}
-            onShort={(v) => set("short", v)}
+            onShort={(v) => { set("short", v); if (v) set("hardmode", false); }}
+            onHardmode={(v) => set("hardmode", v)}
           />
           <CatGroup title="Predictability ladder (default)" cats={perfCats.filter((c) => SPEED_LADDER.includes(c))} sel={f.categories} onToggle={toggleCat} />
           <CatGroup title="Other prompts" cats={perfCats.filter((c) => !SPEED_LADDER.includes(c))} sel={f.categories} onToggle={toggleCat} />
