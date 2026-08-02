@@ -222,6 +222,7 @@ async def promote(handle, endpoint_id: int, instance_id: int, reason: str | None
     the previous instance back if the new one does not come up.
     """
     from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
 
     from ..db import SessionLocal
     from ..models import (
@@ -238,10 +239,29 @@ async def promote(handle, endpoint_id: int, instance_id: int, reason: str | None
     from .instances import start_instance, stop_instance
 
     async with SessionLocal() as session:
-        endpoint = await session.get(Endpoint, endpoint_id)
+        # selectinload, not session.get: the alias list is read below, and
+        # touching the relationship lazily emits IO outside the greenlet the
+        # async layer runs in (MissingGreenlet). That would fail on the first
+        # real promotion, which is the worst possible moment to discover it.
+        endpoint = (
+            await session.execute(
+                select(Endpoint)
+                .options(selectinload(Endpoint.aliases))
+                .where(Endpoint.id == endpoint_id)
+            )
+        ).scalar_one_or_none()
         if endpoint is None:
             raise RuntimeError("Endpoint not found.")
-        target = await session.get(Instance, instance_id)
+        # Same reason as the endpoint above: `target.model.name` is read when
+        # the history row is written, and a lazy load there would raise
+        # MissingGreenlet mid-promotion.
+        target = (
+            await session.execute(
+                select(Instance)
+                .options(selectinload(Instance.model))
+                .where(Instance.id == instance_id)
+            )
+        ).scalar_one_or_none()
         if target is None:
             raise RuntimeError("Target instance not found.")
 
@@ -366,22 +386,28 @@ def _utcnow_naive():
 async def previous_holder(session, endpoint_id: int) -> int | None:
     """The instance that served this endpoint before the current one.
 
-    Rollback is not a distinct operation — it is a promote pointed backwards —
-    so this only has to answer "backwards to what".
+    Read off the CURRENT promotion's `from_instance_id`, not from a superseded
+    row. An earlier version looked for the most recent superseded row, which
+    meant rollback silently found nothing after the FIRST promotion — the only
+    row was the active one, and nothing had been superseded yet. That is
+    precisely the case rollback exists for.
+
+    Rollback is not a distinct operation; it is a promote aimed backwards, so
+    this only has to answer "backwards to what".
     """
     from sqlalchemy import select
 
-    from ..models import PROMO_SUPERSEDED, EndpointPromotion
+    from ..models import PROMO_ACTIVE, EndpointPromotion
 
     row = (
         await session.execute(
             select(EndpointPromotion)
             .where(
                 EndpointPromotion.endpoint_id == endpoint_id,
-                EndpointPromotion.status == PROMO_SUPERSEDED,
+                EndpointPromotion.status == PROMO_ACTIVE,
             )
             .order_by(EndpointPromotion.started_at.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
-    return row.to_instance_id if row else None
+    return row.from_instance_id if row else None
