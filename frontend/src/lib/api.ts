@@ -13,7 +13,6 @@ export interface Node {
   fqdn?: string | null;
   qsfp_ip: string;
   qsfp_iface: string;
-  has_host_key?: boolean;
   has_certificate?: boolean;
   cert_not_after?: string | null;
   cert_fingerprint?: string | null;
