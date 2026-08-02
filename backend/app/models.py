@@ -605,6 +605,16 @@ class EvalRun(Base):
     # HIGH. A composite without this beside it is not interpretable.
     completion_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     suite_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # How many scenarios the suite actually ran, and how many exist. A score
+    # over a 15-of-69 subset is not the same measurement as a full run, and
+    # presenting "93/100" without saying which is how a partial result gets
+    # mistaken for a complete one.
+    scenarios_run: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    scenarios_available: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The suite's own output, kept so a bad run is diagnosable after the fact.
+    # The temp file it was parsed from is deleted when the job ends.
+    raw_envelope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    log_tail: Mapped[str | None] = mapped_column(Text, nullable=True)
     suite_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)      # aggregates
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
@@ -642,6 +652,15 @@ class EvalResult(Base):
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_per_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # pass | partial | fail. `passed` is a bool and cannot express PARTIAL,
+    # which the suite uses for "right answer, wrong method" — exactly the
+    # result an operator most wants to see, and the one a boolean erases.
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    turn_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # What the test was checking for, so a failure reads as a discrepancy
+    # rather than as a bare percentage.
+    expected: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_calls: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON list
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     run: Mapped[EvalRun] = relationship(back_populates="results")
