@@ -201,9 +201,9 @@ def test_a_bad_ca_is_refused(client):
 
 
 def test_the_ca_is_stored_and_summarised_not_echoed_raw(client):
-    from tests.test_nodecert import _cert
-
-    ca = _cert()
+    # Built here rather than imported from another test module: `tests` is not
+    # an importable package once the app is pip-installed, which is how CI runs.
+    ca = _self_signed("Example Internal CA")
     s = client.patch("/api/cluster/settings", json={"node_ca_pem": ca}).json()
     assert s["has_node_ca"] is True
     assert s["node_ca_subject"]      # parsed, so the operator can tell which CA
@@ -213,3 +213,28 @@ def test_an_unknown_source_is_rejected(client):
     assert client.patch(
         "/api/cluster/settings", json={"node_cert_source": "letsencrypt"}
     ).status_code == 422
+
+
+def _self_signed(cn: str) -> str:
+    pytest.importorskip("cryptography")
+    import datetime as dt
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(minutes=1))
+        .not_valid_after(now + dt.timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
