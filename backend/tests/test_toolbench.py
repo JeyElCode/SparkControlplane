@@ -624,3 +624,44 @@ def test_a_run_with_no_stored_output_says_so_plainly(eval_client):
     r = client.get(f"/api/evals/{rid}/log")
     assert r.status_code == 404
     assert "re-run to capture it" in r.text
+
+
+# --- how much of the suite a run covers -----------------------------------
+
+def test_the_default_run_is_the_full_suite_not_the_smoke_check():
+    """69 scenarios, not 15. `--short` must be opt-in: it drops Safety &
+    Boundaries entirely, so a short run's rating is unearned in the dimension
+    the suite's safety gate exists to protect."""
+    from app.schemas import EvalRunRequest
+
+    req = EvalRunRequest(instance_id=1, quality=True)
+    assert req.short is False
+    assert req.hardmode is False
+
+
+def test_the_argv_carries_no_scenario_limit_by_default():
+    from app.services.toolbench import build_argv
+
+    argv = build_argv(base_url="http://x/v1", model="m", json_file="/tmp/o.json", seed=42)
+    assert "--short" not in argv
+    assert "--hardmode" not in argv
+
+
+def test_short_and_hardmode_are_passed_only_when_asked_for():
+    from app.services.toolbench import build_argv
+
+    assert "--short" in build_argv(
+        base_url="http://x/v1", model="m", json_file="/tmp/o.json", seed=42, short=True
+    )
+    assert "--hardmode" in build_argv(
+        base_url="http://x/v1", model="m", json_file="/tmp/o.json", seed=42, hardmode=True
+    )
+
+
+def test_the_timeout_accommodates_the_full_suite():
+    """69 scenarios at the observed few-seconds-each must finish well inside
+    the timeout; a default that reliably times out is not a default."""
+    from app.services.toolbench import DEFAULT_TIMEOUT_S
+
+    generous_seconds_per_scenario = 20
+    assert DEFAULT_TIMEOUT_S >= 84 * generous_seconds_per_scenario

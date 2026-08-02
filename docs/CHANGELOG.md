@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.37.1 — say what a quality run actually covers
+
+The full 69-scenario suite was already the default; `--short` is opt-in and
+always has been. What was missing is any indication of what ticking it costs.
+
+**Short suite is now labelled "15 of 69 scenarios"** and states plainly that it
+omits **Safety & Boundaries** — 13 scenarios covering prompt injection,
+authority escalation and hallucination resistance. That is the largest single
+category in the suite, and with it absent the safety gate has nothing to act
+on, so any rating a short run reports is unearned in that dimension.
+
+**Hard Mode is now exposed in the UI** (+15 scenarios, 84 total) rather than
+being API-only, and is mutually exclusive with the short suite.
+
+The form states the resulting coverage as you toggle: *"Running the full 69
+scenarios across 15 categories."* No behaviour changed — the numbers were
+simply never shown.
+
 ## v1.37.0 — eval results you can actually act on
 
 A quality run reported `93/100 · A 100% · B 100% · C 100% · D 83% · E 83%` and
