@@ -18,8 +18,12 @@ The deeper reason is that ACME's challenges exist to prove control of a name.
 The portal does not need to prove that: it already holds authenticated SSH to
 the node (host keys pinned since v1.29.0) and an OpenBao credential. Running
 http-01 would mean opening port 80 on a GPU node to demonstrate something
-already demonstrated. `pki/issue/<role>` asks for the same certificate with the
+already demonstrated. `pki/sign/<role>` asks for the same certificate with the
 authentication we already have, and lets us choose the lifetime.
+
+`sign`, specifically — never `issue`. `pki/issue/<role>` has OpenBao generate
+the private key and return it over the network, which is the one thing this
+design exists to avoid.
 
 ACME remains the right answer for the *public* certificate in the cluster,
 where cert-manager proves control of a name we really do have to prove.
@@ -44,7 +48,12 @@ __all__ = [
     "MAX_TTL_HOURS",
     "LifetimePolicy",
     "lifetime_policy",
+    "PkiError",
+    "SignedCert",
+    "fetch_ca_chain",
+    "normalise_fqdn",
     "renew_after_hours",
+    "sign_csr",
     "validate_ttl_hours",
 ]
 
@@ -214,3 +223,151 @@ def normalise_fqdn(value: str | None) -> str | None:
             "resolve from the cluster."
         )
     return v
+
+
+# --- talking to OpenBao ---------------------------------------------------
+
+@dataclass(frozen=True)
+class SignedCert:
+    certificate: str
+    ca_chain: str
+    serial: str | None = None
+
+
+class PkiError(RuntimeError):
+    """OpenBao could not sign, and the operator needs to know why."""
+
+
+def _base(url: str) -> str:
+    return url.rstrip("/")
+
+
+async def sign_csr(
+    *,
+    url: str,
+    token: str,
+    mount: str,
+    role: str,
+    csr_pem: str,
+    fqdn: str,
+    ttl_hours: float | None,
+    verify: bool | str = True,
+    timeout: float = 20.0,
+) -> SignedCert:
+    """Have OpenBao sign a CSR the node generated.
+
+    `sign`, not `issue`. `pki/issue/<role>` makes OpenBao generate the private
+    key and hand it back over the network — which would put a node's key in
+    portal memory, in the database, and from there into every scheduled S3
+    backup. `pki/sign/<role>` takes the CSR the node produced and returns only
+    a certificate, so the key never exists anywhere but the node.
+
+    The SANs are sent as API parameters rather than taken from the CSR. With
+    `use_csr_sans=false` on the role — which the role SHOULD have, because
+    OpenBao enforces `allowed_ip_sans_cidr` only on the parameter path and
+    never on the CSR path — the portal decides what the certificate attests
+    to, not whatever the node happened to put in its request.
+    """
+    import httpx
+
+    policy = lifetime_policy(ttl_hours)
+    endpoint = f"{_base(url)}/v1/{mount.strip('/')}/sign/{role}"
+    payload = {
+        "csr": csr_pem,
+        "common_name": fqdn,
+        "alt_names": fqdn,
+        "ttl": policy.as_bao_ttl(),
+        "exclude_cn_from_sans": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+            # X-Vault-Token is the canonical header for the fork; the token is
+            # never logged, and errors below quote OpenBao's message, not ours.
+            resp = await client.post(
+                endpoint, json=payload, headers={"X-Vault-Token": token}
+            )
+    except Exception as exc:  # noqa: BLE001 - network, DNS, TLS all land here
+        raise PkiError(
+            f"Could not reach OpenBao at {_base(url)}: {exc}. The existing "
+            "certificate is untouched."
+        ) from exc
+
+    if resp.status_code >= 400:
+        raise PkiError(_explain(resp, endpoint, policy))
+    try:
+        data = resp.json()["data"]
+    except Exception as exc:  # noqa: BLE001
+        raise PkiError(f"OpenBao returned an unreadable response: {exc}") from exc
+
+    cert = (data.get("certificate") or "").strip()
+    if not cert:
+        raise PkiError("OpenBao returned no certificate.")
+    chain = data.get("ca_chain") or []
+    if isinstance(chain, str):
+        chain = [chain]
+    if not chain and data.get("issuing_ca"):
+        chain = [data["issuing_ca"]]
+    return SignedCert(
+        certificate=cert,
+        ca_chain="\n".join(c.strip() for c in chain if c),
+        serial=data.get("serial_number"),
+    )
+
+
+def _explain(resp, endpoint: str, policy: LifetimePolicy) -> str:
+    """Turn OpenBao's error into one an operator can act on.
+
+    The three failures below are the ones that actually happen, and each is
+    indistinguishable from the others in the raw response.
+    """
+    try:
+        errors = "; ".join(resp.json().get("errors") or []) or resp.text[:300]
+    except Exception:  # noqa: BLE001
+        errors = resp.text[:300]
+
+    if resp.status_code in (401, 403):
+        return (
+            f"OpenBao refused the portal's token ({resp.status_code}). It needs "
+            f"`update` on {endpoint.split('/v1/', 1)[-1]}. OpenBao said: {errors}"
+        )
+    if "ttl" in errors.lower() and "max" in errors.lower():
+        return (
+            f"OpenBao refused a {policy.as_bao_ttl()} certificate because the "
+            f"role's max_ttl is shorter. Either raise max_ttl on the role or "
+            f"lower the certificate lifetime in Settings. OpenBao said: {errors}"
+        )
+    if "not allowed" in errors.lower() or "allowed_domains" in errors.lower():
+        return (
+            "OpenBao's role does not permit this node's DNS name. Add its "
+            f"domain to allowed_domains (with allow_subdomains). OpenBao said: {errors}"
+        )
+    return f"OpenBao refused to sign ({resp.status_code}): {errors}"
+
+
+async def fetch_ca_chain(
+    *, url: str, mount: str, verify: bool | str = True, timeout: float = 15.0
+) -> str:
+    """The CA bundle node certificates chain to.
+
+    Unauthenticated by design — OpenBao serves the CA on a public path, and
+    everything in it is public by construction. This is what becomes `ca.crt`
+    in the cluster Secret; without it ingress-nginx emits no proxy_ssl_verify
+    at all and the hop silently degrades to unverified HTTPS.
+    """
+    import httpx
+
+    endpoint = f"{_base(url)}/v1/{mount.strip('/')}/ca_chain"
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=verify) as client:
+            resp = await client.get(endpoint)
+    except Exception as exc:  # noqa: BLE001
+        raise PkiError(f"Could not fetch the CA chain from {endpoint}: {exc}") from exc
+    if resp.status_code >= 400:
+        raise PkiError(f"OpenBao returned {resp.status_code} for {endpoint}.")
+    body = (resp.text or "").strip()
+    if "BEGIN CERTIFICATE" not in body:
+        raise PkiError(
+            f"{endpoint} did not return a PEM certificate chain. Is the PKI "
+            f"engine mounted at '{mount}'?"
+        )
+    return body
