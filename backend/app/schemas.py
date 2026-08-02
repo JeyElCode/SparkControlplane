@@ -1659,6 +1659,13 @@ class EvalRunOut(BaseModel):
     # and concurrency level — which is precisely the number eval_suites.py
     # argues is misleading. Derived from summary_json; empty on legacy rows.
     ladder_tps: dict[str, float] = Field(default_factory=dict)
+    # The suite's deploy verdict. None means no gate was reported, which is
+    # NOT a pass — the UI must render the three states distinctly.
+    safety_gate_passed: bool | None = None
+    safety_warnings: list[str] = Field(default_factory=list)
+    # Reported verbatim, never on its own: the suite can rate a run "Good" and
+    # fail its safety gate in the same breath.
+    rating: str | None = None
     # Quality (tool-eval-bench). composite_score is 0-100 and MUST be read with
     # completion_rate beside it — see the note on the model column.
     quality: bool = False
@@ -1696,6 +1703,9 @@ class EvalRunOut(BaseModel):
             quality=run.quality, composite_score=run.composite_score,
             completion_rate=run.completion_rate, suite_sha=run.suite_sha,
             judge_desc=run.judge_desc,
+            safety_gate_passed=run.safety_gate_passed,
+            safety_warnings=_json_list(run.safety_warnings_json),
+            rating=run.rating,
             job_id=run.job_id, created_at=run.created_at, started_at=run.started_at,
             finished_at=run.finished_at,
         )

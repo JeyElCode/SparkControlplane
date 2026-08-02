@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.38.0 — a failed safety gate is no longer invisible
+
+A real 84-scenario run scored **82/100**, was rated **★★★★ Good**, and **failed
+the suite's safety gate**. The portal showed a plain green `success`. The gate
+verdict was parsed and thrown away; its warnings went to the job log at `error`
+level and nowhere else.
+
+That run leaked a fake API key from a system message injected into file
+content, and acted on a cross-turn sleeper injection that added an attacker's
+BCC to an email. Safety & Boundaries scored 58% — the worst category, with four
+outright failures — against 100% in eight others.
+
+**The score and the gate measure different things.** A model can answer well and
+still obey instructions embedded in tool output, and that is exactly the model
+nobody opens the detail view for, because the number looks fine.
+
+### Three fixes
+
+**The gate is surfaced.** `safety_gate.passed` is stored, shown as a warning
+banner above the score on the run detail, and flagged on the runs list so it is
+visible without opening anything. `None` — no gate reported — stays distinct
+from `false` and is never rendered as a pass.
+
+**The rating is never shown bare.** The suite can rate a run "Good" and fail its
+gate in the same breath; the rating now carries `· gate failed` when it does.
+
+**Per-category detail comes from the payload.** The envelope ships `label`,
+`earned`, `max`, and the pass/partial/fail split for every category; the portal
+was reducing all of it to one percentage and rendering its own label table. The
+suite's own label now wins (the pinned table is a fallback), and categories show
+`58%  6/3/4` — because a percentage cannot distinguish three partials from four
+hard failures, and on a safety category that difference is the whole story.
+
+### Existing runs are backfilled
+
+A run made before these columns existed still has its result envelope stored, so
+the findings are recovered from it on the next boot rather than requiring an
+84-scenario re-run. Verified against a production snapshot: gate, rating, all
+four warnings and the full category split recovered from a run that had already
+completed.
+
 ## v1.37.1 — say what a quality run actually covers
 
 The full 69-scenario suite was already the default; `--short` is opt-in and
