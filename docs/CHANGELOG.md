@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.33.0 — quality scores you can compare with everyone else's
+
+- **tool-eval-bench is now the quality half of the Evals page.** 69 tool-calling
+  scenarios scored 0–100, run against any instance's OpenAI endpoint. It is
+  *depended on*, pinned to commit `5df1e9e0`, not copied: a copy is a fork, and
+  the moment our copy drifts from upstream the scores stop being comparable to
+  the ones other DGX Spark owners publish — which is the whole reason to adopt
+  a published suite. You never write a scenario.
+- **The score is never shown without `completion_rate` beside it.** This is not
+  presentation fussiness. Infrastructure failures are excluded from the
+  benchmark's denominator and its exit code stays 0, so a degraded endpoint
+  produces a *higher* number as it gets worse — measured, with a server failing
+  every second request: 46.7% of scenarios graded, and the score still read
+  normally. The two values are rendered by one component that cannot display
+  either alone, the job log warns when a run is degraded, and the stored run
+  carries the rate as a first-class column.
+- **The speed benchmark is exactly three prompts**, matching the three
+  predictability regimes: `predictable` (counting), `code`, `creative`. Three
+  leftovers from the previous system shipped alongside them by mistake in
+  v1.32.0 and have been removed.
+- Runs record the pinned suite commit, so a score is always attributable to a
+  known revision.
+
+### Notes
+
+The image now installs tool-eval-bench at build time from a pinned tarball into
+its own virtualenv, core extras only — about 15 MB, all pure Python. If the
+portal has no outbound network at build time the image build fails loudly
+rather than shipping without it; at *run* time nothing new is required, and
+speed runs work whether or not the suite is present.
+
+Nothing in this release has been run against a real vLLM instance — only a
+mock. The parser fails loudly and names the mismatch if upstream's output
+differs in practice.
+
 ## v1.32.0 — evals do one thing: measure speed honestly
 
 **Breaking.** The operator-authored capability eval is gone. If you script
