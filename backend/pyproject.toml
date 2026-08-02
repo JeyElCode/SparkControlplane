@@ -1,6 +1,6 @@
 [project]
 name = "spark-controlplane"
-version = "1.33.0"
+version = "1.33.1"
 description = "Web control plane for automating a DGX Spark vLLM cluster (up to 4 nodes)"
 requires-python = ">=3.11"
 dependencies = [

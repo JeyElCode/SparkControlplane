@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.33.1 — the gateway stops routing to the wrong instance
+
+- **Fixed: two running instances sharing a served-model alias routed to the
+  older one, silently.** The gateway picked the first row of a query with no
+  `ORDER BY`, so SQLite returned rowid order and the incumbent always won.
+  Starting a replacement alongside it kept every request going to the
+  incumbent — the promotion appeared to succeed and changed nothing. Resolution
+  is now explicitly newest-started-first, which is what "I started this one to
+  take over" means.
+- **A collision is reported rather than only logged.** `GET /api/gateway/routes`
+  now returns `alias_conflicts` (alias → the running instances advertising it).
+  The gateway still answers, from the newest: refusing would take a production
+  endpoint down over a configuration ambiguity, which is worse than serving —
+  but which instance is serving should never be implicit.
+- Duplicate aliases are still **accepted** on write, deliberately. A promotion
+  needs the replacement to carry the outgoing instance's names before the
+  outgoing one stops, and the outgoing one must keep them to remain a rollback
+  candidate. Only *running* instances can collide.
+
+Groundwork for the named endpoints in #77, where aliases belong to the endpoint
+rather than the instance and this ambiguity cannot arise.
+
 ## v1.33.0 — quality scores you can compare with everyone else's
 
 - **tool-eval-bench is now the quality half of the Evals page.** 69 tool-calling

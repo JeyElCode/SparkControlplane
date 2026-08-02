@@ -21,7 +21,7 @@ import time
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -146,11 +146,32 @@ def _served_names(inst: Instance) -> list[str]:
 
 
 async def _running_instances(session: AsyncSession) -> list[Instance]:
+    """Running instances, MOST RECENTLY STARTED FIRST.
+
+    The ordering is load-bearing, not cosmetic. Nothing prevents two instances
+    advertising the same alias — and nothing should, because a promotion is
+    exactly the case where the replacement legitimately carries the outgoing
+    instance's names. But this query previously had no ORDER BY at all, so
+    SQLite returned rowid order and `_resolve` took the first match, meaning
+    the OLDEST instance won. Start a replacement alongside the incumbent and
+    traffic silently kept going to the incumbent: the promotion looked like it
+    worked and changed nothing.
+
+    Newest-first is the ordering that matches intent — you started the new one
+    to take over — and `started_at DESC, id DESC` makes it explicit rather than
+    a property of the storage engine. `started_at` is nullable, so NULLs sort
+    last via the CASE, keeping a never-started row from winning.
+    """
     return list(
         (
             await session.execute(
                 select(Instance)
                 .where(Instance.status == INST_RUNNING)
+                .order_by(
+                    case((Instance.started_at.is_(None), 1), else_=0),
+                    Instance.started_at.desc(),
+                    Instance.id.desc(),
+                )
                 .options(selectinload(Instance.model), selectinload(Instance.node))
             )
         )
@@ -159,10 +180,35 @@ async def _running_instances(session: AsyncSession) -> list[Instance]:
     )
 
 
+def alias_collisions(running: list[Instance]) -> dict[str, list[str]]:
+    """Aliases advertised by more than one RUNNING instance, alias -> names.
+
+    Only running instances matter: a stopped instance keeping its aliases is
+    the intended state for a rollback candidate, not a fault.
+    """
+    owners: dict[str, list[str]] = {}
+    for inst in running:
+        for name in _served_names(inst):
+            owners.setdefault(name, []).append(inst.name)
+    return {alias: who for alias, who in owners.items() if len(who) > 1}
+
+
 async def _resolve(session: AsyncSession, model: str) -> tuple[Instance, str, bool]:
     """(instance, base_url, verify) for a served model name; raises 404/503."""
     running = await _running_instances(session)
     head = await get_node_by_role(session, "head")
+    matches = [i for i in running if model in _served_names(i)]
+    if len(matches) > 1:
+        # Deliberately NOT a 4xx. Refusing to serve would take a production
+        # endpoint down over a configuration ambiguity, which is worse than
+        # answering from the newest instance — but routing silently is how this
+        # went unnoticed, so it is an error-level event and it is surfaced on
+        # the routes API for the UI.
+        log.error(
+            "alias %r is advertised by %d running instances (%s); routing to %r "
+            "(most recently started). Stop the ones that should not serve it.",
+            model, len(matches), ", ".join(i.name for i in matches), matches[0].name,
+        )
     for inst in running:
         if model in _served_names(inst):
             base = status_svc.instance_base_url(inst, head)
@@ -427,6 +473,9 @@ async def gateway_routes(session: AsyncSession = Depends(get_session)):
         token_configured=bool(settings.gateway_token or setting.gateway_token_enc),
         routes=sorted(live, key=lambda r: r.model_name),
         unavailable=sorted(unavailable, key=lambda r: r.model_name),
+        # Only RUNNING instances can collide: a stopped rollback candidate
+        # keeping its aliases is the intended state, not a fault.
+        alias_conflicts=alias_collisions([r for r in rows if r.status == INST_RUNNING]),
     )
 
 

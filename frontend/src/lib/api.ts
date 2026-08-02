@@ -611,6 +611,10 @@ export interface GatewayInfo {
   token_configured: boolean;
   routes: GatewayRoute[];
   unavailable: GatewayRoute[];
+  /** alias -> running instances advertising it, when more than one does. The
+   *  gateway still answers (from the most recently started), but which one is
+   *  serving should never be implicit. */
+  alias_conflicts?: Record<string, string[]>;
 }
 
 export interface RevocationStatus {

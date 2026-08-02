@@ -29,3 +29,6 @@ secret.key
 *.swp
 .env
 .env.local
+
+# Claude Code local permissions (machine-specific, not shared)
+.claude/settings.local.json
