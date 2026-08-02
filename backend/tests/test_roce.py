@@ -315,3 +315,42 @@ def test_blocked_fields_are_a_subset_of_known_fields():
     from app.services.profiles import IMPORT_BLOCKED_FIELDS, PROFILE_FIELDS
 
     assert IMPORT_BLOCKED_FIELDS <= set(PROFILE_FIELDS)
+
+
+# --- the Ray dashboard must not reach the management LAN ------------------
+
+def test_the_ray_dashboard_never_binds_a_wildcard():
+    """Ray's dashboard hosts the Jobs API, which submits arbitrary code and has
+    no authentication. This container runs --network host --gpus all as root
+    with the models directory mounted, so a wildcard bind put unauthenticated
+    root-equivalent execution on the management LAN for anyone who could open a
+    TCP connection to port 8265.
+
+    Asserted on the RENDERED script rather than the source, because the bind
+    address is interpolated and a refactor could reintroduce the wildcard
+    without touching the literal this test would otherwise grep for.
+    """
+    import re
+
+    script = t.render_ray_head_script(
+        image="img:1", hf_home="/h", models_dir="/m", head_qsfp="10.10.10.1",
+        iface="eth9", ray_port=6379, shm="10gb", dashboard_port=8265,
+    )
+    host = re.search(r"--dashboard-host=(\S+)", script)
+    assert host, "the dashboard bind address is no longer explicit"
+    assert host.group(1) == "10.10.10.1", "the dashboard must bind the QSFP address"
+    assert "0.0.0.0" not in script
+
+
+def test_a_node_without_qsfp_falls_back_to_loopback_not_a_wildcard():
+    """The failure mode of guessing wrong here is an open RCE endpoint, so an
+    absent QSFP address must degrade to the most closed option, never the most
+    open one."""
+    import re
+
+    script = t.render_ray_head_script(
+        image="i", hf_home="/h", models_dir="/m", head_qsfp="",
+        iface="e", ray_port=6379, shm="1gb", dashboard_port=8265,
+    )
+    assert re.search(r"--dashboard-host=(\S+)", script).group(1) == "127.0.0.1"
+    assert "0.0.0.0" not in script

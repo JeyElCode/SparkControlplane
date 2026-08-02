@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.34.2 — the Ray dashboard stops listening on the management LAN
+
+**Security. Anyone running a Ray cluster set up by this portal should upgrade
+and re-run the Ray phase.**
+
+- **Fixed: the Ray dashboard was bound to `0.0.0.0`**, inside a container
+  running `--network host --gpus all` as root with the models directory
+  mounted. Ray's dashboard hosts the **Jobs API**, which submits arbitrary code
+  and has no authentication — so anything that could open a TCP connection to
+  port 8265 on the management LAN had root-equivalent execution on the DGX.
+  It now binds the QSFP address, which on a node pair is a direct cable with no
+  route off it. A node with no QSFP address falls back to loopback, never a
+  wildcard: the failure mode of guessing wrong is an open endpoint.
+- Nothing in the portal called the dashboard, so nothing breaks. To reach it as
+  a human, tunnel: `ssh -L 8265:<head qsfp ip>:8265 <user>@<node lan ip>`.
+
+**This does not take effect on a running cluster until the Ray phase is re-run**
+— the launch script on the node is only rewritten by setup, or by an image
+update with `restart_ray`. Until then the existing container keeps its old
+binding. Check with `ss -lntp | grep 8265` on the head node.
+
+Two related exposures are recorded in #89 rather than changed here, because
+both need a judgement call rather than a one-line fix: the Ray GCS starts with
+no `--redis-password`, and the per-instance API key is optional, so an instance
+created without one serves its `/v1` surface unauthenticated.
+
 ## v1.34.1 — the Evals page stops claiming the quality suite is missing
 
 - **Fixed: the Evals page reported "tool-eval-bench is not installed" while the

@@ -175,6 +175,10 @@ def render_ray_head_script(
     ray_port: int, shm: str, dashboard_port: int,
     roce_hca: str | None = None, roce_gid_index: str | None = None,
 ) -> str:
+    # Never 0.0.0.0 — see the note on --dashboard-host below. Falls back to
+    # loopback rather than to a wildcard if a node somehow has no QSFP address,
+    # because the failure mode of guessing wrong here is an open RCE endpoint.
+    dashboard_host = head_qsfp or "127.0.0.1"
     # The Ray head hosts every `cluster`-topology instance (they `docker exec`
     # into this container), so its TP all-reduce needs the same RDMA plumbing
     # as the native-distributed path. Note the lifecycle trap: these scripts
@@ -196,7 +200,21 @@ def render_ray_head_script(
         shlex.quote(image),
         "-c " + shlex.quote(
             f"{_RAY_INSTALL} && ray start --block --head "
-            f"--node-ip-address={head_qsfp} --port={ray_port} --dashboard-host=0.0.0.0 "
+            f"--node-ip-address={head_qsfp} --port={ray_port} "
+            # Bound to the QSFP address, NOT 0.0.0.0. This container runs with
+            # --network host --gpus all as root with the models directory
+            # mounted, and Ray's dashboard hosts the Jobs API — which submits
+            # arbitrary code and has no authentication. On 0.0.0.0 that was
+            # reachable from the management LAN: unauthenticated
+            # root-equivalent execution on the box for anyone who could open a
+            # TCP connection to it.
+            #
+            # The QSFP fabric is a direct cable between the nodes with no route
+            # off it, so the dashboard stays reachable to the cluster and to
+            # nothing else. Nothing in the portal calls it — it is a human
+            # diagnostic, and the way to reach one now is an SSH tunnel:
+            #   ssh -L 8265:{head_qsfp}:{dashboard_port} <user>@<node lan ip>
+            f"--dashboard-host={dashboard_host} "
             f"--dashboard-port={dashboard_port}"
         ),
     )
