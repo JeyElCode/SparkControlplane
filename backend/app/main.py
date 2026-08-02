@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI):
     from .services.usage import collector as usage_collector
 
     from .services.backup import runner as backup_runner
+    from .services.certrenew import renewer as cert_renewer
     from .services.reconcile import reconciler as status_reconciler
     from .services.gwstats import gw_collector
     from .services import apikeys, sessions
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI):
     usage_collector.start()
     instance_scheduler.start()
     backup_runner.start()
+    cert_renewer.start()
     task = asyncio.create_task(_startup_discover())
     # The mounted MCP sub-app's own lifespan is not run by Starlette's Mount, so
     # drive its streamable-HTTP session manager from here for its whole lifetime.
@@ -139,6 +141,7 @@ async def lifespan(app: FastAPI):
         yield
     task.cancel()
     await gw_collector.stop()
+    await cert_renewer.stop()
     await backup_runner.stop()
     await instance_scheduler.stop()
     await usage_collector.stop()

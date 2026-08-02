@@ -41,7 +41,7 @@ from ..models import (
 )
 from ..ssh import ssh_for_node
 from ..models import TERM_K8S
-from . import inst_state, nodeops, templates
+from . import inst_state, nodeops, status_svc, templates
 from .binding import effective_port, effective_tls
 from .jobs import JobHandle
 from .paths import hf_cache_host_path, model_container_path, models_host_dir
@@ -345,14 +345,22 @@ async def _start_instance(session: AsyncSession, handle: JobHandle, instance_id:
             f"Instance '{inst.name}' launched. Endpoint: {endpoint}\n"
             f"Streaming vLLM startup output below (model loading can take a few minutes)…"
         )
-        # With TLS on, vLLM is loopback-only — probe through the proxy instead
-        # (verify=False: the cert is for the public name, not the node IP).
-        if inst.tls_enabled:
-            health_url = f"https://{host}:{inst.tls_port}/health"
-        else:
-            health_url = f"http://{host}:{effective_port(inst)}/health"
+        # With TLS on, vLLM is loopback-only — probe through the proxy instead.
+        #
+        # Both the URL and `verify` come from `instance_base_url` rather than
+        # being re-derived here. They were computed independently and drifted
+        # the moment `verify` widened from a bool to a CA bundle path: this
+        # site would have kept sending False and skipped verification that the
+        # rest of the portal performs.
+        # `api_node` is already the resolved API node, and instance_api_node
+        # returns inst.node for single / the head otherwise — so passing it as
+        # the head argument is correct for every topology.
+        probe = status_svc.instance_base_url(inst, api_node)
+        base_url = probe[0] if probe else f"http://{host}:{effective_port(inst)}"
+        verify = probe[1] if probe else True
+        health_url = f"{base_url}/health"
         healthy = await _stream_startup_logs(
-            handle, ssh, unit_name, health_url, verify=not inst.tls_enabled
+            handle, ssh, unit_name, health_url, verify=verify
         )
         if healthy:
             now = inst_state.utcnow()

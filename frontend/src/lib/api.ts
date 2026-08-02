@@ -8,8 +8,15 @@ export interface Node {
   role: Role;
   name: string;
   lan_ip: string;
+  /** Fully-qualified DNS name. The identity the cluster proxy verifies this
+   *  node's TLS certificate against — nginx matches DNS names only. */
+  fqdn?: string | null;
   qsfp_ip: string;
   qsfp_iface: string;
+  has_certificate?: boolean;
+  cert_not_after?: string | null;
+  cert_fingerprint?: string | null;
+  cert_error?: string | null;
   mac_address?: string | null;
   ssh_user: string;
   ssh_port: number;
@@ -28,6 +35,7 @@ export interface NodeInput {
   role: Role;
   name: string;
   lan_ip: string;
+  fqdn?: string | null;
   qsfp_ip: string;
   qsfp_iface?: string;
   ssh_user: string;

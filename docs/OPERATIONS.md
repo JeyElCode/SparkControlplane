@@ -176,6 +176,52 @@ delivered in chunks rather than token by token, and any generation longer than
 > completion, in plaintext for an instance without its own TLS. Treat the
 > management network accordingly until this is closed.
 
+### Node certificates (the hop from the cluster to the box)
+
+With HTTPS terminated in Kubernetes, the hop from that proxy to vLLM is a real
+LAN hop. Node certificates encrypt and authenticate it. **Off by default** —
+`Certificate source: none` changes nothing.
+
+**Set each node's DNS name first** (Nodes → node → DNS name). It is the identity
+the cluster verifies: nginx matches the certificate's DNS names and never the
+address it connected to, so the EndpointSlice keeps pointing at the LAN IP while
+`proxy-ssl-name` carries the name. An IP in this field is refused — it would
+string-match and appear to work.
+
+**Whatever CA you run** (`Certificate source: manual`):
+
+1. Nodes → node → **Generate signing request**. The private key is created on
+   the node; only the CSR comes back. The new key is staged, so this never
+   disturbs a running proxy — signing can take days.
+2. Get the CSR signed. Any CA: internal, corporate, step-ca, a ticket queue.
+3. Paste the certificate back, with the issuing CA. The portal refuses anything
+   that does not cover the node's DNS name, or that has already expired, before
+   writing a byte.
+
+Renewal is yours. The portal tracks expiry and warns — treat that warning as
+the mechanism, because a lapsed certificate takes every endpoint down at once
+and the cluster reports only an upstream TLS error with nothing naming the date
+as the cause.
+
+**OpenBao** (`Certificate source: openbao`): set the URL, mount, role and a
+token, and the same flow runs on a schedule with no one involved. The role
+wants `use_csr_sans=false` — OpenBao enforces `allowed_ip_sans_cidr` only on
+the parameter path and never on the CSR path, so with the default the guard is
+decorative — plus `allowed_domains` covering your node domain and
+`allow_subdomains=true`.
+
+Certificate lifetime is yours to pick (Settings), 7 days by default, 6 hours
+minimum. Renewal starts with a third of the life remaining and everything else
+scales from that one number.
+
+> **This hop has no revocation.** ingress-nginx configures no CRL and no OCSP
+> for upstreams, so revoking a certificate changes nothing until it expires.
+> The lifetime you choose *is* the revocation window.
+
+Regenerate the endpoint manifests after the first certificate lands — that is
+what adds the CA Secret and the verification annotations. Until then the
+manifest header says `PLAINTEXT` in as many words.
+
 ### Teardown options
 
 Teardown is **granular** — pick exactly what to remove (each is independent):

@@ -583,10 +583,32 @@ def tls_dir(install_dir: str, name: str) -> str:
     return f"{install_dir}/tls/{name}"
 
 
-def render_tls_nginx_conf(*, upstream_port: int, tls_port: int, cert_path: str, key_path: str) -> str:
+def render_tls_nginx_conf(
+    *,
+    upstream_port: int,
+    tls_port: int,
+    cert_path: str,
+    key_path: str,
+    client_ca_path: str | None = None,
+) -> str:
     """nginx.conf for the TLS sidecar. Streaming-safe for OpenAI SSE responses:
     ``proxy_buffering off`` + long read timeout so tokens flush as they arrive,
-    HTTP/1.1 upstream, and no request-body size cap (long prompts)."""
+    HTTP/1.1 upstream, and no request-body size cap (long prompts).
+
+    ``client_ca_path`` turns on mutual TLS: only a client presenting a
+    certificate signed by that CA may connect at all. That matters more here
+    than it looks. An instance created without an API key serves ``/v1``
+    unauthenticated, so on a flat management LAN the *network* is the only
+    access control there is — and without this, encrypting the hop would stop
+    an eavesdropper while leaving anything that can route to the node able to
+    ask the model questions.
+    """
+    mtls = ""
+    if client_ca_path:
+        mtls = f"""
+    ssl_client_certificate {client_ca_path};
+    ssl_verify_client on;
+    ssl_verify_depth 3;"""
     return f"""worker_processes auto;
 events {{ worker_connections 1024; }}
 http {{
@@ -597,7 +619,7 @@ http {{
     listen {tls_port} ssl;
     http2 on;
     ssl_certificate     {cert_path};
-    ssl_certificate_key {key_path};
+    ssl_certificate_key {key_path};{mtls}
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     client_max_body_size 0;

@@ -76,6 +76,11 @@ class ManifestInput:
     issuer_kind: str = "ClusterIssuer"
     ingress_class: str = "nginx"
 
+    # The upstream hop. Both must be present or neither is emitted — see
+    # `_upstream_tls_block`.
+    upstream_fqdn: str | None = None   # the name on the node's certificate
+    upstream_ca_pem: str | None = None # the CA that signed it
+
 
 def _check(value: str, pattern: re.Pattern, what: str) -> str:
     if not isinstance(value, str) or not pattern.match(value):
@@ -96,6 +101,11 @@ def _check_ip(value: str) -> str:
     return value
 
 
+def _indent(text: str, spaces: int) -> str:
+    pad = " " * spaces
+    return "\n".join(pad + line for line in text.strip().splitlines())
+
+
 def render(mi: ManifestInput) -> str:
     """The full manifest set as one YAML document stream."""
     name = _check(mi.endpoint, _DNS_LABEL, "The endpoint name")
@@ -110,12 +120,97 @@ def render(mi: ManifestInput) -> str:
     if not 1 <= port <= 65535:
         raise ManifestError(f"{port} is not a valid port.")
 
+    # Upstream TLS is all-or-nothing, and this is the single most dangerous
+    # thing about the annotation approach.
+    #
+    # Every `proxy-ssl-*` annotation is inert unless `proxy-ssl-secret` is set,
+    # and ingress-nginx emits `proxy_ssl_verify` ONLY when that Secret contains
+    # a `ca.crt` key. So a partial configuration does not fail — it silently
+    # produces HTTPS to the upstream with no verification at all, which looks
+    # identical to the working thing in every dashboard. Emit the Secret and
+    # all the annotations together, or emit none of them and say plainly that
+    # the hop is plaintext.
+    upstream_tls = bool(mi.upstream_fqdn and mi.upstream_ca_pem)
+    if mi.upstream_fqdn and not mi.upstream_ca_pem:
+        raise ManifestError(
+            "The node's DNS name was given but not the CA that signed its "
+            "certificate. Without the CA the proxy cannot verify anything, and "
+            "ingress-nginx would emit HTTPS with verification silently off — "
+            "which is indistinguishable from the working configuration. "
+            "Refusing to generate a half-configured manifest."
+        )
+    if mi.upstream_ca_pem and not mi.upstream_fqdn:
+        raise ManifestError(
+            "A CA was given but the node has no DNS name. nginx verifies an "
+            "upstream certificate by name and never by the address it "
+            "connected to, so there would be nothing to check the certificate "
+            "against."
+        )
+    if upstream_tls:
+        _check(mi.upstream_fqdn.lower(), _DNS_NAME, "The node's DNS name")
+        if "BEGIN CERTIFICATE" not in mi.upstream_ca_pem:
+            raise ManifestError("The upstream CA is not a PEM certificate.")
+
     svc = f"spark-{name}"
     labels = (
         f"    app.kubernetes.io/name: {svc}\n"
         f"    app.kubernetes.io/managed-by: spark-control-plane\n"
     )
-    ann = "".join(f"    {k}: \"{v}\"\n" for k, v in _INGRESS_ANNOTATIONS.items())
+    annotations = dict(_INGRESS_ANNOTATIONS)
+    if upstream_tls:
+        annotations.update({
+            # Without backend-protocol the proxy speaks plain HTTP no matter
+            # what else is set.
+            "nginx.ingress.kubernetes.io/backend-protocol": "HTTPS",
+            "nginx.ingress.kubernetes.io/proxy-ssl-secret": f"{ns}/{svc}-upstream-ca",
+            "nginx.ingress.kubernetes.io/proxy-ssl-verify": "on",
+            "nginx.ingress.kubernetes.io/proxy-ssl-verify-depth": "3",
+            # The whole design turns on this one. proxy_pass targets
+            # `upstream_balancer`, so nginx's default proxy_ssl_name can never
+            # match any certificate — verification without this is guaranteed
+            # to fail. And because nginx checks the name with X509_check_host,
+            # verification is decoupled from the IP it connected to, which is
+            # what lets the EndpointSlice keep pointing at a LAN address.
+            "nginx.ingress.kubernetes.io/proxy-ssl-name": mi.upstream_fqdn,
+            "nginx.ingress.kubernetes.io/proxy-ssl-server-name": "on",
+            "nginx.ingress.kubernetes.io/proxy-ssl-protocols": "TLSv1.2 TLSv1.3",
+        })
+    ann = "".join(f"    {k}: \"{v}\"\n" for k, v in annotations.items())
+
+    upstream_secret = ""
+    if upstream_tls:
+        upstream_secret = f"""---
+# The CA the proxy checks the node's certificate against.
+#
+# MUST be in the same namespace as the Ingress: ingress-nginx refuses a
+# cross-namespace proxy-ssl-secret unless the controller was started with
+# --allow-cross-namespace-resources, which is off by default.
+#
+# The key MUST be `ca.crt`. With only tls.crt/tls.key and no ca.crt,
+# ingress-nginx emits no proxy_ssl_verify directive at all and the hop
+# degrades to unverified HTTPS — silently, and looking exactly like success.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {svc}-upstream-ca
+  namespace: {ns}
+  labels:
+{labels}type: Opaque
+stringData:
+  ca.crt: |
+{_indent(mi.upstream_ca_pem, 4)}
+"""
+
+    hop_note = (
+        f"# The hop to the node is verified TLS: the proxy checks that "
+        f"{mi.upstream_fqdn}\n# presented a certificate signed by the CA in "
+        f"{svc}-upstream-ca before sending\n# anything.\n"
+        if upstream_tls else
+        "# WARNING: the hop from this proxy to the node is PLAINTEXT HTTP.\n"
+        "# Every prompt, every completion and the instance's API key cross the\n"
+        "# management LAN in the clear. Set the node's DNS name and a CA in the\n"
+        "# portal to close it.\n"
+    )
 
     return f"""# Generated by Spark Control Plane for endpoint '{name}'.
 #
@@ -128,7 +223,8 @@ def render(mi: ManifestInput) -> str:
 #
 # Regenerate only if the endpoint's hostname, upstream port, or the head node's
 # address changes.
----
+#
+{hop_note}---
 # A Service with no selector: the backend is outside the cluster, so its
 # addresses are declared below instead of discovered from pods.
 apiVersion: v1
@@ -185,7 +281,7 @@ metadata:
     kind: {mi.issuer_kind}
   dnsNames:
     - {host}
----
+{upstream_secret}---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

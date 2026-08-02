@@ -1,5 +1,114 @@
 # Changelog
 
+## v1.36.0 — TLS on the hop from the cluster proxy to the DGX nodes
+
+Closes the gap #86 opened. Moving nginx into Kubernetes turned the proxy→vLLM
+hop from loopback into a real LAN hop, and it was carrying every prompt, every
+completion, and — because the portal sends `Authorization: Bearer` to the
+instance — the API key too. That made it a credential exposure, not only a
+confidentiality one.
+
+**Nothing changes on upgrade.** The certificate source defaults to `none`;
+until an operator opts in, no certificate is issued, nothing is renewed, and
+the generated manifests are byte-identical to v1.35.0's.
+
+### You choose the CA, and you choose the lifetime
+
+Three sources:
+
+| | |
+|---|---|
+| `none` | default — the hop stays as it is today |
+| `openbao` | the portal has OpenBao sign, and renews on a schedule |
+| `manual` | whatever CA you already run |
+
+**`manual` is not a degraded mode.** The CSR flow is the primary path for both:
+the private key is generated **on the node** and only a signing request comes
+back, so an operator with a Windows CA or a corporate PKI queue keeps the same
+key-custody property the automated path has. There is deliberately no private
+key column on `Node` — `nodes` travels in the backup bundle, so a portal-held
+key is a key written to an S3 object on a schedule. Uploading a cert+key pair
+still works for people who already hold one, and the API says plainly that it
+is the weaker option.
+
+**The lifetime is yours to set**, 7 days if you set nothing, with a 6-hour
+floor and a 1-year ceiling. Everything else derives from it — when renewal
+starts, when a failing renewal becomes an alert, how much retry headroom there
+is — so choosing 24h or 30d never means reasoning about a second number.
+Out-of-range values are refused with the consequence rather than clamped.
+
+7 days is the default because both obvious answers are wrong. 24 hours makes
+OpenBao a hard availability dependency of public inference on a 12-hour fuse.
+30 days leaves a month of undetectable interception, and **this hop has no
+revocation at all** — ingress-nginx configures no CRL and no OCSP on the
+upstream path, so revoking in OpenBao changes nothing until the certificate
+expires. Lifetime is the revocation mechanism.
+
+### Why not ACME
+
+OpenBao does ship a real RFC 8555 ACME server, and it is the wrong tool here.
+ACME-issued certificates are capped at **90 days** by a compile-time constant,
+and a client may not request a lifetime at all — order parameters carrying
+NotBefore/NotAfter are rejected outright. Frequent rotation is precisely what
+ACME denies us.
+
+The deeper reason: ACME's challenges exist to prove control of a name. The
+portal does not need to prove that — it already holds authenticated SSH to the
+node with a pinned host key. Running http-01 would mean opening port 80 on a
+GPU node to demonstrate something already demonstrated. So the portal calls
+`pki/sign/<role>` (never `issue`, which would have OpenBao generate the key and
+hand it back over the network).
+
+ACME remains right for the *public* certificate in the cluster, where
+cert-manager proves control of a name you really do have to prove.
+
+### The node's DNS name is now first-class
+
+`Node.fqdn`, set in the node form during setup. nginx verifies an upstream
+certificate with `X509_check_host`, which matches DNS names **only** and never
+consults the address it connected to — so the EndpointSlice keeps targeting the
+node's IP while `proxy-ssl-name` carries the identity being checked. An IP
+typed into the field is refused: it would string-match and look like it worked.
+
+### The manifests are all-or-nothing
+
+The most dangerous property of the annotation approach: every `proxy-ssl-*`
+annotation is inert without `proxy-ssl-secret`, and ingress-nginx emits
+`proxy_ssl_verify` only when that Secret carries a `ca.crt` key. A partial
+configuration does not fail — it produces HTTPS with no verification, which
+looks identical to the working thing in every dashboard.
+
+So the CA Secret and all six annotations are emitted together or not at all, a
+half-configuration is refused with the reason, and an endpoint without node
+certificates says `PLAINTEXT` in the manifest header instead of saying nothing.
+
+### Optional mutual TLS
+
+The sidecar can require a client certificate. Off unless a client CA is set,
+and it matters more than it looks: an instance created without an API key
+serves `/v1` unauthenticated, so on a flat management LAN the network is the
+only access control. Encrypting the hop without this stops an eavesdropper
+while leaving anything that can route to the node able to ask the model
+questions.
+
+### Also fixed
+
+- **`telemetry.py` tested `if not verify:`** — a CA bundle path is truthy, so
+  the private-CA metrics scrape would have gone through the shared system-CA
+  client. Metrics go dark and the reconciler drives every healthy instance to
+  `error`.
+- **The startup probe derived its URL and verify flag independently** of
+  `instance_base_url`, so the two diverge the moment the type widens.
+- **`fqdn` was not persisted on node create** — the same shape of bug as
+  `endpoint_id` in v1.35.0, found by a test rather than by review.
+- **`has_host_key` was declared and never populated**, so the Nodes page always
+  reported every node unpinned and hid the Forget-host-key control — the
+  deliberate re-trust action after a rebuild, which node certificates now
+  depend on too.
+- Node certificates were going in `tls/node`, and `node` is a legal instance
+  name, so an instance called `node` shared that directory and deleting it
+  would have `rm -rf`'d the fleet's certificates. They live in `tls-node` now.
+
 ## v1.35.0 — terminate an endpoint's TLS in Kubernetes instead of on the DGX (#86)
 
 The nginx sidecar, moved off the box. Same job — terminate HTTPS for a public

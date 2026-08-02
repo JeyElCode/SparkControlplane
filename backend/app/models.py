@@ -77,6 +77,28 @@ class Node(Base):
     role: Mapped[str] = mapped_column(String(16))
     name: Mapped[str] = mapped_column(String(64))               # hostname, e.g. spark-01
     lan_ip: Mapped[str] = mapped_column(String(64))
+    # Fully-qualified DNS name, e.g. dgx-md-01.example.net. Nullable: an
+    # existing fleet has none until an operator fills it in.
+    #
+    # This is the node's TLS identity. The cluster proxy verifies the upstream
+    # certificate with X509_check_host, which matches dNSName SANs only and
+    # never looks at the address it connected to — so without a DNS name there
+    # is nothing a certificate could attest to that the proxy would check. An
+    # IP SAN is inert on this path no matter what it contains.
+    fqdn: Mapped[str | None] = mapped_column(String(253), nullable=True)
+
+    # The node's TLS material. The certificate is stored in the clear because
+    # every byte of it is sent during any handshake; there is deliberately no
+    # key column, because the private key is generated ON the node and never
+    # comes back. `nodes` travels in the backup bundle, so a portal-held key
+    # would be written to an S3 object on a schedule.
+    tls_cert_pem: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tls_csr_pem: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tls_fingerprint: Mapped[str | None] = mapped_column(String(95), nullable=True)
+    tls_not_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tls_issued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tls_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     qsfp_ip: Mapped[str] = mapped_column(String(64))
     qsfp_iface: Mapped[str] = mapped_column(String(32), default="enp1s0f1np1")
 
@@ -152,6 +174,32 @@ class Setting(Base):
     backup_s3_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     backup_interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
     backup_retention: Mapped[int] = mapped_column(Integer, default=14)
+    # --- Node certificates for the cluster-proxy -> node hop ---------------
+    # Where node certificates come from. The hop needs to be encrypted and
+    # verified either way; only the issuance mechanism differs.
+    #
+    #   none     no node certificates; the hop stays plaintext (the default,
+    #            so an upgrade changes nothing).
+    #   openbao  the portal calls OpenBao's PKI and renews on a schedule.
+    #   manual   the operator brings certificates from whatever CA they
+    #            already run. Not a lesser mode: the CSR flow means the node's
+    #            private key still never leaves the node, and every guard
+    #            (name coverage, expiry tracking, alerting) is identical.
+    #            Only automatic renewal is absent, which is why expiry
+    #            alerting matters more here, not less.
+    node_cert_source: Mapped[str] = mapped_column(String(16), default="none")
+    # The CA bundle the cluster proxy verifies node certificates against.
+    # Needed in BOTH modes — it becomes the `ca.crt` of the Kubernetes Secret,
+    # without which ingress-nginx emits no proxy_ssl_verify at all and the hop
+    # silently degrades to unverified HTTPS that looks verified.
+    node_ca_pem: Mapped[str | None] = mapped_column(Text, nullable=True)
+    node_cert_ttl_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # OpenBao PKI. Unused when the source is `manual`.
+    pki_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pki_mount: Mapped[str] = mapped_column(String(64), default="pki")
+    pki_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pki_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Bearer token for the /v1 API gateway (required when portal auth is on)
     gateway_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

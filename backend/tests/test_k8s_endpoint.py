@@ -667,3 +667,107 @@ def test_the_new_columns_are_added_to_an_existing_endpoints_table(tmp_path, monk
     # The pre-existing endpoint keeps terminating on the box. Anything else
     # would silently move a live production endpoint's TLS on upgrade.
     assert row == ("onbox", None)
+
+
+# --- verifying the hop to the node ---------------------------------------
+#
+# The failure this section exists for is not "verification is off". It is
+# "verification looks on and is off". Every proxy-ssl-* annotation is inert
+# without proxy-ssl-secret, and ingress-nginx emits proxy_ssl_verify only when
+# that Secret carries a ca.crt key — so a partial configuration produces HTTPS
+# with no checking, which is indistinguishable from the working thing in every
+# dashboard.
+
+def _tls_input(**over):
+    from app.services.k8sman import ManifestInput
+
+    body = dict(
+        endpoint="prod", hostname="llm.skynet.telenor.net",
+        upstream_ip="10.0.0.11", upstream_port=8443,
+        upstream_fqdn="dgx-md-01.example.net",
+        upstream_ca_pem="-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----",
+    )
+    body.update(over)
+    return ManifestInput(**body)
+
+
+def test_a_name_without_a_ca_is_refused_not_half_emitted():
+    from app.services.k8sman import ManifestError, render
+
+    with pytest.raises(ManifestError) as e:
+        render(_tls_input(upstream_ca_pem=None))
+    assert "indistinguishable from the working configuration" in str(e.value)
+
+
+def test_a_ca_without_a_name_is_refused():
+    """nginx verifies by name and never by the address it connected to, so a
+    CA with nothing to check against verifies nothing."""
+    from app.services.k8sman import ManifestError, render
+
+    with pytest.raises(ManifestError):
+        render(_tls_input(upstream_fqdn=None))
+
+
+def test_the_six_annotations_and_the_secret_are_emitted_together():
+    yaml = pytest.importorskip("yaml")
+    from app.services.k8sman import render
+
+    docs = [d for d in yaml.safe_load_all(render(_tls_input())) if d]
+    ann = next(d for d in docs if d["kind"] == "Ingress")["metadata"]["annotations"]
+    p = "nginx.ingress.kubernetes.io/"
+    assert ann[p + "backend-protocol"] == "HTTPS"
+    assert ann[p + "proxy-ssl-verify"] == "on"
+    assert ann[p + "proxy-ssl-name"] == "dgx-md-01.example.net"
+    assert ann[p + "proxy-ssl-server-name"] == "on"
+    assert ann[p + "proxy-ssl-secret"] == "default/spark-prod-upstream-ca"
+
+    secret = next(d for d in docs if d["kind"] == "Secret")
+    # `ca.crt` specifically: with only tls.crt/tls.key, ingress-nginx emits no
+    # proxy_ssl_verify at all.
+    assert "ca.crt" in secret["stringData"]
+    assert "BEGIN CERTIFICATE" in secret["stringData"]["ca.crt"]
+
+
+def test_the_secret_shares_the_ingress_namespace():
+    """ingress-nginx refuses a cross-namespace proxy-ssl-secret by default."""
+    yaml = pytest.importorskip("yaml")
+    from app.services.k8sman import render
+
+    docs = [d for d in yaml.safe_load_all(render(_tls_input(namespace="llm"))) if d]
+    ing = next(d for d in docs if d["kind"] == "Ingress")
+    sec = next(d for d in docs if d["kind"] == "Secret")
+    assert sec["metadata"]["namespace"] == ing["metadata"]["namespace"] == "llm"
+    ref = ing["metadata"]["annotations"]["nginx.ingress.kubernetes.io/proxy-ssl-secret"]
+    assert ref == "llm/" + sec["metadata"]["name"]
+
+
+def test_proxy_ssl_name_carries_the_node_name_not_the_ip():
+    """The EndpointSlice targets an IP while verification is by name — that
+    split is the whole reason this works without IP SANs, which nginx ignores."""
+    yaml = pytest.importorskip("yaml")
+    from app.services.k8sman import render
+
+    docs = [d for d in yaml.safe_load_all(render(_tls_input())) if d]
+    ann = next(d for d in docs if d["kind"] == "Ingress")["metadata"]["annotations"]
+    slice_ = next(d for d in docs if d["kind"] == "EndpointSlice")
+    assert ann["nginx.ingress.kubernetes.io/proxy-ssl-name"] == "dgx-md-01.example.net"
+    assert slice_["endpoints"][0]["addresses"] == ["10.0.0.11"]
+
+
+def test_without_node_certificates_the_plaintext_hop_is_stated_loudly():
+    """Silence here would read as 'fine'. It is not fine — the API key crosses
+    the LAN in the clear with every request."""
+    from app.services.k8sman import render
+
+    y = render(_tls_input(upstream_fqdn=None, upstream_ca_pem=None))
+    assert "PLAINTEXT" in y
+    assert "API key" in y
+    assert "proxy-ssl" not in y            # nothing half-configured
+    assert "kind: Secret" not in y
+
+
+def test_a_ca_that_is_not_a_certificate_is_refused():
+    from app.services.k8sman import ManifestError, render
+
+    with pytest.raises(ManifestError):
+        render(_tls_input(upstream_ca_pem="hunter2"))
