@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.34.0 — the production endpoint is a thing you can point
+
+Closes #77. Promoting a model to production was hand-copying a certificate you
+could not read back and replicating aliases by hand, on a live endpoint. It is
+now one guarded action, and one to undo it.
+
+- **A named endpoint owns its hostname, its TLS certificate and its
+  served-model aliases**, and points at whichever instance currently serves it.
+  `POST /api/endpoints/prod/promote {instance_id}` does the handoff;
+  `POST /api/endpoints/prod/rollback` undoes it.
+- **An alias owned by an endpoint cannot be ambiguous.** The alias column is
+  unique, so the situation v1.33.1 had to arbitrate — two running instances
+  advertising the same name — is now refused by the database rather than
+  resolved by a rule. Instances outside any endpoint keep their own aliases and
+  the newest-wins ordering.
+- **The private key is still never readable.** #77 asked to retrieve the
+  certificate so it could be handed to another instance; the underlying need is
+  a *handoff*, and an endpoint that owns the certificate performs it without
+  the key leaving the portal. What is now visible is the certificate's public
+  metadata — subject, issuer, SANs, fingerprint, expiry — all of which is sent
+  in the clear during any TLS handshake. Upload is refused outright if the
+  certificate does not cover the endpoint's hostname, so a mismatch surfaces
+  then rather than as a browser warning after a promotion.
+- **The failure path is the design.** Prod-class instances are TP=2 across the
+  whole box, so the outgoing one must stop before the incoming one starts —
+  there is a gap, minutes long, and the job says so. Every refusal happens
+  before anything is stopped. If the replacement does not come up, the previous
+  instance is restarted automatically; if that also fails, the message says the
+  endpoint is down and what to do. The pointer moves only after the target is
+  serving.
+- **Rollback is a promote aimed backwards**, which is why the outgoing instance
+  is only ever stopped and never deleted. History records what served when,
+  snapshotting instance names so deleting an instance cannot erase the record.
+
+Three bugs were found by testing the promotion paths rather than reasoning
+about them, all of which would have fired on the first real promotion: two
+lazy relationship loads that raise inside the async layer, and a rollback that
+reported "nothing to roll back to" after the very first promotion — the case
+it exists for.
+
+Not yet included: a UI for endpoints, and MCP tools. The REST API is complete.
+
 ## v1.33.2 — a restore stops deleting what the backup never carried
 
 - **Fixed: restoring a backup could silently destroy data, in both

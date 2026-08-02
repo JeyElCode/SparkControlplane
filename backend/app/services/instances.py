@@ -97,6 +97,19 @@ async def _ensure_model_present(session: AsyncSession, inst: Instance, node_ids:
             )
 
 
+def _effective_aliases(inst: Instance) -> str | None:
+    """The aliases this instance should advertise.
+
+    An endpoint member takes the endpoint's; anything else keeps its own. The
+    endpoint's are authoritative because they are unique in the database, which
+    is what makes routing unambiguous.
+    """
+    ep = getattr(inst, "endpoint", None)
+    if ep is not None and getattr(ep, "aliases", None):
+        return " ".join(a.alias for a in ep.aliases)
+    return inst.served_model_names
+
+
 def _serve_kwargs(inst: Instance, model_path: str, api_key: str | None) -> dict:
     """Shared ``build_vllm_serve_cmd`` kwargs derived from an instance's first-
     class settings (topology-specific bits — backend, distributed — are added by
@@ -104,7 +117,12 @@ def _serve_kwargs(inst: Instance, model_path: str, api_key: str | None) -> dict:
     return dict(
         model_container_path=model_path,
         served_model_name=inst.model.name if inst.model else None,
-        served_model_names=inst.served_model_names,
+        # An endpoint MEMBER serves the endpoint's aliases, not its own. This
+        # is where membership becomes real: the aliases are baked into
+        # --served-model-name at launch, which is exactly why membership has to
+        # be a separate field from "is currently serving" — a promotion
+        # candidate must launch with the production names before it is current.
+        served_model_names=_effective_aliases(inst),
         port=inst.port,
         tensor_parallel_size=inst.tensor_parallel_size,
         max_model_len=inst.max_model_len,

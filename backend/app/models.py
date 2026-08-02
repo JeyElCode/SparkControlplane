@@ -258,6 +258,15 @@ class Instance(Base):
     # ``tls_port`` and reverse-proxying to vLLM on the instance ``port`` (which
     # stays plain HTTP, internal). The cert/key are stored encrypted and written
     # to the node at deploy time; they can be rotated without restarting vLLM.
+    # MEMBERSHIP of a named endpoint — "launch me with its aliases and cert".
+    # Distinct from Endpoint.current_instance_id, which is who serves NOW; see
+    # the comment on Endpoint for why both are needed.
+    endpoint_id: Mapped[int | None] = mapped_column(
+        ForeignKey("endpoints.id"), nullable=True
+    )
+    endpoint: Mapped["Endpoint | None"] = relationship(
+        foreign_keys=[endpoint_id], lazy="selectin"
+    )
     tls_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     tls_port: Mapped[int] = mapped_column(Integer, default=443)
     tls_cert_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -610,3 +619,144 @@ class PerfResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     run: Mapped[EvalRun] = relationship(back_populates="perf")
+
+
+# --- Named endpoints ------------------------------------------------------
+# The production front door as a first-class object. Before this, the hostname,
+# its TLS cert and its served-model aliases were all properties of whichever
+# INSTANCE happened to be serving — so promoting a new model meant hand-copying
+# a cert you could not read back and replicating aliases by hand, on a live
+# endpoint. Worse, two instances could advertise the same alias with nothing
+# arbitrating between them.
+#
+# The load-bearing detail is that there are TWO relations here, not one:
+#
+#   Instance.endpoint_id      MEMBERSHIP — "launch me with this endpoint's
+#                             aliases and cert". Fixed at start time, because
+#                             --served-model-name is baked into the vLLM
+#                             command when the container launches.
+#   Endpoint.current_instance_id  THE POINTER — who is serving right now.
+#                             Flips with no restart.
+#
+# Collapsing them makes promotion unrepresentable: a candidate is not "current"
+# at the moment it starts, so it would launch WITHOUT the production aliases,
+# and flipping a pointer afterwards cannot add them to an already-running vLLM.
+class Endpoint(Base):
+    __tablename__ = "endpoints"
+    __table_args__ = (UniqueConstraint("hostname", "port", name="uq_endpoint_host_port"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)   # "prod"
+    hostname: Mapped[str] = mapped_column(String(255))           # llm.example.net
+    port: Mapped[int] = mapped_column(Integer, default=443)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # The private key stays WRITE-ONLY, like the per-instance one it replaces.
+    # The operator's actual need is a HANDOFF — move the cert to another
+    # instance — not a read, and the endpoint owning it satisfies that without
+    # the key ever leaving the portal.
+    tls_cert_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tls_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Parsed from the certificate at upload. Every one of these is transmitted
+    # in the clear during any TLS handshake, so exposing them costs nothing and
+    # answers the questions an operator actually has — which cert is this, does
+    # it cover the hostname, when does it expire.
+    tls_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tls_issuer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tls_sans_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tls_fingerprint_sha256: Mapped[str | None] = mapped_column(String(95), nullable=True)
+    tls_not_before: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tls_not_after: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tls_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Unique: one instance hosts at most one nginx sidecar, so at most one
+    # endpoint. Nullable-unique is fine in SQLite — NULLs are distinct.
+    # endpoints -> instances and instances -> endpoints are mutually dependent.
+    # use_alter defers THIS constraint to an ALTER after both tables exist, so
+    # create_all can order them; without it SQLAlchemy cannot sort the metadata
+    # and warns that it may become an error.
+    current_instance_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "instances.id", ondelete="SET NULL",
+            use_alter=True, name="fk_endpoint_current_instance",
+        ),
+        nullable=True, unique=True,
+    )
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    aliases: Mapped[list["EndpointAlias"]] = relationship(
+        back_populates="endpoint", cascade="all, delete-orphan",
+        order_by="EndpointAlias.position",
+    )
+
+
+class EndpointAlias(Base):
+    """One served-model alias owned by an endpoint.
+
+    Normalised out of the space-separated text blob specifically so the
+    database can enforce uniqueness. That is the whole point: an alias owned by
+    exactly one endpoint cannot be ambiguous, which is the class of bug that
+    silently routed production traffic to the wrong instance.
+    """
+
+    __tablename__ = "endpoint_aliases"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    endpoint_id: Mapped[int] = mapped_column(
+        ForeignKey("endpoints.id", ondelete="CASCADE"), index=True
+    )
+    alias: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+
+    endpoint: Mapped[Endpoint] = relationship(back_populates="aliases")
+
+
+class EndpointPromotion(Base):
+    """What served this endpoint, when, and how the handoff went.
+
+    Names are snapshotted alongside the FKs because history must outlive the
+    instances it describes — deleting an instance must not erase the record of
+    it having served production. Same reasoning as UsageSample.instance_name.
+    """
+
+    __tablename__ = "endpoint_promotions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    endpoint_id: Mapped[int] = mapped_column(
+        ForeignKey("endpoints.id", ondelete="CASCADE"), index=True
+    )
+    endpoint_name: Mapped[str] = mapped_column(String(64))
+
+    to_instance_id: Mapped[int | None] = mapped_column(
+        ForeignKey("instances.id", ondelete="SET NULL"), nullable=True
+    )
+    to_instance_name: Mapped[str] = mapped_column(String(64))
+    to_model_name: Mapped[str] = mapped_column(String(255), default="")
+    from_instance_id: Mapped[int | None] = mapped_column(
+        ForeignKey("instances.id", ondelete="SET NULL"), nullable=True
+    )
+    from_instance_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # pending | active | superseded | failed | rolled_back
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Nullable until RBAC exists. The column is here now so the history does
+    # not have to be retro-fitted with a gap where the actor should be.
+    actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    aliases_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cert_fingerprint: Mapped[str | None] = mapped_column(String(95), nullable=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+PROMO_PENDING = "pending"
+PROMO_ACTIVE = "active"
+PROMO_SUPERSEDED = "superseded"
+PROMO_FAILED = "failed"
+PROMO_ROLLED_BACK = "rolled_back"
